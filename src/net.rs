@@ -349,9 +349,10 @@ fn update_session(
                 session.leader = *leader;
                 session.mode = *mode;
                 session.air_accel = *air_accel;
-                // The host picked another map: swap the scenery and the collision.
-                if game_map.0.id != *map {
-                    game_map.0 = Map::by_id(*map);
+                // The host picked another map, or went into or out of conquest
+                // (the flagpoles): swap the scenery and the collision.
+                if game_map.0.id != *map || game_map.0.has_flagpoles() != (*mode == MODE_CONQUEST) {
+                    game_map.0 = Map::for_game(*map, *mode);
                 }
             }
             ServerMsg::MatchStarted {

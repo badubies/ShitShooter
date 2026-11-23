@@ -331,7 +331,7 @@ impl Server {
             authentication: ServerAuthentication::Unsecure,
         };
         let transport = NetcodeServerTransport::new(config, socket)?;
-        let map = Map::by_id(settings.map);
+        let map = Map::for_game(settings.map, settings.mode);
         let mut server = Server {
             renet: RenetServer::new(ConnectionConfig::default()),
             transport,
@@ -786,6 +786,11 @@ impl Server {
             ClientMsg::EndMatch if is_leader && self.phase == Phase::Playing => self.end_match(Winner::Nobody),
             ClientMsg::NextMode if is_leader && self.phase == Phase::Lobby => {
                 self.settings.mode = (self.settings.mode + 1) % MODE_NAMES.len() as u8;
+                // Into or out of conquest: the flagpoles go up or come down.
+                if self.map.has_flagpoles() != (self.settings.mode == MODE_CONQUEST) {
+                    self.map = Map::for_game(self.settings.map, self.settings.mode);
+                    self.nav = NavGrid::new(&self.map);
+                }
                 self.roster_dirty = true;
             }
             ClientMsg::NextAirAccel if is_leader && self.phase == Phase::Lobby => {
@@ -805,7 +810,7 @@ impl Server {
             }
             ClientMsg::NextMap if is_leader && self.phase == Phase::Lobby => {
                 self.settings.map = (self.settings.map + 1) % map::MAP_NAMES.len() as u8;
-                self.map = Map::by_id(self.settings.map);
+                self.map = Map::for_game(self.settings.map, self.settings.mode);
                 self.nav = NavGrid::new(&self.map);
                 self.roster_dirty = true;
             }

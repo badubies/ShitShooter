@@ -5,8 +5,8 @@
 use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
-    protocol::{FLASH_BLIND, FLASH_RANGE, SMOKE_RADIUS, SMOKE_RISE},
-    props::PROPS,
+    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, SMOKE_RADIUS, SMOKE_RISE},
+    props::{FLAGPOLE, PROPS},
     terrain::Terrain,
 };
 
@@ -106,6 +106,18 @@ pub struct Prop {
     /// ever turned by quarter turns, so their boxes stay upright.
     pub yaw: f32,
     pub scale: f32,
+}
+
+impl Prop {
+    /// Its collision boxes (min, max), where it stands.
+    fn boxes(&self) -> impl Iterator<Item = (Vec3, Vec3)> + '_ {
+        let turn = Quat::from_rotation_y(self.yaw);
+        PROPS[self.model].colliders.iter().map(move |[x0, y0, z0, x1, y1, z1]| {
+            let a = turn * (Vec3::new(*x0, *y0, *z0) * self.scale) + self.pos;
+            let b = turn * (Vec3::new(*x1, *y1, *z1) * self.scale) + self.pos;
+            (a.min(b), a.max(b))
+        })
+    }
 }
 
 /// A road drawn over the terrain, along its centre line.
@@ -300,18 +312,16 @@ impl Map {
     /// Stands a model on the map, and adds its collision boxes as blocks.
     /// Call before `finish`.
     pub fn add_prop(&mut self, model: usize, pos: Vec3, yaw: f32, scale: f32) {
-        let turn = Quat::from_rotation_y(yaw);
-        for [x0, y0, z0, x1, y1, z1] in PROPS[model].colliders {
-            let a = turn * (Vec3::new(*x0, *y0, *z0) * scale) + pos;
-            let b = turn * (Vec3::new(*x1, *y1, *z1) * scale) + pos;
+        let prop = Prop { model, pos, yaw, scale };
+        for (min, max) in prop.boxes() {
             self.blocks.push(Block {
-                min: a.min(b),
-                max: a.max(b),
+                min,
+                max,
                 color: [0.0; 3],
                 visible: false,
             });
         }
-        self.props.push(Prop { model, pos, yaw, scale });
+        self.props.push(prop);
     }
 
     /// Stands a model on the map for show only: nothing collides with it.
@@ -356,6 +366,26 @@ impl Map {
     /// The height of the ground at (x, z), if the map has terrain.
     pub fn ground(&self, x: f32, z: f32) -> Option<f32> {
         self.terrain.as_ref().map(|terrain| terrain.height(x, z))
+    }
+
+    /// The map to play `mode` on: outside conquest, without its flagpoles
+    /// (nor anything left of them to bump into).
+    pub fn for_game(id: u8, mode: u8) -> Map {
+        let mut map = Map::by_id(id);
+        if mode != MODE_CONQUEST {
+            let boxes: Vec<(Vec3, Vec3)> =
+                map.props.iter().filter(|prop| prop.model == FLAGPOLE).flat_map(Prop::boxes).collect();
+            map.props.retain(|prop| prop.model != FLAGPOLE);
+            map.blocks
+                .retain(|block| block.visible || !boxes.contains(&(block.min, block.max)));
+            map.grid = BlockGrid::new(&map.blocks);
+        }
+        map
+    }
+
+    /// Whether the map's flagpoles are standing (see `for_game`).
+    pub fn has_flagpoles(&self) -> bool {
+        self.props.iter().any(|prop| prop.model == FLAGPOLE)
     }
 
     /// Unknown ids fall back to the first map.
@@ -867,7 +897,7 @@ pub fn minmax(a: f32, b: f32) -> (f32, f32) {
 fn with_flags(map: Map, flags: &[(char, f32, f32)], radius: f32) -> Map {
     let mut map = map.finish();
     for &(_, x, z) in flags {
-        map.add_decor(crate::props::FLAGPOLE, Vec3::new(x, 0.0, z), 0.0, 1.0);
+        map.add_decor(FLAGPOLE, Vec3::new(x, 0.0, z), 0.0, 1.0);
     }
     map.flags = flags
         .iter()
@@ -1006,6 +1036,21 @@ mod tests {
             for base in &map.bases {
                 assert!(base.len() >= 4, "map {}", map.id);
             }
+        }
+    }
+
+    #[test]
+    fn flagpoles_stand_only_in_conquest() {
+        for id in 0..MAP_NAMES.len() as u8 {
+            let conquest = Map::for_game(id, MODE_CONQUEST);
+            let other = Map::for_game(id, 0);
+            assert!(conquest.has_flagpoles(), "map {id}");
+            assert!(!other.has_flagpoles(), "map {id}");
+            // The poles took their boxes with them, and nothing else.
+            let boxes: Vec<_> = conquest.props.iter().filter(|prop| prop.model == FLAGPOLE).flat_map(Prop::boxes).collect();
+            let solid = conquest.blocks.iter().filter(|block| boxes.contains(&(block.min, block.max))).count();
+            assert_eq!(conquest.blocks.len() - other.blocks.len(), solid, "map {id}");
+            assert!(other.blocks.iter().all(|block| !boxes.contains(&(block.min, block.max))), "map {id}");
         }
     }
 
