@@ -2,7 +2,7 @@
 //! else's) and the session state that the server tells us about.
 
 use std::{
-    net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, UdpSocket},
     time::SystemTime,
 };
 
@@ -11,7 +11,7 @@ use renet::{ConnectionConfig, RenetClient};
 use renet_netcode::{ClientAuthentication, NetcodeClientTransport};
 
 use crate::{
-    AppState,
+    AppState, hub,
     audio::{Sound, SoundCue},
     map::Map,
     paint::MyPaint,
@@ -199,19 +199,26 @@ pub fn host(commands: &mut Commands, settings: ServerSettings, name: &str) -> Re
 /// Connects to somebody else's server. `address` may omit the port.
 pub fn join(commands: &mut Commands, address: &str, password: &str, name: &str) -> Result<(), String> {
     let address = address.trim();
-    let with_port = if address.contains(':') {
+    let server_addr = hub::resolve(address, DEFAULT_PORT)?;
+    let label = if address.contains(':') {
         address.to_string()
     } else {
         format!("{address}:{DEFAULT_PORT}")
     };
-    let server_addr = with_port
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut addrs| addrs.find(SocketAddr::is_ipv4))
-        .ok_or_else(|| format!("'{address}' is not a valid address"))?;
+    connect(commands, server_addr, label, password, name)
+}
+
+/// Connects to a lobby whose address is known; `label` is how it is shown.
+pub fn connect(
+    commands: &mut Commands,
+    server_addr: SocketAddr,
+    label: String,
+    password: &str,
+    name: &str,
+) -> Result<(), String> {
     commands.insert_resource(Connection::open(server_addr, password, name)?);
     commands.insert_resource(Session {
-        server_label: with_port,
+        server_label: label,
         ..default()
     });
     Ok(())

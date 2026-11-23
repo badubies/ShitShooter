@@ -1,6 +1,8 @@
 # Every push to main builds the game and the launcher on Windows and publishes
 # them as a new GitHub release (build-1, build-2, ...). The launcher downloads
 # from the latest release, so friends get each push the next time they start it.
+# The release also carries the lobby server for Linux (a Raspberry Pi), which
+# deploy/install.sh installs and keeps up to date.
 name: Release
 
 on:
@@ -25,6 +27,10 @@ env:
   # PCs without the Visual C++ Redistributable.
   RUSTFLAGS: -C target-feature=+crt-static
   SHITSHOOTER_BUILD: build-${{ github.run_number }}
+  # The lobby server the game's menu lists by default (e.g. mypi.duckdns.org).
+  # Set it under Settings > Secrets and variables > Actions > Variables; unset,
+  # players type the address in themselves.
+  SHITSHOOTER_LOBBY_SERVER: ${{ vars.SHITSHOOTER_LOBBY_SERVER }}
   # How many releases to keep. Older ones are deleted (with their tags).
   KEEP_RELEASES: 10
 
@@ -41,12 +47,30 @@ jobs:
       - name: Build
         run: cargo build --release --locked --workspace
 
+      # The servers alone, for Linux on 64-bit ARM (a Raspberry Pi on a 64-bit
+      # OS), 32-bit ARM (older Pis and 32-bit Raspberry Pi OS) and x86-64. They
+      # are static musl exes linked by rust-lld (.cargo/config.toml), so they
+      # build here on Windows and run on any Linux.
+      - name: Build the Linux servers
+        shell: pwsh
+        run: |
+          $targets = 'aarch64-unknown-linux-musl', 'armv7-unknown-linux-musleabihf', 'x86_64-unknown-linux-musl'
+          rustup target add @targets
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          foreach ($target in $targets) {
+            cargo build --release --locked --no-default-features --target $target
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory out | Out-Null
           Copy-Item target\release\shitshooter.exe out\
           Copy-Item target\release\ShitShooterLauncher.exe out\
+          Copy-Item target\aarch64-unknown-linux-musl\release\shitshooter out\shitshooter-server-linux-arm64
+          Copy-Item target\armv7-unknown-linux-musleabihf\release\shitshooter out\shitshooter-server-linux-armv7
+          Copy-Item target\x86_64-unknown-linux-musl\release\shitshooter out\shitshooter-server-linux-x64
           Set-Content out\version.txt $env:SHITSHOOTER_BUILD -NoNewline
           $launcher = (& target\release\ShitShooterLauncher.exe --version).Trim()
           Set-Content out\launcher-version.txt $launcher -NoNewline

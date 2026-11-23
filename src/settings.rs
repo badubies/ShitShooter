@@ -30,6 +30,14 @@ use crate::{
     ui::{self, ACCENT, BUTTON, DIM, TEXT},
 };
 
+/// The lobby server the main menu lists until another is typed in: set when
+/// the game is built (the release workflow takes it from the repository
+/// variable `SHITSHOOTER_LOBBY_SERVER`), or none.
+pub const DEFAULT_LOBBY_SERVER: &str = match option_env!("SHITSHOOTER_LOBBY_SERVER") {
+    Some(address) => address,
+    None => "",
+};
+
 pub struct SettingsPlugin;
 
 impl Plugin for SettingsPlugin {
@@ -251,6 +259,8 @@ pub struct Settings {
     pub name: String,
     pub address: String,
     pub port: String,
+    /// The lobby server (`hub.rs`) whose lobbies the main menu lists.
+    pub lobby_server: String,
     /// Mouse sensitivity: thousandths of a radian per pixel of mouse movement.
     pub sensitivity: f32,
     /// Extra sensitivity factor while aiming down sights.
@@ -282,6 +292,7 @@ impl Default for Settings {
             name: "Player".into(),
             address: "127.0.0.1".into(),
             port: crate::protocol::DEFAULT_PORT.to_string(),
+            lobby_server: DEFAULT_LOBBY_SERVER.to_string(),
             sensitivity: 2.2,
             ads_sensitivity: 1.0,
             fov: 75.0,
@@ -412,6 +423,7 @@ impl Settings {
             name: std::mem::take(&mut self.name),
             address: std::mem::take(&mut self.address),
             port: std::mem::take(&mut self.port),
+            lobby_server: std::mem::take(&mut self.lobby_server),
             fullscreen: self.fullscreen,
             primary: self.primary,
             secondary: self.secondary,
@@ -509,6 +521,8 @@ impl Settings {
                 "name" => settings.name = value.to_string(),
                 "address" => settings.address = value.to_string(),
                 "port" => settings.port = value.to_string(),
+                // Left empty: the default, which a later build may have.
+                "lobby_server" if !value.is_empty() => settings.lobby_server = value.to_string(),
                 "sensitivity" => settings.sensitivity = number.unwrap_or(settings.sensitivity),
                 "ads_sensitivity" => settings.ads_sensitivity = number.unwrap_or(settings.ads_sensitivity),
                 "fov" => settings.fov = number.unwrap_or(settings.fov),
@@ -564,8 +578,15 @@ impl Settings {
 
     fn to_text(&self) -> String {
         let mut text = format!(
-            "name = {}\naddress = {}\nport = {}\nsensitivity = {}\nads_sensitivity = {}\nfov = {}\nvolume = {}\n",
-            self.name, self.address, self.port, self.sensitivity, self.ads_sensitivity, self.fov, self.volume
+            "name = {}\naddress = {}\nport = {}\nlobby_server = {}\nsensitivity = {}\nads_sensitivity = {}\nfov = {}\nvolume = {}\n",
+            self.name,
+            self.address,
+            self.port,
+            self.lobby_server,
+            self.sensitivity,
+            self.ads_sensitivity,
+            self.fov,
+            self.volume
         );
         text.push_str(&format!(
             "fullscreen = {}\nprimary = {}\nsecondary = {}\ngrenade = {}\n",
@@ -1063,6 +1084,7 @@ mod tests {
         let mut settings = Settings {
             name: "Some = Name".into(),
             address: "example.org:7000".into(),
+            lobby_server: "pi.example.org".into(),
             sensitivity: 3.4,
             fov: 90.0,
             volume: 0.35,

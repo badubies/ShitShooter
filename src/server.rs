@@ -6,7 +6,7 @@ use std::{
     io,
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -20,7 +20,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 use crate::{
     map::{self, Map},
     nav::NavGrid,
-    paint::Canvas,
+    canvas::Canvas,
     protocol::*,
     weapons::{self, DRAW_TIME, GUN_COUNT, IRON_SIGHTS, KNIFE, KNIFE_RANGE, SightId, WEAPONS, WeaponId, hit_damage, weapon},
 };
@@ -58,6 +58,21 @@ impl Default for ServerSettings {
             air_accel: DEFAULT_AIR_ACCEL,
         }
     }
+}
+
+/// How a lobby is doing, for the lobby list of a lobby server (`hub.rs`).
+/// The lobby's server keeps it up to date every tick.
+#[derive(Clone, Default, Debug)]
+pub struct LobbyStatus {
+    /// People in it (bots not counted).
+    pub humans: u8,
+    pub bots: u8,
+    pub map: u8,
+    pub mode: u8,
+    /// A match is being played.
+    pub playing: bool,
+    /// The leader's name; empty while nobody is in.
+    pub leader: String,
 }
 
 // How well bots fight. They see enemies in front of them, or close by, or
@@ -275,6 +290,8 @@ pub struct Server {
     bleed: [f32; 2],
     /// Where bots can walk, on this map.
     nav: NavGrid,
+    /// Where to report how the lobby is doing, when run by a lobby server.
+    status: Option<Arc<Mutex<LobbyStatus>>>,
 }
 
 /// A conquest flag, as the server keeps it.
@@ -295,6 +312,13 @@ impl FlagState {
 impl Server {
     /// Binds the UDP socket. Fails if the port is already in use.
     pub fn bind(settings: ServerSettings) -> io::Result<Server> {
+        let key = protocol_id(&settings.password);
+        Server::bind_with_key(settings, key)
+    }
+
+    /// Like `bind`, for a lobby whose password is known only as the
+    /// `protocol_id` it makes (`settings.password` is then ignored).
+    pub fn bind_with_key(settings: ServerSettings, protocol_key: u64) -> io::Result<Server> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, settings.port))?;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -302,7 +326,7 @@ impl Server {
         let config = ServerConfig {
             current_time: now,
             max_clients: MAX_PLAYERS,
-            protocol_id: protocol_id(&settings.password),
+            protocol_id: protocol_key,
             public_addresses: vec![SocketAddr::from((Ipv4Addr::LOCALHOST, settings.port))],
             authentication: ServerAuthentication::Unsecure,
         };
@@ -334,11 +358,38 @@ impl Server {
             roster_dirty: false,
             rng: now.as_nanos() as u64 | 1,
             settings,
+            status: None,
         };
         for _ in 0..server.settings.bots {
             server.add_bot();
         }
         Ok(server)
+    }
+
+    /// Keeps `status` up to date from now on.
+    pub fn report_to(&mut self, status: Arc<Mutex<LobbyStatus>>) {
+        self.status = Some(status);
+        self.report_status();
+    }
+
+    fn report_status(&self) {
+        let Some(status) = &self.status else { return };
+        let Ok(mut status) = status.lock() else { return };
+        let humans = self.players.values().filter(|p| p.bot.is_none()).count();
+        status.humans = humans as u8;
+        status.bots = (self.players.len() - humans) as u8;
+        status.map = self.settings.map;
+        status.mode = self.settings.mode;
+        status.playing = self.phase == Phase::Playing;
+        let leader = self.leader().and_then(|id| self.players.get(&id)).map_or("", |p| p.name.as_str());
+        if status.leader != leader {
+            status.leader = leader.to_string();
+        }
+    }
+
+    /// A line in the log, marked with the port, as a lobby server runs several.
+    fn log(&self, line: std::fmt::Arguments) {
+        println!("[server :{}] {line}", self.settings.port);
     }
 
     /// Runs the server on a background thread until the returned handle is dropped.
@@ -372,17 +423,17 @@ impl Server {
         let dt = delta.as_secs_f32().min(0.25);
         self.renet.update(delta);
         if let Err(err) = self.transport.update(delta, &mut self.renet) {
-            eprintln!("[server] transport error: {err}");
+            self.log(format_args!("transport error: {err}"));
         }
 
         while let Some(event) = self.renet.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
-                    println!("[server] client {client_id:016x} connected");
+                    self.log(format_args!("client {client_id:016x} connected"));
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
                     if let Some(player) = self.players.remove(&client_id) {
-                        println!("[server] {} left ({reason})", player.name);
+                        self.log(format_args!("{} left ({reason})", player.name));
                         self.roster_dirty = true;
                     }
                 }
@@ -393,7 +444,7 @@ impl Server {
             while let Some(bytes) = self.renet.receive_message(client_id, CH_RELIABLE) {
                 match decode::<ClientMsg>(&bytes) {
                     Some(msg) => self.handle_message(client_id, msg),
-                    None => eprintln!("[server] bad message from {client_id:016x}"),
+                    None => self.log(format_args!("bad message from {client_id:016x}")),
                 }
             }
             let mut latest = None;
@@ -429,6 +480,7 @@ impl Server {
             self.broadcast(&roster);
         }
         self.transport.send_packets(&mut self.renet);
+        self.report_status();
     }
 
     /// True once the match is under way: playing, and the countdown is over.
@@ -684,7 +736,7 @@ impl Server {
                     return;
                 }
                 let name = sanitize_name(&name);
-                println!("[server] {name} joined");
+                self.log(format_args!("{name} joined"));
                 self.join_counter += 1;
                 let player = self.new_player(name, None);
                 self.players.insert(id, player);
@@ -1170,7 +1222,7 @@ impl Server {
     }
 
     fn start_match(&mut self) {
-        println!("[server] match started");
+        self.log(format_args!("match started"));
         self.phase = Phase::Playing;
         self.countdown = COUNTDOWN;
         self.time_left = self.settings.match_minutes * 60.0;
@@ -1226,7 +1278,7 @@ impl Server {
     }
 
     fn end_match(&mut self, winner: Winner) {
-        println!("[server] match ended");
+        self.log(format_args!("match ended"));
         self.phase = Phase::Lobby;
         self.grenades.clear();
         self.smokes.clear();
@@ -1909,7 +1961,7 @@ fn random_unit(state: &mut u64) -> f32 {
     (next_random(state) % (1 << 24)) as f32 / (1 << 24) as f32
 }
 
-fn sanitize_name(name: &str) -> String {
+pub fn sanitize_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .filter(|c| !c.is_control())

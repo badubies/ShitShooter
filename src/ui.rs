@@ -16,6 +16,7 @@ use bevy::{
 
 use crate::{
     AppState, LaunchArgs,
+    browser::lobby_server_panel,
     combat::{HIT_MARKER_TIME, KillFeed, Notices},
     grenade::SmokeFog,
     gun_model::FittedModels,
@@ -31,8 +32,8 @@ use crate::{
     world::{GameMap, MainCamera},
 };
 
-const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.93);
-const PANEL_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
+pub const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.93);
+pub const PANEL_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
 /// A box inside a panel, a shade lighter than it.
 pub const CARD: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
 pub const BUTTON: Color = Color::srgb(0.16, 0.18, 0.24);
@@ -84,6 +85,7 @@ impl Plugin for UiPlugin {
                     args.server.port.to_string()
                 },
                 password: args.server.password.clone(),
+                server: saved.lobby_server,
             })
             .add_systems(Startup, auto_launch)
             .add_systems(OnEnter(AppState::Menu), spawn_menu)
@@ -118,19 +120,22 @@ impl Plugin for UiPlugin {
 
 /// What was last typed into the menu, so it survives leaving and coming back.
 #[derive(Resource, Clone)]
-struct MenuPrefs {
-    name: String,
-    address: String,
-    port: String,
-    password: String,
+pub(crate) struct MenuPrefs {
+    pub name: String,
+    pub address: String,
+    pub port: String,
+    pub password: String,
+    /// The lobby server's address.
+    pub server: String,
 }
 
 #[derive(Component, Clone, Copy, PartialEq)]
-enum Field {
+pub(crate) enum Field {
     Name,
     Address,
     Port,
     Password,
+    Server,
 }
 
 // ---------------------------------------------------------------- building blocks
@@ -214,12 +219,12 @@ fn danger_button(text: &str) -> impl Bundle {
     button_of(text, ButtonKind::Danger, false)
 }
 
-fn small_button(text: &str) -> impl Bundle {
+pub(crate) fn small_button(text: &str) -> impl Bundle {
     button_of(text, ButtonKind::Normal, true)
 }
 
 /// A caption with a one-line text field under it.
-fn field(caption: &str, field: Field, initial: &str, max_chars: usize, tab: i32) -> impl Bundle {
+pub(crate) fn field(caption: &str, field: Field, initial: &str, max_chars: usize, tab: i32) -> impl Bundle {
     (
         Node {
             flex_direction: FlexDirection::Column,
@@ -392,72 +397,82 @@ fn spawn_menu(mut commands: Commands, prefs: Res<MenuPrefs>) {
         TabGroup::new(0),
         children![
             (
-                panel(),
+                // The lobby server beside the rest, so its list has room.
+                Node {
+                    column_gap: px(16),
+                    ..default()
+                },
                 children![
-                    label("SHITSHOOTER", 56.0, ACCENT),
-                    label("fast arena shooter, hosted by you", 17.0, DIM),
                     (
-                        Node {
-                            flex_direction: FlexDirection::Column,
-                            row_gap: px(14),
-                            margin: UiRect::top(px(8)),
-                            ..default()
-                        },
+                        panel(),
                         children![
+                            label("SHITSHOOTER", 56.0, ACCENT),
+                            label("fast arena shooter, hosted by you", 17.0, DIM),
                             (
                                 Node {
-                                    flex_direction: FlexDirection::Row,
-                                    justify_content: JustifyContent::SpaceBetween,
-                                    ..card_node()
-                                },
-                                BackgroundColor(CARD),
-                                BorderColor::all(HUD_EDGE),
-                                children![
-                                    field("Your name", Field::Name, &prefs.name, 16, 0),
-                                    field("Lobby password (optional)", Field::Password, &prefs.password, 32, 1),
-                                ],
-                            ),
-                            (
-                                Node {
-                                    column_gap: px(14),
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: px(14),
+                                    margin: UiRect::top(px(8)),
                                     ..default()
                                 },
                                 children![
-                                    menu_card(
-                                        "Host",
-                                        "Start a lobby on this PC.",
-                                        field("UDP port", Field::Port, &prefs.port, 5, 2),
-                                        (primary_button("Host lobby"), observe(on_host)),
+                                    (
+                                        Node {
+                                            flex_direction: FlexDirection::Row,
+                                            justify_content: JustifyContent::SpaceBetween,
+                                            ..card_node()
+                                        },
+                                        BackgroundColor(CARD),
+                                        BorderColor::all(HUD_EDGE),
+                                        children![
+                                            field("Your name", Field::Name, &prefs.name, 16, 0),
+                                            field("Lobby password (optional)", Field::Password, &prefs.password, 32, 1),
+                                        ],
                                     ),
-                                    menu_card(
-                                        "Join",
-                                        "Connect to a friend's lobby.",
-                                        (
-                                            Node {
-                                                align_items: AlignItems::FlexEnd,
-                                                column_gap: px(8),
-                                                ..default()
-                                            },
-                                            children![
-                                                field("Address", Field::Address, &prefs.address, ADDRESS_CHARS, 3),
-                                                (small_button("Paste"), observe(on_paste_address)),
-                                            ],
-                                        ),
-                                        (primary_button("Join lobby"), observe(on_join)),
+                                    (
+                                        Node {
+                                            column_gap: px(14),
+                                            ..default()
+                                        },
+                                        children![
+                                            menu_card(
+                                                "Host",
+                                                "Start a lobby on this PC.",
+                                                field("UDP port", Field::Port, &prefs.port, 5, 2),
+                                                (primary_button("Host lobby"), observe(on_host)),
+                                            ),
+                                            menu_card(
+                                                "Join",
+                                                "Connect to a friend's lobby.",
+                                                (
+                                                    Node {
+                                                        align_items: AlignItems::FlexEnd,
+                                                        column_gap: px(8),
+                                                        ..default()
+                                                    },
+                                                    children![
+                                                        field("Address", Field::Address, &prefs.address, ADDRESS_CHARS, 3),
+                                                        (small_button("Paste"), observe(on_paste_address)),
+                                                    ],
+                                                ),
+                                                (primary_button("Join lobby"), observe(on_join)),
+                                            ),
+                                        ],
                                     ),
+                                ],
+                            ),
+                            (label("", 16.0, DANGER), MenuStatusText),
+                            (
+                                button_row(),
+                                children![
+                                    (button("Paint yourself"), observe(on_open_paint)),
+                                    (button("Settings"), observe(on_open_settings)),
+                                    (danger_button("Quit"), observe(on_quit)),
                                 ],
                             ),
                         ],
                     ),
-                    (label("", 16.0, DANGER), MenuStatusText),
-                    (
-                        button_row(),
-                        children![
-                            (button("Paint yourself"), observe(on_open_paint)),
-                            (button("Settings"), observe(on_open_settings)),
-                            (danger_button("Quit"), observe(on_quit)),
-                        ],
-                    ),
+                    lobby_server_panel(&prefs.server),
                 ],
             ),
             (
@@ -487,7 +502,7 @@ fn update_menu_status(
 
 /// Takes what is in the text fields, and remembers it for the next time the
 /// game is started (all but the password, which is not written to disk).
-fn read_fields(fields: &Query<(&Field, &EditableText)>, prefs: &mut MenuPrefs, settings: &mut Settings) {
+pub(crate) fn read_fields(fields: &Query<(&Field, &EditableText)>, prefs: &mut MenuPrefs, settings: &mut Settings) {
     for (field, text) in fields {
         let value = text.value().to_string().trim().to_string();
         match field {
@@ -495,11 +510,13 @@ fn read_fields(fields: &Query<(&Field, &EditableText)>, prefs: &mut MenuPrefs, s
             Field::Address => prefs.address = value,
             Field::Port => prefs.port = value,
             Field::Password => prefs.password = value,
+            Field::Server => prefs.server = value,
         }
     }
     settings.name = prefs.name.clone();
     settings.address = prefs.address.clone();
     settings.port = prefs.port.clone();
+    settings.lobby_server = prefs.server.clone();
     settings.save();
 }
 
@@ -532,7 +549,7 @@ fn start_join(
     finish_connect(result, status, next_state);
 }
 
-fn finish_connect(result: Result<(), String>, status: &mut MenuStatus, next_state: &mut NextState<AppState>) {
+pub(crate) fn finish_connect(result: Result<(), String>, status: &mut MenuStatus, next_state: &mut NextState<AppState>) {
     match result {
         Ok(()) => {
             status.0.clear();
@@ -570,7 +587,7 @@ fn on_join(
 }
 
 /// Longest address the Address field takes.
-const ADDRESS_CHARS: usize = 64;
+pub(crate) const ADDRESS_CHARS: usize = 64;
 
 /// Replaces what is in the Address field with the first line of the clipboard.
 fn on_paste_address(
