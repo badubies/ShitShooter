@@ -794,11 +794,7 @@ pub(crate) enum MatchChoice {
     AirAccel(u16),
 }
 
-/// A map card's picture, dimmed when the mode isn't played on the map.
-#[derive(Component)]
-struct MapPicture(u8);
-
-/// Under a map's name: picked, or not played in this mode.
+/// Under a map's name: whether it is the one picked.
 #[derive(Component)]
 struct MapNote(u8);
 
@@ -965,7 +961,16 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                 });
                                 choices.spawn(group()).with_children(|group| {
                                     group.spawn(section("Map"));
-                                    group.spawn(row(12)).with_children(|row| {
+                                    // A column per map, so the cards keep their size
+                                    // when the maps the mode isn't played on are hidden.
+                                    let grid = Node {
+                                        display: Display::Grid,
+                                        grid_template_columns: RepeatedGridTrack::flex(MAP_NAMES.len() as u16, 1.0),
+                                        column_gap: px(12),
+                                        min_width: px(0),
+                                        ..default()
+                                    };
+                                    group.spawn(grid).with_children(|row| {
                                         for card in maps {
                                             row.spawn(card);
                                         }
@@ -1156,8 +1161,6 @@ fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
         Hovered::default(),
         Pickable::default(),
         Node {
-            flex_grow: 1.0,
-            flex_basis: px(0),
             // Not held as wide as its picture.
             min_width: px(0),
             flex_direction: FlexDirection::Column,
@@ -1171,7 +1174,6 @@ fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
         observe(send_choice),
         children![
             (
-                MapPicture(id),
                 picture.map(ImageNode::new).unwrap_or_default(),
                 Node {
                     width: percent(100),
@@ -1273,17 +1275,16 @@ fn update_lobby(
     }
 }
 
-/// Marks the mode, map and air acceleration picked, dims the maps the mode
+/// Marks the mode, map and air acceleration picked, hides the maps the mode
 /// isn't played on, and lets only the leader click any of them.
 fn style_match_choices(
     session: Res<Session>,
     map: Res<GameMap>,
-    mut choices: Query<(&MatchChoice, &mut ButtonKind, &mut BorderColor, &mut Pickable)>,
-    mut pictures: Query<(&MapPicture, &mut ImageNode)>,
+    mut choices: Query<(&MatchChoice, &mut ButtonKind, &mut BorderColor, &mut Pickable, &mut Node)>,
     mut notes: Query<(&MapNote, &mut Text)>,
 ) {
     let air_accel = session.air_accel() as u16;
-    for (choice, mut kind, mut border, mut pickable) in &mut choices {
+    for (choice, mut kind, mut border, mut pickable, mut node) in &mut choices {
         let (picked, playable, rest) = match *choice {
             MatchChoice::Mode(mode) => (session.mode == mode, true, ButtonKind::Normal),
             MatchChoice::Map(id) => (map.0.id == id, crate::map::plays(id, session.mode), ButtonKind::Tile),
@@ -1298,21 +1299,12 @@ fn style_match_choices(
         if pickable.is_hoverable != clickable {
             pickable.is_hoverable = clickable;
         }
-    }
-    for (picture, mut image) in &mut pictures {
-        let alpha = if crate::map::plays(picture.0, session.mode) { 1.0 } else { 0.3 };
-        if image.color.alpha() != alpha {
-            image.color = Color::WHITE.with_alpha(alpha);
+        if let MatchChoice::Map(_) = *choice {
+            set_shown(&mut node, playable);
         }
     }
     for (note, mut text) in &mut notes {
-        let line = if map.0.id == note.0 {
-            "Picked"
-        } else if !crate::map::plays(note.0, session.mode) {
-            "Not for this mode"
-        } else {
-            ""
-        };
+        let line = if map.0.id == note.0 { "Picked" } else { "" };
         set_text(&mut text, line.to_string());
     }
 }
