@@ -202,6 +202,8 @@ pub struct LocalPlayer {
     /// Seconds after the last shot before the view starts drifting back.
     pub kick_hold: f32,
     pub killed_by: Option<String>,
+    /// What it was done with (`weapons::GRENADE` for a grenade).
+    pub killed_with: Option<WeaponId>,
     /// Seconds since we died.
     pub dead_for: f32,
     /// We asked the server to respawn us early.
@@ -286,6 +288,7 @@ impl Default for LocalPlayer {
             view_kick: Vec2::ZERO,
             kick_hold: 0.0,
             killed_by: None,
+            killed_with: None,
             dead_for: 0.0,
             respawn_asked: false,
             hit_marker: 0.0,
@@ -566,11 +569,12 @@ fn handle_net(
             ServerMsg::ArmorPickup { id, armor, .. } if *id == session.my_id => player.armor = *armor,
             // Grenade damage is decided by the server, so this is where we learn of it.
             ServerMsg::Hit { attacker, .. } if *attacker == session.my_id => player.hit_marker = 0.15,
-            ServerMsg::Kill { killer, victim, .. } if *victim == session.my_id => {
+            ServerMsg::Kill { killer, victim, weapon } if *victim == session.my_id => {
                 player.alive = false;
                 player.health = 0;
                 player.armor = 0;
                 player.killed_by = Some(session.name_of(*killer).to_string());
+                player.killed_with = Some(*weapon);
                 player.dead_for = 0.0;
                 player.respawn_asked = false;
                 // A frag being cooked drops (the server throws it down for us).

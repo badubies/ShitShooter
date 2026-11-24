@@ -15,7 +15,10 @@ use bevy::{
     input_focus::InputFocus,
     picking::hover::Hovered,
     prelude::*,
-    ui_widgets::{Activate, Button},
+    ui_widgets::{
+        Activate, Button, Slider, SliderRange, SliderStep, SliderThumb, SliderValue, TrackClick, ValueChange,
+        observe, slider_self_update,
+    },
     window::{PrimaryWindow, WindowMode},
 };
 
@@ -68,6 +71,8 @@ impl Plugin for SettingsPlugin {
                     capture_bind,
                     fullscreen_key,
                     sync_panel,
+                    style_panel,
+                    place_dial_thumbs,
                     update_panel,
                     apply_volume,
                     apply_display,
@@ -308,7 +313,7 @@ impl Default for Settings {
     }
 }
 
-/// A number in the settings panel that is changed with - and + buttons.
+/// A number in the settings panel that is changed with a slider.
 #[derive(Clone, Copy, PartialEq)]
 enum Dial {
     Sensitivity,
@@ -496,20 +501,6 @@ impl Settings {
     /// The sight a gun is handed out with.
     pub fn sight_for(&self, gun: WeaponId) -> SightId {
         sight_on(gun, self.sights.get(gun as usize).copied().unwrap_or(IRON_SIGHTS))
-    }
-
-    /// Puts the sight `step` places on (back, for a negative step) on the gun
-    /// in a slot, going round its iron sights, then each of
-    /// `weapons::sights_for` in turn.
-    pub fn step_sight(&mut self, slot: usize, step: i32) {
-        let gun = self.gun(slot);
-        let current = self.sight_for(gun);
-        let choices: Vec<SightId> = std::iter::once(IRON_SIGHTS).chain(sights_for(gun).iter().copied()).collect();
-        let here = choices.iter().position(|&s| s == current).unwrap_or(0) as i32;
-        let next = (here + step).rem_euclid(choices.len() as i32) as usize;
-        if let Some(sight) = self.sights.get_mut(gun as usize) {
-            *sight = choices[next];
-        }
     }
 
     /// Reads the settings file. Anything missing or unreadable keeps its default.
@@ -727,11 +718,21 @@ fn read_wheel(scroll: Res<AccumulatedMouseScroll>, mut wheel: ResMut<WheelSteps>
 
 // ---------------------------------------------------------------- the panel
 
-/// Whether the settings panel is open, and which binding is waiting for a key.
+/// Whether the settings panel is open, on which page, and which binding is
+/// waiting for a key.
 #[derive(Resource, Default)]
 pub struct SettingsMenu {
     pub open: bool,
+    pub tab: SettingsTab,
     capturing: Option<Capture>,
+}
+
+/// The two pages of the settings.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Controls,
 }
 
 struct Capture {
@@ -752,14 +753,22 @@ impl SettingsMenu {
 }
 
 #[derive(Component)]
-struct SettingsPanel;
+struct SettingsPanel(SettingsTab);
+/// The button that shows one page of the settings.
+#[derive(Component)]
+struct TabButton(SettingsTab);
+/// The button for a window (`false`) or borderless full screen (`true`).
+#[derive(Component)]
+struct WindowChoice(bool);
+#[derive(Component)]
+struct DialSlider(Dial);
+/// The part of a dial's rail up to its thumb.
+#[derive(Component)]
+struct DialFill(Dial);
 #[derive(Component)]
 struct DialText(Dial);
 #[derive(Component)]
 struct BindText(Action, usize);
-/// The text of the button that switches between a window and full screen.
-#[derive(Component)]
-struct DisplayText;
 
 /// Observer for any button that opens the settings panel.
 pub fn on_open_settings(_: On<Activate>, mut menu: ResMut<SettingsMenu>) {
@@ -814,15 +823,21 @@ fn sync_panel(
     mut menu: ResMut<SettingsMenu>,
     settings: Res<Settings>,
     mut focus: ResMut<InputFocus>,
-    panel: Query<Entity, With<SettingsPanel>>,
+    panel: Query<(Entity, &SettingsPanel)>,
 ) {
     match (menu.open, panel.iter().next()) {
         (true, None) => {
             // Otherwise a menu text field behind the panel keeps taking the typing.
             focus.clear();
-            spawn_panel(&mut commands);
+            spawn_panel(&mut commands, &settings, menu.tab);
         }
-        (false, Some(entity)) => {
+        // The other page: put it up instead.
+        (true, Some((entity, shown))) if shown.0 != menu.tab => {
+            commands.entity(entity).despawn();
+            menu.capturing = None;
+            spawn_panel(&mut commands, &settings, menu.tab);
+        }
+        (false, Some((entity, _))) => {
             commands.entity(entity).despawn();
             menu.capturing = None;
             settings.save();
@@ -831,180 +846,372 @@ fn sync_panel(
     }
 }
 
-fn spawn_panel(commands: &mut Commands) {
-    let row = || Node {
-        width: px(350),
-        ..ui::spread_row()
-    };
-    // A small button with fixed width.
-    let key_button = |width: i32| {
-        (
-            Button,
-            Hovered::default(),
-            Node {
-                width: px(width),
-                padding: UiRect::axes(px(8), px(5)),
-                justify_content: JustifyContent::Center,
-                border_radius: BorderRadius::all(px(5)),
-                ..default()
-            },
-            BackgroundColor(BUTTON),
-        )
-    };
-
+fn spawn_panel(commands: &mut Commands, settings: &Settings, tab: SettingsTab) {
     commands
         .spawn((
-            SettingsPanel,
+            SettingsPanel(tab),
             Node {
                 position_type: PositionType::Absolute,
                 width: percent(100),
                 height: percent(100),
-                align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
             // Above everything, the pause menu included, and dark enough to hide it.
             GlobalZIndex(20),
-            BackgroundColor(Color::srgba(0.01, 0.012, 0.02, 0.98)),
+            BackgroundColor(ui::SCRIM.with_alpha(1.0)),
         ))
         .with_children(|screen| {
-            screen.spawn(ui::panel()).with_children(|panel| {
-                panel.spawn(ui::heading("Settings", 34.0, TEXT));
-
-                panel
-                    .spawn(Node {
-                        column_gap: px(14),
-                        align_self: AlignSelf::Stretch,
-                        justify_content: JustifyContent::Center,
-                        ..default()
-                    })
-                    .with_children(|cards| {
-                        cards.spawn(ui::card()).with_children(|dials| {
-                            dials.spawn(ui::section("Mouse and sound"));
-                            for dial in Dial::ALL {
-                                dials.spawn(row()).with_children(|row| {
-                                    row.spawn(ui::label(dial.info().0, 17.0, DIM));
-                                    row.spawn(Node {
-                                        align_items: AlignItems::Center,
-                                        column_gap: px(8),
-                                        ..default()
-                                    })
-                                    .with_children(|controls| {
-                                        controls
-                                            .spawn((
-                                                key_button(34),
-                                                children![(ui::label("-", 18.0, TEXT), Pickable::IGNORE)],
-                                            ))
-                                            .observe(turn_dial(dial, -1.0));
-                                        controls.spawn((
-                                            ui::label("", 17.0, TEXT),
-                                            DialText(dial),
-                                            TextLayout::justify(Justify::Center),
-                                            Node {
-                                                width: px(70),
-                                                ..default()
-                                            },
-                                        ));
-                                        controls
-                                            .spawn((
-                                                key_button(34),
-                                                children![(ui::label("+", 18.0, TEXT), Pickable::IGNORE)],
-                                            ))
-                                            .observe(turn_dial(dial, 1.0));
-                                    });
-                                });
-                            }
-                        });
-
-                        cards.spawn(ui::card()).with_children(|display| {
-                            display.spawn(ui::section("Display"));
-                            display.spawn(row()).with_children(|row| {
-                                row.spawn(ui::label("Window", 17.0, DIM));
-                                row.spawn((
-                                    key_button(230),
-                                    children![(ui::label("", 16.0, TEXT), Pickable::IGNORE, DisplayText)],
-                                ))
-                                .observe(|_: On<Activate>, mut settings: ResMut<Settings>| {
-                                    settings.fullscreen = !settings.fullscreen;
-                                });
-                            });
-                            display.spawn(ui::label("Alt + Enter switches at any time.", 14.0, DIM));
-                        });
-                    });
-
-                panel.spawn(ui::card()).with_children(|card| {
-                    card.spawn(ui::spread_row()).with_children(|heading| {
-                        heading.spawn(ui::section("Controls"));
-                        heading.spawn(ui::label(
-                            "Click a slot, then press the key or mouse button (or scroll) for it. Right-click clears it.",
-                            14.0,
-                            DIM,
-                        ));
-                    });
-                    card.spawn(Node {
-                        column_gap: px(20),
-                        ..default()
-                    })
-                    .with_children(|columns| {
-                        for third in Action::ALL.chunks(Action::ALL.len().div_ceil(3)) {
-                            columns
-                                .spawn(Node {
-                                    flex_direction: FlexDirection::Column,
-                                    row_gap: px(6),
+            screen
+                .spawn(Node {
+                    width: percent(100),
+                    max_width: px(1240),
+                    height: percent(100),
+                    min_height: px(0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::axes(px(48), px(36)),
+                    row_gap: px(22),
+                    ..default()
+                })
+                .with_children(|page| {
+                    page.spawn((
+                        Node {
+                            align_items: AlignItems::Center,
+                            column_gap: px(20),
+                            ..default()
+                        },
+                        children![
+                            (ui::button("‹  Back"), observe(close)),
+                            ui::heading("Settings", 40.0, TEXT),
+                            (
+                                Node {
+                                    flex_grow: 1.0,
+                                    justify_content: JustifyContent::FlexEnd,
+                                    column_gap: px(6),
                                     ..default()
-                                })
-                                .with_children(|binds| {
-                                    for action in third.iter().copied() {
-                                        binds
-                                            .spawn(Node {
-                                                width: px(BIND_ROW_WIDTH),
-                                                ..row()
-                                            })
-                                            .with_children(|row| {
-                                                row.spawn(ui::label(action.label(), 14.0, DIM));
-                                                row.spawn(Node {
-                                                    column_gap: px(6),
-                                                    ..default()
-                                                })
-                                                .with_children(|slots| {
-                                                    for slot in 0..BIND_SLOTS {
-                                                        // Narrow padding, so MOUSE FORWARD fits on one line.
-                                                        let mut button = key_button(BIND_BUTTON_WIDTH);
-                                                        button.2.padding = UiRect::axes(px(4), px(5));
-                                                        slots
-                                                            .spawn((
-                                                                button,
-                                                                children![(
-                                                                    ui::label("", 13.0, TEXT),
-                                                                    Pickable::IGNORE,
-                                                                    BindText(action, slot)
-                                                                )],
-                                                            ))
-                                                            .observe(click_bind(action, slot));
-                                                    }
-                                                });
-                                            });
-                                    }
-                                });
+                                },
+                                children![tab_button("General", SettingsTab::General), tab_button("Controls", SettingsTab::Controls)],
+                            ),
+                        ],
+                    ));
+                    match tab {
+                        SettingsTab::General => general_page(page, settings),
+                        SettingsTab::Controls => controls_page(page),
+                    }
+                    page.spawn(Node {
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|buttons| {
+                        if tab == SettingsTab::Controls {
+                            buttons
+                                .spawn(ui::button("Reset controls to defaults"))
+                                .observe(|_: On<Activate>, mut settings: ResMut<Settings>| settings.reset_controls());
+                        } else {
+                            buttons.spawn(Node::default());
                         }
+                        buttons.spawn((ui::primary_button("Done"), observe(close)));
                     });
                 });
-
-                panel.spawn(ui::button_row()).with_children(|buttons| {
-                    buttons
-                        .spawn(ui::button("Reset to defaults"))
-                        .observe(|_: On<Activate>, mut settings: ResMut<Settings>| settings.reset_controls());
-                    buttons
-                        .spawn(ui::primary_button("Done"))
-                        .observe(|_: On<Activate>, mut menu: ResMut<SettingsMenu>| menu.open = false);
-                });
-            });
         });
 }
 
-/// Each row of the controls: the action's name and its two key buttons.
-const BIND_ROW_WIDTH: i32 = 372;
-const BIND_BUTTON_WIDTH: i32 = 110;
+fn close(_: On<Activate>, mut menu: ResMut<SettingsMenu>) {
+    menu.open = false;
+}
+
+fn tab_button(text: &str, tab: SettingsTab) -> impl Bundle + use<> {
+    (
+        TabButton(tab),
+        ui::button(text),
+        observe(move |_: On<Activate>, mut menu: ResMut<SettingsMenu>| menu.tab = tab),
+    )
+}
+
+/// A box on a page of the settings, laid out as `node` says.
+fn settings_box(node: Node) -> impl Bundle {
+    (
+        Node {
+            flex_direction: FlexDirection::Column,
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(22)),
+            ..node
+        },
+        BackgroundColor(ui::PANEL),
+        BorderColor::all(ui::PANEL_EDGE),
+        ui::soft_shadow(),
+    )
+}
+
+/// The mouse, sound and window.
+fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
+    page.spawn(Node {
+        // Down to the buttons at the bottom.
+        flex_grow: 1.0,
+        column_gap: px(24),
+        align_items: AlignItems::FlexStart,
+        ..default()
+    })
+    .with_children(|row| {
+        row.spawn(settings_box(Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            padding: UiRect::axes(px(26), px(12)),
+            ..default()
+        }))
+        .with_children(|dials| {
+            for (index, dial) in Dial::ALL.into_iter().enumerate() {
+                let (name, step, low, high) = dial.info();
+                let value = *settings.clone().dial(dial);
+                dials
+                    .spawn(Node {
+                        height: px(72),
+                        align_items: AlignItems::Center,
+                        column_gap: px(24),
+                        border: UiRect::bottom(px(if index + 1 < Dial::ALL.len() { 1 } else { 0 })),
+                        ..default()
+                    })
+                    .insert(BorderColor::all(ui::PANEL_EDGE))
+                    .with_children(|line| {
+                        line.spawn((
+                            ui::weighted(name, 16.0, 600, TEXT),
+                            Node {
+                                width: px(190),
+                                flex_shrink: 0.0,
+                                ..default()
+                            },
+                        ));
+                        line.spawn(dial_slider(dial, value, low, high, step))
+                            .observe(slider_self_update)
+                            .observe(move |change: On<ValueChange<f32>>, mut settings: ResMut<Settings>| {
+                                *settings.dial(dial) = change.value;
+                                settings.clamp();
+                            });
+                        line.spawn((
+                            Node {
+                                width: px(84),
+                                flex_shrink: 0.0,
+                                justify_content: JustifyContent::Center,
+                                padding: UiRect::vertical(px(9)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(10)),
+                                ..default()
+                            },
+                            BackgroundColor(ui::FIELD),
+                            BorderColor::all(ui::PANEL_EDGE),
+                            children![(ui::weighted("", 15.0, 700, TEXT), DialText(dial))],
+                        ));
+                    });
+            }
+        });
+        row.spawn((
+            settings_box(Node {
+                width: px(380),
+                flex_shrink: 0.0,
+                row_gap: px(12),
+                padding: UiRect::all(px(22)),
+                ..default()
+            }),
+            children![
+                ui::section("Window"),
+                (WindowChoice(false), ui::button("Windowed"), observe(pick_window(false))),
+                (WindowChoice(true), ui::button("Borderless fullscreen"), observe(pick_window(true))),
+                (
+                    Node {
+                        margin: UiRect::top(px(4)),
+                        ..default()
+                    },
+                    children![ui::label("Alt + Enter switches at any time.", 13.0, DIM)],
+                ),
+            ],
+        ));
+    });
+}
+
+fn pick_window(fullscreen: bool) -> impl Fn(On<Activate>, ResMut<Settings>) {
+    move |_, mut settings| {
+        if settings.fullscreen != fullscreen {
+            settings.fullscreen = fullscreen;
+        }
+    }
+}
+
+/// A rail with a round thumb dragged along it, for one of the dials.
+fn dial_slider(dial: Dial, value: f32, low: f32, high: f32, step: f32) -> impl Bundle {
+    (
+        DialSlider(dial),
+        Slider {
+            track_click: TrackClick::Snap,
+            ..default()
+        },
+        SliderValue(value),
+        SliderRange::new(low, high),
+        SliderStep(step),
+        Hovered::default(),
+        Node {
+            flex_grow: 1.0,
+            height: px(22),
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        children![
+            (
+                Node {
+                    width: percent(100),
+                    height: px(6),
+                    border_radius: BorderRadius::all(px(3)),
+                    ..default()
+                },
+                BackgroundColor(BUTTON),
+                Pickable::IGNORE,
+                children![(
+                    DialFill(dial),
+                    Node {
+                        height: percent(100),
+                        border_radius: BorderRadius::all(px(3)),
+                        ..default()
+                    },
+                    BackgroundColor(ACCENT),
+                    Pickable::IGNORE,
+                )],
+            ),
+            (
+                SliderThumb,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: px(DIAL_THUMB),
+                    height: px(DIAL_THUMB),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(TEXT),
+                BoxShadow::new(Color::BLACK.with_alpha(0.5), px(0), px(2), px(0), px(8)),
+            ),
+        ],
+    )
+}
+
+const DIAL_THUMB: f32 = 22.0;
+
+/// Puts each dial's thumb where its value is along the rail, and fills the
+/// rail up to it.
+fn place_dial_thumbs(
+    sliders: Query<(&DialSlider, &SliderValue, &SliderRange, &Hovered, &ComputedNode, &Children)>,
+    mut thumbs: Query<(&mut Node, &mut BackgroundColor), (With<SliderThumb>, Without<DialFill>)>,
+    mut fills: Query<(&DialFill, &mut Node), Without<SliderThumb>>,
+) {
+    for (dial, value, range, hovered, computed, children) in &sliders {
+        let along = range.thumb_position(value.0);
+        let width = computed.size().x * computed.inverse_scale_factor;
+        for child in children.iter() {
+            if let Ok((mut node, mut background)) = thumbs.get_mut(child) {
+                let left = px(along * (width - DIAL_THUMB).max(0.0));
+                if node.left != left {
+                    node.left = left;
+                }
+                background.set_if_neq(BackgroundColor(if hovered.get() { ACCENT } else { TEXT }));
+            }
+        }
+        for (fill, mut node) in &mut fills {
+            let wanted = percent(along * 100.0);
+            if fill.0 == dial.0 && node.width != wanted {
+                node.width = wanted;
+            }
+        }
+    }
+}
+
+/// The key bindings, in three groups.
+fn controls_page(page: &mut ChildSpawnerCommands) {
+    page.spawn(ui::label(
+        "Click a key to change it, then press the new key, mouse button or scroll. Each action takes two. Right-click a key to clear it.",
+        14.0,
+        DIM,
+    ));
+    page.spawn(Node {
+        flex_grow: 1.0,
+        min_height: px(0),
+        column_gap: px(18),
+        align_items: AlignItems::FlexStart,
+        ..default()
+    })
+    .with_children(|groups| {
+        for (title, actions) in CONTROL_GROUPS {
+            groups
+                .spawn(settings_box(Node {
+                    flex_grow: 1.0,
+                    flex_basis: px(0),
+                    row_gap: px(4),
+                    padding: UiRect::axes(px(18), px(16)),
+                    ..default()
+                }))
+                .with_children(|group| {
+                    group.spawn((
+                        Node {
+                            margin: UiRect::bottom(px(6)),
+                            ..default()
+                        },
+                        children![ui::section(title)],
+                    ));
+                    for &action in *actions {
+                        group
+                            .spawn(Node {
+                                align_items: AlignItems::Center,
+                                column_gap: px(6),
+                                min_height: px(40),
+                                ..default()
+                            })
+                            .with_children(|row| {
+                                row.spawn((
+                                    ui::weighted(action.label(), 14.0, 600, TEXT),
+                                    Node {
+                                        flex_grow: 1.0,
+                                        ..default()
+                                    },
+                                ));
+                                for slot in 0..BIND_SLOTS {
+                                    row.spawn((
+                                        Button,
+                                        Hovered::default(),
+                                        ui::ButtonKind::Normal,
+                                        Node {
+                                            width: px(BIND_BUTTON_WIDTH),
+                                            flex_shrink: 0.0,
+                                            justify_content: JustifyContent::Center,
+                                            padding: UiRect::axes(px(4), px(7)),
+                                            border: UiRect::all(px(1)),
+                                            border_radius: BorderRadius::all(px(8)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(BUTTON),
+                                        BorderColor::all(ui::BUTTON_EDGE),
+                                        children![(ui::weighted("", 12.0, 700, TEXT), Pickable::IGNORE, BindText(action, slot))],
+                                    ))
+                                    .observe(click_bind(action, slot));
+                                }
+                            });
+                    }
+                });
+        }
+    });
+}
+
+/// The controls page's groups of actions.
+const CONTROL_GROUPS: &[(&str, &[Action])] = &[
+    (
+        "Move",
+        &[Action::Forward, Action::Back, Action::Left, Action::Right, Action::Jump, Action::Crouch, Action::Dash],
+    ),
+    ("Fight", &[Action::Fire, Action::Aim, Action::Reload, Action::Grenade, Action::Ping, Action::Scores]),
+    (
+        "Weapons",
+        &[Action::Primary, Action::Secondary, Action::Knife, Action::NextWeapon, Action::PreviousWeapon],
+    ),
+];
+
+/// Each of an action's key buttons.
+const BIND_BUTTON_WIDTH: i32 = 104;
 
 /// An observer for a key button: a click waits for the key to put in that
 /// slot, a right-click empties it.
@@ -1030,14 +1237,32 @@ fn click_bind(
     }
 }
 
-/// An observer that moves `dial` one step up or down when its button is clicked.
-fn turn_dial(dial: Dial, direction: f32) -> impl Fn(On<Activate>, ResMut<Settings>) {
-    move |_, mut settings| {
-        let (_, step, ..) = dial.info();
-        let value = settings.dial(dial);
-        // Snap to whole steps, so repeated clicks do not drift (0.1 is not exact in binary).
-        *value = ((*value / step).round() + direction) * step;
-        settings.clamp();
+/// Marks the page shown and the window mode picked, and keeps the sliders
+/// where the settings are (Alt + Enter, and a dial's clamping, change them too).
+fn style_panel(
+    mut commands: Commands,
+    menu: Res<SettingsMenu>,
+    mut settings: ResMut<Settings>,
+    mut buttons: Query<(Option<&TabButton>, Option<&WindowChoice>, &mut ui::ButtonKind, &mut BorderColor)>,
+    sliders: Query<(Entity, &DialSlider, &SliderValue)>,
+) {
+    for (tab, window, mut kind, mut border) in &mut buttons {
+        let picked = match (tab, window) {
+            (Some(tab), _) => tab.0 == menu.tab,
+            (_, Some(window)) => window.0 == settings.fullscreen,
+            _ => continue,
+        };
+        let wanted = if picked { ui::ButtonKind::Picked } else { ui::ButtonKind::Normal };
+        if *kind != wanted {
+            *kind = wanted;
+            *border = BorderColor::all(wanted.edge());
+        }
+    }
+    for (entity, slider, value) in &sliders {
+        let wanted = *settings.bypass_change_detection().dial(slider.0);
+        if (value.0 - wanted).abs() > 1e-4 {
+            commands.entity(entity).insert(SliderValue(wanted));
+        }
     }
 }
 
@@ -1046,12 +1271,7 @@ fn update_panel(
     menu: Res<SettingsMenu>,
     mut dials: Query<(&DialText, &mut Text), Without<BindText>>,
     mut binds: Query<(&BindText, &mut Text, &mut TextColor), Without<DialText>>,
-    mut display: Query<&mut Text, (With<DisplayText>, Without<DialText>, Without<BindText>)>,
 ) {
-    for mut text in &mut display {
-        let shown = if settings.fullscreen { "Borderless fullscreen" } else { "Windowed" };
-        ui::set_text(&mut text, shown.to_string());
-    }
     for (dial, mut text) in &mut dials {
         ui::set_text(&mut text, settings.dial_text(dial.0));
     }
@@ -1142,18 +1362,15 @@ mod tests {
         assert_eq!(settings.sight_for(smg), RED_DOT);
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(RIFLE), RED_DOT, "the rifle's default");
-        settings.step_sight(0, 1);
-        assert_eq!(settings.sight_for(shotgun), TWO_X, "the shotgun takes only the 2x");
-        settings.step_sight(0, 1);
+        settings.set_sight(0, RED_DOT);
+        assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS, "the shotgun takes only the 2x");
+        settings.set_sight(0, TWO_X);
+        assert_eq!(settings.sight_for(shotgun), TWO_X);
+        settings.set_sight(0, IRON_SIGHTS);
         assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
-        settings.step_sight(1, 1);
+        settings.set_sight(1, REFLEX);
         assert_eq!(settings.sight_for(smg), REFLEX);
-        settings.step_sight(1, 1);
-        assert_eq!(settings.sight_for(smg), TWO_X);
-        settings.step_sight(1, 1);
-        assert_eq!(settings.sight_for(smg), IRON_SIGHTS, "cycling wraps round");
-        settings.step_sight(1, -1);
-        assert_eq!(settings.sight_for(smg), TWO_X, "and back");
+        assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS, "each gun keeps its own");
     }
 
     #[test]
@@ -1164,20 +1381,14 @@ sight.Pistol = Scope
 ");
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(SNIPER), SCOPE, "the sniper's default");
-        let mut seen = Vec::new();
-        for _ in 0..5 {
-            settings.step_sight(0, 1);
-            seen.push(settings.sight_for(SNIPER));
+        for sight in [IRON_SIGHTS, RED_DOT, REFLEX, TWO_X, SCOPE] {
+            settings.set_sight(0, sight);
+            assert_eq!(settings.sight_for(SNIPER), sight);
         }
-        assert_eq!(seen, [IRON_SIGHTS, RED_DOT, REFLEX, TWO_X, SCOPE]);
-        settings.step_sight(1, 1);
+        settings.set_sight(1, RED_DOT);
         assert_eq!(settings.sight_for(PISTOL), RED_DOT);
-        settings.step_sight(1, 1);
-        assert_eq!(settings.sight_for(PISTOL), REFLEX);
-        settings.step_sight(1, 1);
-        assert_eq!(settings.sight_for(PISTOL), TWO_X);
-        settings.step_sight(1, 1);
-        assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS, "the pistol skips the scope");
+        settings.set_sight(1, SCOPE);
+        assert_eq!(settings.sight_for(PISTOL), RED_DOT, "the pistol takes no scope");
     }
 
     #[test]

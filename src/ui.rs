@@ -26,7 +26,7 @@ use crate::{
     menu::{Field, MenuPage},
     net::{self, Connection, Session},
     paint::{Skins, palette_color},
-    loadout::{LoadoutCard, loadout_card, loadout_summary, on_open_loadout},
+    loadout::{DeathLoadout, death_loadout, loadout_summary, on_open_loadout},
     paint_editor::on_open_paint,
     player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, ask_respawn},
     protocol::*,
@@ -381,36 +381,10 @@ pub fn soft_shadow() -> BoxShadow {
     BoxShadow::new(Color::BLACK.with_alpha(0.45), px(0), px(24), px(0), px(48))
 }
 
-/// A box inside a panel that groups a few controls under a `section` caption.
-pub fn card() -> impl Bundle {
-    (card_node(), BackgroundColor(CARD), BorderColor::all(PANEL_EDGE))
-}
-
-pub fn card_node() -> Node {
-    Node {
-        flex_direction: FlexDirection::Column,
-        row_gap: px(12),
-        padding: UiRect::all(px(18)),
-        border: UiRect::all(px(1)),
-        border_radius: BorderRadius::all(px(16)),
-        ..default()
-    }
-}
-
 pub fn button_row() -> Node {
     Node {
         column_gap: px(10),
         align_items: AlignItems::Center,
-        ..default()
-    }
-}
-
-/// A row with its two ends pushed apart: a caption and what it is about.
-pub fn spread_row() -> Node {
-    Node {
-        align_items: AlignItems::Center,
-        justify_content: JustifyContent::SpaceBetween,
-        column_gap: px(12),
         ..default()
     }
 }
@@ -1299,11 +1273,25 @@ enum Hud {
     /// "Get ready" before our first spawn.
     Center,
     /// On the death screen: who killed us.
-    Killed,
-    /// Under it: how long until we respawn, and how to do it now.
-    Respawn,
-    /// Under the loadout on the death screen: the keys that change it.
-    DeadKeys,
+    Killer,
+    /// Under it: how many kills that makes for them.
+    KillerNote,
+    /// The seconds until we respawn.
+    RespawnIn,
+    /// How to respawn now.
+    RespawnHint,
+    /// A tip, a different one each death.
+    Tip,
+    /// The pause menu's lines: the time left, the map and mode, and how we are doing.
+    PauseClock,
+    PauseInfo,
+    PausePlace,
+    PauseKills,
+    PauseDeaths,
+    /// The scoreboard's title: the map and what wins, the mode, and the time left.
+    ScoreCaption,
+    ScoreMode,
+    ScoreClock,
     /// Under the crosshair: the grenade in hand, and what a click does with it
     /// (or a cooking frag's fuse).
     Hand,
@@ -1346,8 +1334,6 @@ enum Overlay {
 
 #[derive(Component)]
 struct ScoreboardPanel;
-#[derive(Component)]
-struct ScoreboardText;
 #[derive(Component)]
 struct PausePanel;
 
@@ -1785,8 +1771,9 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     ));
 
     // The death screen: who got us, when we respawn, and the loadout we will
-    // respawn with. The mouse is free while it shows, so the loadout can be
-    // changed; a click anywhere off the card respawns us.
+    // respawn with, as on the loadout screen. The mouse is free while it
+    // shows, so the loadout can be changed; a click anywhere off the panel
+    // respawns us.
     commands.spawn((
         DeathScreen,
         Node {
@@ -1796,143 +1783,274 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             // Clear of the clock and scores at the top, and conquest's flags.
-            padding: UiRect::top(px(140)),
-            row_gap: px(8),
+            padding: UiRect::top(px(118)),
+            row_gap: px(16),
             display: Display::None,
             ..default()
         },
+        BackgroundColor(Color::srgba(0.11, 0.03, 0.02, 0.45)),
         DespawnOnExit(AppState::Playing),
         observe(on_death_screen_click),
         children![
-            hud_text(30.0, DANGER, Hud::Killed),
-            hud_text(20.0, TEXT, Hud::Respawn),
             (
                 Node {
-                    margin: UiRect::top(px(6)),
-                    column_gap: px(18),
-                    align_items: AlignItems::Start,
+                    width: px(760),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
                     ..default()
                 },
                 children![
-                    crate::minimap::deploy_map(),
-                    loadout_card(320.0, PANEL, hud_text(14.0, DIM, Hud::DeadKeys)),
+                    (
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(4),
+                            ..default()
+                        },
+                        children![
+                            weighted("FRAGGED BY", 12.0, 700, DANGER_TEXT),
+                            (heading("", 44.0, ENEMY), Hud::Killer, hud_shadow()),
+                            (label("", 15.0, TEXT), Hud::KillerNote, hud_shadow()),
+                        ],
+                    ),
+                    (
+                        Node {
+                            align_items: AlignItems::Center,
+                            column_gap: px(14),
+                            ..default()
+                        },
+                        children![
+                            (
+                                Node {
+                                    flex_direction: FlexDirection::Column,
+                                    align_items: AlignItems::FlexEnd,
+                                    row_gap: px(3),
+                                    ..default()
+                                },
+                                children![
+                                    (weighted("RESPAWN IN", 12.0, 700, TEXT), hud_shadow()),
+                                    (label("", 13.0, TEXT), Hud::RespawnHint, hud_shadow()),
+                                ],
+                            ),
+                            (
+                                Node {
+                                    width: px(76),
+                                    height: px(76),
+                                    justify_content: JustifyContent::Center,
+                                    align_items: AlignItems::Center,
+                                    border: UiRect::all(px(5)),
+                                    border_radius: BorderRadius::MAX,
+                                    ..default()
+                                },
+                                BackgroundColor(PANEL),
+                                BorderColor::all(ACCENT),
+                                children![(heading("", 30.0, TEXT), Hud::RespawnIn)],
+                            ),
+                        ],
+                    ),
                 ],
             ),
-            (primary_button("Respawn"), RespawnButton, observe(on_respawn_button)),
+            (
+                Node {
+                    column_gap: px(16),
+                    align_items: AlignItems::Start,
+                    ..default()
+                },
+                children![crate::minimap::deploy_map(), death_loadout()],
+            ),
+            (
+                Node {
+                    width: px(760),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    column_gap: px(20),
+                    ..default()
+                },
+                children![
+                    (
+                        Node {
+                            align_items: AlignItems::Center,
+                            column_gap: px(12),
+                            padding: UiRect::new(px(6), px(16), px(8), px(8)),
+                            border_radius: BorderRadius::all(px(12)),
+                            flex_shrink: 1.0,
+                            ..default()
+                        },
+                        BackgroundColor(PANEL.with_alpha(0.85)),
+                        children![
+                            (
+                                Node {
+                                    padding: UiRect::axes(px(8), px(3)),
+                                    border_radius: BorderRadius::all(px(8)),
+                                    ..default()
+                                },
+                                BackgroundColor(BUTTON_HOVER),
+                                children![weighted("TIP", 11.0, 700, TEXT)],
+                            ),
+                            (label("", 14.0, TEXT), Hud::Tip),
+                        ],
+                    ),
+                    (
+                        Node {
+                            flex_shrink: 0.0,
+                            ..default()
+                        },
+                        children![(primary_button("Respawn now"), RespawnButton, observe(on_respawn_button))],
+                    ),
+                ],
+            ),
         ],
     ));
 
+    // The scoreboard, while the key is held: over everything else, which it
+    // hides (see `update_overlays`).
     commands.spawn((
         hud_layer(),
         ScoreboardPanel,
+        GlobalZIndex(12),
         children![(
-            panel(),
-            children![(label("", 16.0, DIM), ScoreboardText), roster_list(ROSTER_WIDTH)],
+            Node {
+                min_width: px(640),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(10),
+                padding: UiRect::axes(px(28), px(26)),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(26)),
+                ..default()
+            },
+            BackgroundColor(PANEL),
+            BorderColor::all(PANEL_EDGE),
+            soft_shadow(),
+            children![
+                (
+                    Node {
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::FlexEnd,
+                        margin: UiRect::bottom(px(6)),
+                        ..default()
+                    },
+                    children![
+                        (
+                            Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(6),
+                                ..default()
+                            },
+                            children![
+                                (weighted("", 12.0, 700, DIM), Hud::ScoreCaption),
+                                (heading("", 30.0, TEXT), Hud::ScoreMode),
+                            ],
+                        ),
+                        (heading("", 30.0, ACCENT), Hud::ScoreClock),
+                    ],
+                ),
+                roster_list(ROSTER_WIDTH),
+                (
+                    Node {
+                        align_items: AlignItems::Center,
+                        column_gap: px(8),
+                        margin: UiRect::top(px(6)),
+                        ..default()
+                    },
+                    children![label("Shows while you hold", 13.0, DIM), key_chip(Action::Scores)],
+                ),
+            ],
         )],
     ));
 
-    // Pause menu. Spawned last so it is on top; this one does take clicks.
-    commands
-        .spawn((
+    // Pause menu: what to do, and how the match is going. It takes clicks.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            height: percent(100),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            display: Display::None,
+            ..default()
+        },
+        PausePanel,
+        GlobalZIndex(10),
+        BackgroundColor(SCRIM.with_alpha(0.66)),
+        DespawnOnExit(AppState::Playing),
+        children![(
             Node {
-                position_type: PositionType::Absolute,
-                width: percent(100),
-                height: percent(100),
+                width: px(440),
                 flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                display: Display::None,
+                row_gap: px(10),
+                padding: UiRect::all(px(28)),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(26)),
                 ..default()
             },
-            PausePanel,
-            GlobalZIndex(10),
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
-            DespawnOnExit(AppState::Playing),
-        ))
-        .with_children(|screen| {
-            screen.spawn(panel()).with_children(|panel| {
-                panel.spawn(heading("Paused", 34.0, TEXT));
-                panel.spawn((
-                    button_row(),
-                    children![
-                        (primary_button("Resume"), observe(on_resume)),
-                        (button("Settings"), observe(on_open_settings)),
-                        (button("End match"), LeaderOnly, observe(send_on_click(ClientMsg::EndMatch))),
-                        (danger_button("Leave"), observe(on_leave)),
-                    ],
-                ));
-                panel
-                    .spawn(Node {
-                        column_gap: px(14),
-                        margin: UiRect::top(px(4)),
+            BackgroundColor(PANEL),
+            BorderColor::all(PANEL_EDGE),
+            soft_shadow(),
+            children![
+                (
+                    Node {
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Baseline,
                         ..default()
-                    })
-                    .with_children(|cards| {
-                        cards.spawn(card()).with_children(|card| {
-                            card.spawn(section("Controls"));
-                            for (actions, what) in KEY_HINTS {
-                                card.spawn(Node {
-                                    align_items: AlignItems::Center,
-                                    column_gap: px(6),
-                                    ..default()
-                                })
-                                .with_children(|row| {
-                                    for action in actions.iter().copied() {
-                                        row.spawn(key_chip(action));
-                                    }
-                                    row.spawn((
-                                        label(*what, 15.0, DIM),
-                                        Node {
-                                            margin: UiRect::left(px(4)),
-                                            ..default()
-                                        },
-                                    ));
-                                });
-                            }
-                        });
-                        // Side by side rather than stacked, so it all fits a 720p window.
-                        cards.spawn(loadout_card(
-                            300.0,
-                            CARD,
-                            label("Handed out the next time you spawn.", 14.0, DIM),
-                        ));
-                        cards.spawn((
-                            Node {
-                                width: px(260),
-                                ..card_node()
-                            },
-                            BackgroundColor(CARD),
-                            BorderColor::all(HUD_EDGE),
-                            children![
-                                section("Tips"),
-                                label("Strafe and turn in the air to build speed.", 14.0, DIM),
-                                label("Green pads launch you: arrows throw you their way, plain ones keep your momentum.", 14.0, DIM),
-                                label("Bullets take time to arrive: lead moving targets.", 14.0, DIM),
-                                label("Team modes: your pings show only to your team.", 14.0, DIM),
-                                label(format!("Health returns after {REGEN_DELAY} s unhurt."), 14.0, DIM),
-                                label(format!("Armor takes damage before health and never comes back by itself. You spawn with {START_ARMOR}; blue plates give {ARMOR_PICKUP} more, up to {MAX_ARMOR}."), 14.0, DIM),
-                            ],
-                        ));
-                    });
-            });
-        });
+                    },
+                    children![heading("Paused", 34.0, TEXT), (weighted("", 14.0, 600, DIM), Hud::PauseClock)],
+                ),
+                (label("", 14.0, DIM), Hud::PauseInfo),
+                (
+                    Node {
+                        column_gap: px(8),
+                        margin: UiRect::vertical(px(8)),
+                        ..default()
+                    },
+                    children![
+                        pause_fact("Place", Hud::PausePlace),
+                        pause_fact("Kills", Hud::PauseKills),
+                        pause_fact("Deaths", Hud::PauseDeaths),
+                    ],
+                ),
+                (primary_button("Resume"), observe(on_resume)),
+                (button("Loadout"), observe(on_open_loadout)),
+                (button("Settings"), observe(on_open_settings)),
+                (
+                    button("End match for everyone"),
+                    LeaderOnly,
+                    observe(send_on_click(ClientMsg::EndMatch)),
+                ),
+                (danger_button("Leave match"), observe(on_leave)),
+            ],
+        )],
+    ));
 }
 
-/// The controls listed in the pause menu: the actions whose keys are shown,
-/// and what they do.
-const KEY_HINTS: &[(&[Action], &str)] = &[
-    (&[Action::Forward, Action::Left, Action::Back, Action::Right], "Move"),
-    (&[Action::Jump], "Jump, and again in the air (hold: bunny hop)"),
-    (&[Action::Dash], "Dash"),
-    (&[Action::Crouch], "Crouch (while running: slide)"),
-    (&[Action::Fire], "Fire"),
-    (&[Action::Aim], "Aim down sights"),
-    (&[Action::Reload], "Reload"),
-    (&[Action::Grenade], "Take out your grenade, click to throw"),
-    (&[Action::Ping], "Ping an enemy (or a spot) for your team"),
-    (&[Action::Primary, Action::Secondary, Action::Knife], "Weapons"),
-    (&[Action::PreviousWeapon, Action::NextWeapon], "Previous / next weapon"),
-    (&[Action::Scores], "Scoreboard"),
+/// One number on the pause menu, under its caption.
+fn pause_fact(caption: &str, hud: Hud) -> impl Bundle + use<> {
+    (
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(2),
+            padding: UiRect::axes(px(12), px(10)),
+            border_radius: BorderRadius::all(px(12)),
+            ..default()
+        },
+        BackgroundColor(CARD),
+        children![
+            weighted(caption.to_uppercase(), 10.0, 700, DIM),
+            (weighted("", 18.0, 700, TEXT), hud),
+        ],
+    )
+}
+
+/// One of these shows under the loadout on the death screen, a different one
+/// each death.
+const TIPS: &[&str] = &[
+    "Strafe and turn in the air to build speed.",
+    "Green pads launch you: arrows throw you their way, plain ones keep your momentum.",
+    "Bullets take time to arrive: lead moving targets.",
+    "Team modes: your pings show only to your team.",
+    "Health comes back after a few seconds without getting hit.",
+    "Armor takes damage before health and never comes back by itself: grab the blue plates.",
+    "Crouch while running to slide.",
 ];
 
 /// The name of the key an action is bound to, in a little box.
@@ -1997,13 +2115,13 @@ fn show_respawn_button(session: Res<Session>, mut button: Query<&mut Node, With<
     }
 }
 
-/// A left click on the death screen respawns us, unless it is on the card
+/// A left click on the death screen respawns us, unless it is on the loadout
 /// (or on the button, which does that itself). The click bubbles up to the
 /// screen from whatever was under the pointer.
 fn on_death_screen_click(
     click: On<PointerClick>,
     parents: Query<&ChildOf>,
-    keep: Query<(), Or<(With<LoadoutCard>, With<RespawnButton>, With<crate::minimap::DeployMap>)>>,
+    keep: Query<(), Or<(With<DeathLoadout>, With<RespawnButton>, With<crate::minimap::DeployMap>)>>,
     session: Res<Session>,
     mut player: ResMut<LocalPlayer>,
     connection: Option<ResMut<Connection>>,
@@ -2102,7 +2220,7 @@ fn top_bar(session: &Session) -> TopBar {
 
 fn update_hud(
     session: Res<Session>,
-    settings: Res<Settings>,
+    map: Res<GameMap>,
     player: Res<LocalPlayer>,
     feed: Res<KillFeed>,
     notices: Res<Notices>,
@@ -2114,6 +2232,34 @@ fn update_hud(
     fps.tick(time.delta_secs());
     let ping = connection.as_ref().map_or(0.0, |c| c.ping_ms());
     let top = top_bar(&session);
+    let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
+    let mode_name = MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?");
+    let me = session.roster.iter().find(|p| p.id == session.my_id);
+    // Where we stand: best score first, as on the scoreboard.
+    let place = {
+        let mut order: Vec<_> = session.roster.iter().collect();
+        order.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+        let at = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
+        let suffix = match (at % 10, at % 100) {
+            (1, n) if n != 11 => "st",
+            (2, n) if n != 12 => "nd",
+            (3, n) if n != 13 => "rd",
+            _ => "th",
+        };
+        format!("{at}{suffix} of {}", order.len())
+    };
+    // Who killed us, without the bot tag, and how many kills they have.
+    let killer_name = player.killed_by.as_deref().unwrap_or("?");
+    let killer = killer_name.strip_prefix("[bot] ").unwrap_or(killer_name).to_string();
+    let killer_info = session.roster.iter().find(|p| p.name == killer_name);
+    let by_myself = killer_info.is_some_and(|p| p.id == session.my_id);
+    let killer_kills = killer_info.map(|p| p.kills).filter(|_| !by_myself);
+    let killer_leads = killer_info.is_some_and(|k| session.roster.iter().all(|p| p.id == k.id || p.kills < k.kills));
+    let killed_with = match player.killed_with {
+        Some(crate::weapons::GRENADE) => "With a grenade".to_string(),
+        Some(id) if (id as usize) < crate::weapons::WEAPONS.len() => format!("With their {}", crate::weapons::weapon(id).name),
+        _ => String::new(),
+    };
     // A notice fades out over its last half second.
     let notice = |notice: &Option<(String, f32)>, color: Color| match notice {
         Some((text, left)) => (text.clone(), color.with_alpha((left / 0.5).min(1.0))),
@@ -2158,29 +2304,46 @@ fn update_hud(
                 let ready = !player.alive && player.killed_by.is_none();
                 (if ready { "Get ready..." } else { "" }.to_string(), DANGER)
             }
-            Hud::Killed => (format!("Fragged by {}", player.killed_by.as_deref().unwrap_or("?")), DANGER),
-            Hud::Respawn => {
-                let message = if player.respawn_asked {
-                    "Respawning...".to_string()
-                } else {
-                    let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
-                    if early_respawn(session.mode) {
-                        format!("Respawning in {left:.0}  -  click off the card to respawn now")
-                    } else {
-                        format!("Respawning in {left:.0}")
-                    }
+            Hud::Killer => (if by_myself { "YOURSELF".to_string() } else { killer.to_uppercase() }, ENEMY),
+            Hud::KillerNote => {
+                let tally = match killer_kills {
+                    Some(kills) if killer_leads => format!("that's {kills} for {killer}, who leads"),
+                    Some(1) => format!("the first for {killer}"),
+                    Some(kills) => format!("that's {kills} for {killer}"),
+                    None => String::new(),
                 };
-                (message, TEXT)
+                let note = match (killed_with.is_empty(), tally.is_empty()) {
+                    (false, false) => format!("{killed_with}  ·  {tally}"),
+                    (false, true) => killed_with.clone(),
+                    (true, false) => tally,
+                    (true, true) => String::new(),
+                };
+                (note, TEXT)
             }
-            Hud::DeadKeys => (
-                format!(
-                    "{} / {} / {} also step through them.",
-                    settings.key_name(Action::Primary),
-                    settings.key_name(Action::Secondary),
-                    settings.key_name(Action::Grenade),
-                ),
-                DIM,
+            Hud::RespawnIn => {
+                let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
+                (if player.respawn_asked { "…".to_string() } else { format!("{left:.0}") }, TEXT)
+            }
+            Hud::RespawnHint => (
+                if early_respawn(session.mode) { "or click outside the panel" } else { "" }.to_string(),
+                TEXT,
             ),
+            Hud::Tip => (TIPS[me.map_or(0, |p| p.deaths as usize) % TIPS.len()].to_string(), TEXT),
+            Hud::PauseClock => (format!("{} left", format_clock(session.time_left)), DIM),
+            Hud::PauseInfo => (format!("{map_name}  ·  {mode_name}  ·  the match keeps going"), DIM),
+            Hud::PausePlace => (place.clone(), TEXT),
+            Hud::PauseKills => (me.map_or(0, |p| p.kills).to_string(), TEXT),
+            Hud::PauseDeaths => (me.map_or(0, |p| p.deaths).to_string(), TEXT),
+            Hud::ScoreCaption => {
+                let wins = if session.mode == MODE_CONQUEST {
+                    format!("{} TICKETS", session.score_limit)
+                } else {
+                    format!("FIRST TO {}", session.score_limit)
+                };
+                (format!("{}  ·  {wins}", map_name.to_uppercase()), DIM)
+            }
+            Hud::ScoreMode => (mode_name.to_uppercase(), TEXT),
+            Hud::ScoreClock => (format_clock(session.time_left), ACCENT),
             Hud::Hand => match player.hand.filter(|_| player.alive) {
                 Some(hand) => {
                     let name = GRENADES[hand.kind as usize].name.to_uppercase();
@@ -2452,7 +2615,6 @@ fn update_choke_ring(
 fn update_overlays(
     input: ActionInput,
     session: Res<Session>,
-    map: Res<GameMap>,
     player: Res<LocalPlayer>,
     smoke_fog: Res<SmokeFog>,
     controls: Res<Controls>,
@@ -2464,7 +2626,6 @@ fn update_overlays(
         Single<&mut Node, With<DeathScreen>>,
         Single<&mut Node, With<SpeedPanel>>,
     )>,
-    mut scoreboard_title: Single<&mut Text, With<ScoreboardText>>,
 ) {
     // White ticks for a hit, yellow for a headshot; red, and held a little
     // longer, for a kill.
@@ -2488,19 +2649,17 @@ fn update_overlays(
         }
     }
 
-    let paused = !controls.captured;
+    // One of the scoreboard, the pause menu and the death screen at a time,
+    // in that order.
     let show_scores = input.pressed(Action::Scores);
-    set_shown(&mut nodes.p3(), player.on_death_screen());
+    let paused = !controls.captured && !show_scores;
+    let dead = player.on_death_screen() && !paused && !show_scores;
+    set_shown(&mut nodes.p3(), dead);
     set_shown(&mut nodes.p4(), !player.on_death_screen());
     set_shown(&mut nodes.p0(), show_scores);
     set_shown(&mut nodes.p1(), paused);
     for mut node in &mut nodes.p2() {
         set_shown(&mut node, session.is_leader());
-    }
-    if show_scores {
-        let mode = MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?");
-        let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
-        set_text(&mut scoreboard_title, format!("{mode}  -  {map_name}"));
     }
 }
 

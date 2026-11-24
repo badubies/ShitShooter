@@ -12,7 +12,7 @@ The game is installed to `%LOCALAPPDATA%\ShitShooter`, so the launcher can live 
 
 ## Running a lobby server (Raspberry Pi)
 
-A lobby server is an always-on machine where players open and join lobbies without anyone having to host on their own PC. In the game it's the **ONLINE** panel on the main menu: it lists the server's lobbies (any lobby with someone in it) and has an **Open a lobby** button. Whoever opens a lobby leads it and picks the mode, map and bots as usual. A lobby closes 30 seconds after the last person leaves.
+A lobby server is an always-on machine where players open and join lobbies without anyone having to host on their own PC. In the game it's **Play online** on the main menu: it lists the server's lobbies (any lobby with someone in it), and **Open a lobby** opens one of your own. The server's address goes in the box at the top of that page. Whoever opens a lobby leads it and picks the mode, map and bots as usual. A lobby closes 30 seconds after the last person leaves.
 
 A Raspberry Pi 3, 4 or 5 is plenty. The server does no graphics, and each lobby is a light thread. On a home connection your **upload speed** runs out first: a full 16-player lobby sends about 2.5 Mbit/s.
 

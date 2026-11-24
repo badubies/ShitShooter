@@ -34,7 +34,7 @@ use crate::{
     gun_model::{FittedModels, GunHolder},
     protocol::{GRENADE_KINDS, GrenadeKind, grenade},
     settings::{Action, Settings},
-    ui::{self, BUTTON, DIM, KeyHint, TEXT, label, section, set_shown, set_text},
+    ui::{self, DIM, KeyHint, TEXT, label, section, set_text},
     weapons::{GUN_COUNT, IRON_SIGHTS, KNIFE, SightId, WeaponId, sight, sight_on, sights_for, takes_sights, weapon},
     world::GRENADE_MODELS,
 };
@@ -79,6 +79,7 @@ impl Plugin for LoadoutPlugin {
                     frame_thumbnails,
                     update_cards,
                     update_choice_texts,
+                    update_loadout_keys,
                     show_stage,
                 )
                     .chain(),
@@ -138,10 +139,6 @@ impl Thumbnails {
 /// The image the stage camera draws into.
 #[derive(Resource)]
 struct Stage(Handle<Image>);
-
-/// The chevron on the arrow buttons, pointing right.
-#[derive(Resource)]
-struct Chevron(Handle<Image>);
 
 /// What the stage shows when the pointer is on none of the card: the slot last
 /// changed. A click leaves the pointer on the arrow, but until it moves off it
@@ -325,22 +322,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut images: Res
         layer,
     ));
     commands.insert_resource(Stage(stage));
-    commands.insert_resource(Chevron(images.add(chevron_image())));
-}
-
-/// A "›", white on see-through.
-fn chevron_image() -> Image {
-    // Distance from (u, v) to the segment from a to b.
-    let to_segment = |u: f32, v: f32, a: Vec2, b: Vec2| {
-        let p = Vec2::new(u, v);
-        let t = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
-        p.distance(a + (b - a) * t)
-    };
-    let (top, tip, bottom) = (Vec2::new(-0.3, -0.62), Vec2::new(0.3, 0.0), Vec2::new(-0.3, 0.62));
-    ui::mask_image(64, [255, 255, 255], |u, v, pixel| {
-        let distance = to_segment(u, v, top, tip).min(to_segment(u, v, tip, bottom));
-        (0.13 - distance) / pixel + 0.5
-    })
 }
 
 /// The bounds of the parts of `root` that are shown, in the space `to_space`
@@ -501,82 +482,17 @@ impl Slot {
     }
 }
 
-/// The loadout card. Everything in it reads and changes `Settings`.
-#[derive(Component)]
-pub struct LoadoutCard;
-
-/// A button that steps the gun, the sight on it, or the grenade, back or on.
-#[derive(Component, Clone, Copy)]
-pub struct LoadoutArrow {
-    pub slot: Slot,
-    pub sight: bool,
-    /// -1 or 1.
-    pub step: i32,
-}
-
-impl LoadoutArrow {
-    fn apply(self, settings: &mut Settings) {
-        match (self.slot, self.sight) {
-            (Slot::Gun(slot), false) => settings.step_gun(slot, self.step),
-            (Slot::Gun(slot), true) => settings.step_sight(slot, self.step),
-            (Slot::Grenade, _) => settings.step_grenade(self.step),
-        }
-    }
-
-    /// What its slot would hold after a click.
-    fn preview(self, settings: &Settings) -> Preview {
-        let mut after = settings.clone();
-        self.apply(&mut after);
-        self.slot.preview(&after)
-    }
-}
-
-/// The box with a slot's name and picture.
-#[derive(Component)]
-struct SlotBox(Slot);
+/// The name of what is in a slot.
 #[derive(Component)]
 struct SlotName(Slot);
+/// The picture of what is in a slot.
 #[derive(Component)]
 struct SlotImage(Slot);
-/// The row with the sight on a slot's gun and its arrows; only for a gun
-/// that takes sights.
-#[derive(Component)]
-struct SightRow(usize);
-#[derive(Component)]
-struct SightName(usize);
-/// "No sight mount", in place of the sight row.
-#[derive(Component)]
-struct NoMount(usize);
-/// The 3D view at the top of a card.
+/// The 3D view on the loadout screen.
 #[derive(Component)]
 struct StageView;
 #[derive(Component)]
 struct StageCaption;
-/// The image in an arrow button.
-#[derive(Component)]
-struct ChevronIcon;
-
-/// The card: a 3D view, the two guns with their sights, and the grenade,
-/// each with arrows that step through the choices. `footer` goes under it.
-pub fn loadout_card(width: f32, background: Color, footer: impl Bundle) -> impl Bundle {
-    (
-        LoadoutCard,
-        Node {
-            width: px(width),
-            ..ui::card_node()
-        },
-        BackgroundColor(background),
-        BorderColor::all(ui::HUD_EDGE),
-        children![
-            section("Loadout"),
-            stage_view(),
-            gun_slot(0),
-            gun_slot(1),
-            (arrows_around(Slot::Grenade, false, slot_box(Slot::Grenade)), Node { column_gap: px(6), ..default() }),
-            footer,
-        ],
-    )
-}
 
 fn stage_view() -> impl Bundle {
     (
@@ -621,152 +537,6 @@ fn stage_view() -> impl Bundle {
     )
 }
 
-fn gun_slot(slot: usize) -> impl Bundle {
-    (
-        Node {
-            flex_direction: FlexDirection::Column,
-            row_gap: px(5),
-            ..default()
-        },
-        children![
-            (arrows_around(Slot::Gun(slot), false, slot_box(Slot::Gun(slot))), Node { column_gap: px(6), ..default() }),
-            (
-                SightRow(slot),
-                arrows_around(Slot::Gun(slot), true, (
-                    SightName(slot),
-                    label("", 14.0, TEXT),
-                    TextLayout::justify(Justify::Center),
-                    Node {
-                        flex_grow: 1.0,
-                        flex_basis: px(0),
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                )),
-                Node {
-                    column_gap: px(6),
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-            ),
-            (
-                NoMount(slot),
-                label("No sight mount", 13.0, DIM),
-                TextLayout::justify(Justify::Center),
-                Node {
-                    height: px(22),
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ),
-        ],
-    )
-}
-
-/// `inner` with a back arrow before it and an on arrow after it.
-fn arrows_around(slot: Slot, sight: bool, inner: impl Bundle) -> impl Bundle {
-    children![arrow(slot, sight, -1), inner, arrow(slot, sight, 1)]
-}
-
-fn arrow(slot: Slot, sight: bool, step: i32) -> impl Bundle {
-    let arrow = LoadoutArrow { slot, sight, step };
-    let (width, height, icon) = if sight { (24.0, 22.0, 11.0) } else { (28.0, 48.0, 15.0) };
-    (
-        arrow,
-        Button,
-        Hovered::default(),
-        Node {
-            width: px(width),
-            height: px(height),
-            flex_shrink: 0.0,
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
-            ..default()
-        },
-        BackgroundColor(BUTTON),
-        BorderColor::all(ui::BUTTON_EDGE),
-        children![(
-            ChevronIcon,
-            ImageNode::default().with_color(Color::NONE),
-            Node {
-                width: px(icon),
-                height: px(icon),
-                ..default()
-            },
-            // The back arrow is the on arrow mirrored.
-            UiTransform::from_scale(Vec2::new(step as f32, 1.0)),
-            Pickable::IGNORE,
-        )],
-        observe(
-            move |activate: On<Activate>, mut settings: ResMut<Settings>, mut focus: ResMut<LoadoutFocus>| {
-                arrow.apply(&mut settings);
-                settings.save();
-                focus.slot = slot;
-                focus.clicked = Some(activate.entity);
-            },
-        ),
-    )
-}
-
-/// A slot's key and caption, the name of what is in it, and its picture.
-fn slot_box(slot: Slot) -> impl Bundle {
-    (
-        SlotBox(slot),
-        Hovered::default(),
-        Node {
-            // All the same width, whatever they hold.
-            flex_grow: 1.0,
-            flex_basis: px(0),
-            min_width: px(0),
-            height: px(48),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::SpaceBetween,
-            column_gap: px(6),
-            padding: UiRect::new(px(9), px(4), px(0), px(0)),
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
-            ..default()
-        },
-        BackgroundColor(ui::CARD),
-        BorderColor::all(ui::HUD_EDGE),
-        children![
-            (
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: px(2),
-                    ..default()
-                },
-                Pickable::IGNORE,
-                children![
-                    (
-                        Node {
-                            align_items: AlignItems::Center,
-                            column_gap: px(6),
-                            ..default()
-                        },
-                        Pickable::IGNORE,
-                        children![key_chip(slot.action()), (label(slot.caption(), 11.0, DIM), Pickable::IGNORE)],
-                    ),
-                    (SlotName(slot), label("", 17.0, TEXT), Pickable::IGNORE),
-                ],
-            ),
-            (
-                SlotImage(slot),
-                ImageNode::default().with_color(Color::NONE),
-                Node {
-                    width: px(104),
-                    height: px(39),
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ),
-        ],
-    )
-}
-
 /// A small box with the key an action is bound to.
 fn key_chip(action: Action) -> impl Bundle {
     (
@@ -787,22 +557,16 @@ fn key_chip(action: Action) -> impl Bundle {
     )
 }
 
-/// Keeps every card's names, pictures and sight rows in step with the loadout.
+/// Keeps the names and pictures of what is in each slot in step with the loadout.
 fn update_cards(
     settings: Res<Settings>,
     thumbnails: Res<Thumbnails>,
-    chevron: Res<Chevron>,
-    mut texts: ParamSet<(Query<(&SlotName, &mut Text)>, Query<(&SightName, &mut Text)>)>,
-    mut images: ParamSet<(Query<(&SlotImage, &mut ImageNode)>, Query<&mut ImageNode, Added<ChevronIcon>>)>,
-    mut rows: ParamSet<(Query<(&SightRow, &mut Node)>, Query<(&NoMount, &mut Node)>)>,
-    added: Query<(), Or<(Added<LoadoutCard>, Added<SlotName>)>>,
+    mut texts: Query<(&SlotName, &mut Text)>,
+    mut images: Query<(&SlotImage, &mut ImageNode)>,
+    added: Query<(), Added<SlotName>>,
 ) {
-    for mut icon in &mut images.p1() {
-        icon.image = chevron.0.clone();
-        icon.color = Color::WHITE;
-    }
     // The thumbnails fill in over the first frames, so those are checked always.
-    for (slot, mut image) in &mut images.p0() {
+    for (slot, mut image) in &mut images {
         if let Some(handle) = thumbnails.get(slot.0.preview(&settings))
             && image.image != handle
         {
@@ -813,34 +577,22 @@ fn update_cards(
     if !settings.is_changed() && added.is_empty() {
         return;
     }
-    for (slot, mut text) in &mut texts.p0() {
+    for (slot, mut text) in &mut texts {
         let name = match slot.0 {
             Slot::Gun(slot) => weapon(settings.gun(slot)).name,
             Slot::Grenade => grenade(settings.grenade).name,
         };
         set_text(&mut text, name.to_string());
     }
-    for (slot, mut text) in &mut texts.p1() {
-        set_text(&mut text, sight(settings.sight_for(settings.gun(slot.0))).name.to_string());
-    }
-    for (row, mut node) in &mut rows.p0() {
-        set_shown(&mut node, takes_sights(settings.gun(row.0)));
-    }
-    for (row, mut node) in &mut rows.p1() {
-        set_shown(&mut node, !takes_sights(settings.gun(row.0)));
-    }
 }
 
-/// Shows on the stage what the pointer is on (for an arrow: what it would
-/// give), or else the slot last changed; and runs its camera only while a
-/// card is on screen.
+/// Shows on the stage the card the pointer is on, or else the slot last
+/// changed; and runs its camera only while the loadout screen is up.
 fn show_stage(
     time: Res<Time>,
     settings: Res<Settings>,
     stage: Res<Stage>,
-    mut focus: ResMut<LoadoutFocus>,
-    arrows: Query<(Entity, &LoadoutArrow, &Hovered)>,
-    boxes: Query<(&SlotBox, &Hovered)>,
+    focus: Res<LoadoutFocus>,
     views: Query<(&ComputedNode, &InheritedVisibility, &Children), With<StageView>>,
     mut view_images: Query<&mut ImageNode>,
     mut captions: Query<&mut Text, With<StageCaption>>,
@@ -871,18 +623,7 @@ fn show_stage(
         }
     }
 
-    // Once the pointer has left the arrow just clicked, it previews again.
-    if let Some(clicked) = focus.clicked
-        && !arrows.get(clicked).is_ok_and(|(_, _, hovered)| hovered.get())
-    {
-        focus.clicked = None;
-    }
-    let pointed = arrows
-        .iter()
-        .find(|(entity, _, hovered)| hovered.get() && focus.clicked != Some(*entity))
-        .map(|(_, arrow, _)| arrow.preview(&settings));
-    let boxed = boxes.iter().find(|(_, hovered)| hovered.get()).map(|(slot, _)| slot.0.preview(&settings));
-    let preview = pointed.or(boxed).or(focus.hover).unwrap_or_else(|| focus.slot.preview(&settings));
+    let preview = focus.hover.unwrap_or_else(|| focus.slot.preview(&settings));
 
     for mut caption in &mut captions {
         set_text(&mut caption, preview.caption());
@@ -1003,6 +744,8 @@ struct ScreenRoot;
 #[derive(Component, Default)]
 struct ChoicesPanel {
     shown: Option<(Slot, WeaponId)>,
+    /// Smaller cards, for the death screen.
+    compact: bool,
 }
 /// The picture on a card.
 #[derive(Component)]
@@ -1068,7 +811,7 @@ fn screen_bundle() -> impl Bundle {
         },
         // Over the lobby and the pause menu; under the settings panel.
         GlobalZIndex(15),
-        BackgroundColor(ui::SCRIM.with_alpha(0.98)),
+        BackgroundColor(ui::SCRIM.with_alpha(1.0)),
         children![(
             Node {
                 width: percent(100),
@@ -1105,7 +848,11 @@ fn screen_bundle() -> impl Bundle {
                         column_gap: px(16),
                         ..default()
                     },
-                    children![slot_card(Slot::Gun(0)), slot_card(Slot::Gun(1)), slot_card(Slot::Grenade)],
+                    children![
+                        slot_card(Slot::Gun(0), false),
+                        slot_card(Slot::Gun(1), false),
+                        slot_card(Slot::Grenade, false),
+                    ],
                 ),
                 (
                     Node {
@@ -1163,7 +910,7 @@ fn screen_bundle() -> impl Bundle {
 }
 
 /// A slot across the top: its key and caption, what is in it, and its picture.
-fn slot_card(slot: Slot) -> impl Bundle {
+fn slot_card(slot: Slot, compact: bool) -> impl Bundle {
     let choice = Choice::Slot(slot);
     (
         choice,
@@ -1174,7 +921,7 @@ fn slot_card(slot: Slot) -> impl Bundle {
             flex_grow: 1.0,
             flex_basis: px(0),
             min_width: px(0),
-            height: px(108),
+            height: px(if compact { 80 } else { 108 }),
             align_items: AlignItems::Center,
             column_gap: px(12),
             padding: UiRect::axes(px(18), px(0)),
@@ -1188,7 +935,7 @@ fn slot_card(slot: Slot) -> impl Bundle {
         children![
             (
                 Node {
-                    width: px(120),
+                    width: px(if compact { 96 } else { 120 }),
                     flex_shrink: 0.0,
                     flex_direction: FlexDirection::Column,
                     row_gap: px(5),
@@ -1227,7 +974,7 @@ fn slot_card(slot: Slot) -> impl Bundle {
 }
 
 /// A card with a gun's or grenade's picture and name.
-fn picture_card(choice: Choice, name: &str, note: &str, blocked: bool) -> impl Bundle + use<> {
+fn picture_card(choice: Choice, name: &str, note: &str, blocked: bool, compact: bool) -> impl Bundle + use<> {
     (
         choice,
         Button,
@@ -1237,7 +984,7 @@ fn picture_card(choice: Choice, name: &str, note: &str, blocked: bool) -> impl B
             flex_grow: 1.0,
             flex_basis: px(0),
             min_width: px(0),
-            height: px(128),
+            height: px(if compact { 100 } else { 128 }),
             flex_direction: FlexDirection::Column,
             padding: UiRect::new(px(12), px(12), px(10), px(12)),
             border: UiRect::all(px(1)),
@@ -1334,6 +1081,7 @@ fn fill_choices(
         Slot::Grenade => WeaponId::MAX,
     };
     for (entity, mut panel) in &mut panels {
+        let compact = panel.compact;
         if panel.shown == Some((screen.slot, gun)) {
             continue;
         }
@@ -1345,22 +1093,26 @@ fn fill_choices(
             };
             match screen.slot {
                 Slot::Gun(slot) => {
-                    panel.spawn(section(&format!("Gun in slot {}", slot + 1)));
+                    if !compact {
+                        panel.spawn(section(&format!("Gun in slot {}", slot + 1)));
+                    }
                     panel.spawn(row()).with_children(|cards| {
                         for choice in (0..GUN_COUNT).map(|gun| Choice::Gun(slot, gun)) {
                             let blocked = choice.blocked(&settings);
                             let Choice::Gun(_, id) = choice else { continue };
                             let note = if blocked { format!("In slot {}", 2 - slot) } else { String::new() };
-                            cards.spawn(picture_card(choice, weapon(id).name, &note, blocked));
+                            cards.spawn(picture_card(choice, weapon(id).name, &note, blocked, compact));
                         }
                     });
-                    panel.spawn((
-                        Node {
-                            margin: UiRect::top(px(8)),
-                            ..default()
-                        },
-                        children![section(&format!("Sight on the {}", weapon(gun).name))],
-                    ));
+                    if !compact {
+                        panel.spawn((
+                            Node {
+                                margin: UiRect::top(px(8)),
+                                ..default()
+                            },
+                            children![section(&format!("Sight on the {}", weapon(gun).name))],
+                        ));
+                    }
                     panel.spawn(row()).with_children(|chips| {
                         let sights = std::iter::once(IRON_SIGHTS).chain(sights_for(gun).iter().copied());
                         for id in sights {
@@ -1369,15 +1121,17 @@ fn fill_choices(
                         }
                     });
                     let missing = sights_not_for(gun);
-                    if !missing.is_empty() {
+                    if !missing.is_empty() && !compact {
                         panel.spawn(label(missing, 13.0, ui::FAINT));
                     }
                 }
                 Slot::Grenade => {
-                    panel.spawn(section("Grenade"));
+                    if !compact {
+                        panel.spawn(section("Grenade"));
+                    }
                     panel.spawn(row()).with_children(|cards| {
                         for kind in 0..GRENADE_KINDS as GrenadeKind {
-                            cards.spawn(picture_card(Choice::Grenade(kind), grenade(kind).name, "", false));
+                            cards.spawn(picture_card(Choice::Grenade(kind), grenade(kind).name, "", false, compact));
                         }
                     });
                 }
@@ -1534,4 +1288,75 @@ pub fn loadout_summary() -> impl Bundle {
             (LoadoutLine, label("", 13.0, DIM), Pickable::IGNORE),
         ],
     )
+}
+
+/// The loadout on the death screen: the same slots and cards as the loadout
+/// screen, smaller, for the next life.
+#[derive(Component)]
+pub struct DeathLoadout;
+
+/// "1 / 2 / G also step through them", with the keys bound.
+#[derive(Component)]
+struct LoadoutKeys;
+
+pub fn death_loadout() -> impl Bundle {
+    (
+        DeathLoadout,
+        Node {
+            width: px(760),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(12),
+            padding: UiRect::axes(px(20), px(18)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(20)),
+            ..default()
+        },
+        BackgroundColor(ui::PANEL),
+        BorderColor::all(ui::PANEL_EDGE),
+        ui::soft_shadow(),
+        children![
+            (
+                Node {
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Baseline,
+                    ..default()
+                },
+                children![section("Next life"), (LoadoutKeys, label("", 13.0, ui::FAINT))],
+            ),
+            (
+                Node {
+                    column_gap: px(12),
+                    ..default()
+                },
+                children![
+                    slot_card(Slot::Gun(0), true),
+                    slot_card(Slot::Gun(1), true),
+                    slot_card(Slot::Grenade, true),
+                ],
+            ),
+            (
+                ChoicesPanel {
+                    shown: None,
+                    compact: true,
+                },
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(10),
+                    ..default()
+                },
+            ),
+        ],
+    )
+}
+
+fn update_loadout_keys(settings: Res<Settings>, mut keys: Query<&mut Text, With<LoadoutKeys>>) {
+    for mut text in &mut keys {
+        let line = format!(
+            "{} / {} / {} also step through them",
+            settings.key_name(Action::Primary),
+            settings.key_name(Action::Secondary),
+            settings.key_name(Action::Grenade),
+        );
+        set_text(&mut text, line);
+    }
 }

@@ -40,10 +40,12 @@ const DISTANCES: (f32, f32) = (1.3, 4.2);
 const BRUSH_SIZES: (f32, f32) = (1.5, 15.0);
 const START_BRUSH: f32 = 5.0;
 /// Width of the brush slider, and of its round thumb.
-const SLIDER_WIDTH: f32 = 216.0;
+const SLIDER_WIDTH: f32 = 340.0;
 const THUMB: f32 = 16.0;
 const MAX_UNDO: usize = 40;
-const SWATCH: f32 = 30.0;
+const SWATCH: f32 = 44.0;
+/// Between the colours.
+const SWATCH_GAP: f32 = 8.0;
 const SWATCHES_PER_ROW: usize = 8;
 
 pub struct PaintEditorPlugin;
@@ -303,7 +305,7 @@ fn spawn_editor(
         layer,
     ));
 
-    // The panel.
+    // The screen: the view on the left, the tools on the right.
     commands
         .spawn((
             EditorPart,
@@ -311,81 +313,171 @@ fn spawn_editor(
                 position_type: PositionType::Absolute,
                 width: percent(100),
                 height: percent(100),
-                align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
             GlobalZIndex(20),
-            BackgroundColor(Color::srgba(0.01, 0.012, 0.02, 0.98)),
+            BackgroundColor(ui::SCRIM.with_alpha(1.0)),
         ))
         .with_children(|screen| {
-            screen.spawn(ui::panel()).with_children(|panel| {
-                panel.spawn(ui::heading("Paint yourself", 34.0, ui::TEXT));
-                panel
-                    .spawn(Node {
-                        column_gap: px(16),
+            screen
+                .spawn(Node {
+                    width: percent(100),
+                    max_width: px(1240),
+                    height: percent(100),
+                    min_height: px(0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::axes(px(48), px(32)),
+                    row_gap: px(20),
+                    ..default()
+                })
+                .with_children(|page| {
+                    page.spawn(Node {
+                        align_items: AlignItems::Center,
+                        column_gap: px(20),
+                        ..default()
+                    })
+                    .with_children(|title| {
+                        title.spawn(ui::button("‹  Cancel")).observe(
+                            |_: On<Activate>, mut editing: ResMut<Editing>, mut editor: ResMut<PaintEditor>| {
+                                editing.discard = true;
+                                editor.open = false;
+                            },
+                        );
+                        title.spawn(ui::heading("Paint yourself", 40.0, ui::TEXT));
+                    });
+                    page.spawn(Node {
+                        flex_grow: 1.0,
+                        flex_basis: px(0),
+                        min_height: px(0),
+                        column_gap: px(24),
                         ..default()
                     })
                     .with_children(|row| {
+                        // The model, as big as there is room for, and how to work it.
                         row.spawn((
-                            PaintView,
-                            ImageNode::new(view),
                             Node {
-                                width: px(VIEW_SIZE.x / 2),
-                                height: px(VIEW_SIZE.y / 2),
-                                border_radius: BorderRadius::all(px(8)),
+                                flex_grow: 1.0,
+                                flex_basis: px(0),
+                                min_width: px(0),
+                                flex_direction: FlexDirection::Column,
+                                align_items: AlignItems::Center,
+                                row_gap: px(12),
+                                padding: UiRect::all(px(16)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(24)),
                                 ..default()
                             },
-                        ));
-                        row.spawn(Node {
-                            flex_direction: FlexDirection::Column,
-                            row_gap: px(12),
-                            ..default()
-                        })
-                        .with_children(|side| {
-                            side.spawn(ui::card()).with_children(|card| {
-                                card.spawn(ui::section("Colour"));
-                                card.spawn(Node {
+                            BackgroundColor(Color::srgb(0.075, 0.085, 0.115)),
+                            BorderColor::all(ui::PANEL_EDGE),
+                        ))
+                        .with_children(|view_box| {
+                            view_box.spawn((
+                                PaintView,
+                                ImageNode::new(view),
+                                Node {
+                                    flex_grow: 1.0,
+                                    min_height: px(0),
+                                    aspect_ratio: Some(VIEW_SIZE.x as f32 / VIEW_SIZE.y as f32),
+                                    border_radius: BorderRadius::all(px(12)),
+                                    ..default()
+                                },
+                            ));
+                            view_box
+                                .spawn(Node {
                                     flex_wrap: FlexWrap::Wrap,
-                                    width: px(SWATCH * SWATCHES_PER_ROW as f32 + 6.0 * (SWATCHES_PER_ROW - 1) as f32),
-                                    column_gap: px(6),
+                                    justify_content: JustifyContent::Center,
+                                    column_gap: px(8),
                                     row_gap: px(6),
                                     ..default()
                                 })
-                                .with_children(|grid| {
-                                    for color in 0..PALETTE.len() as u8 {
-                                        grid.spawn(swatch(color)).observe(
-                                            move |_: On<Activate>, mut editing: ResMut<Editing>| editing.color = color,
-                                        );
+                                .with_children(|hints| {
+                                    for (key, what) in PAINT_HINTS {
+                                        hints.spawn(hint(key, what));
                                     }
                                 });
+                        });
+                        row.spawn((
+                            Node {
+                                width: px(480),
+                                flex_shrink: 0.0,
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(20),
+                                padding: UiRect::all(px(22)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(24)),
+                                ..default()
+                            },
+                            BackgroundColor(ui::PANEL),
+                            BorderColor::all(ui::PANEL_EDGE),
+                            ui::soft_shadow(),
+                        ))
+                        .with_children(|side| {
+                            side.spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(10),
+                                ..default()
+                            })
+                            .with_children(|colour| {
+                                colour.spawn(ui::section("Colour"));
+                                colour
+                                    .spawn(Node {
+                                        flex_wrap: FlexWrap::Wrap,
+                                        width: px(SWATCH * SWATCHES_PER_ROW as f32 + SWATCH_GAP * (SWATCHES_PER_ROW - 1) as f32),
+                                        column_gap: px(SWATCH_GAP),
+                                        row_gap: px(SWATCH_GAP),
+                                        ..default()
+                                    })
+                                    .with_children(|grid| {
+                                        for color in 0..PALETTE.len() as u8 {
+                                            grid.spawn(swatch(color)).observe(
+                                                move |_: On<Activate>, mut editing: ResMut<Editing>| editing.color = color,
+                                            );
+                                        }
+                                    });
                             });
-                            side.spawn(ui::card()).with_children(|card| {
-                                card.spawn(ui::section("Brush size"));
-                                card.spawn(ui::button_row()).with_children(|row| {
-                                    row.spawn(brush_slider(editing.brush))
-                                        .observe(slider_self_update)
-                                        .observe(|change: On<ValueChange<f32>>, mut editing: ResMut<Editing>| {
-                                            editing.brush = change.value;
-                                        });
-                                    row.spawn((
-                                        ui::label("", 15.0, TEXT),
-                                        BrushText,
-                                        TextLayout::new(Justify::Right, LineBreak::NoWrap),
-                                        Node {
-                                            width: px(62),
-                                            ..default()
-                                        },
-                                    ));
-                                });
-                                card.spawn(text_button("", MirrorText)).observe(
-                                    |_: On<Activate>, mut editing: ResMut<Editing>| editing.mirror = !editing.mirror,
-                                );
+                            side.spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(10),
+                                ..default()
+                            })
+                            .with_children(|brush| {
+                                brush.spawn(ui::section("Brush size"));
+                                brush
+                                    .spawn(Node {
+                                        align_items: AlignItems::Center,
+                                        column_gap: px(14),
+                                        ..default()
+                                    })
+                                    .with_children(|row| {
+                                        row.spawn(brush_slider(editing.brush))
+                                            .observe(slider_self_update)
+                                            .observe(|change: On<ValueChange<f32>>, mut editing: ResMut<Editing>| {
+                                                editing.brush = change.value;
+                                            });
+                                        row.spawn((
+                                            ui::weighted("", 15.0, 700, TEXT),
+                                            BrushText,
+                                            TextLayout::new(Justify::Right, LineBreak::NoWrap),
+                                            Node {
+                                                width: px(70),
+                                                ..default()
+                                            },
+                                        ));
+                                    });
                             });
-                            side.spawn(ui::card()).with_children(|card| {
-                                card.spawn(ui::section("Whole body"));
-                                card.spawn(ui::button_row()).with_children(|row| {
-                                    row.spawn(ui::button("Fill")).observe(
+                            side.spawn(text_button("", MirrorText)).observe(
+                                |_: On<Activate>, mut editing: ResMut<Editing>| editing.mirror = !editing.mirror,
+                            );
+                            side.spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(10),
+                                ..default()
+                            })
+                            .with_children(|whole| {
+                                whole.spawn(ui::section("Whole body"));
+                                whole.spawn(ui::button_row()).with_children(|row| {
+                                    row.spawn(ui::button("Fill all")).observe(
                                         |_: On<Activate>, mut editing: ResMut<Editing>| {
                                             let fill = Canvas::solid(editing.color);
                                             editing.replace(fill);
@@ -393,39 +485,58 @@ fn spawn_editor(
                                     );
                                     row.spawn(ui::button("Undo"))
                                         .observe(|_: On<Activate>, mut editing: ResMut<Editing>| editing.undo());
-                                    row.spawn(ui::button("Start over")).observe(
+                                    row.spawn(ui::danger_button("Start over")).observe(
                                         |_: On<Activate>, mut editing: ResMut<Editing>, model: Res<PlayerModel>| {
                                             editing.replace(model.plain(DEFAULT_COLOR));
                                         },
                                     );
                                 });
                             });
-                            side.spawn((
-                                ui::label(
-                                    "Left mouse: paint\nRight mouse: turn around\nWheel: closer, further\nAlt + click: take a colour\nCtrl + Z: undo",
-                                    14.0,
-                                    DIM,
-                                ),
-                                Node {
-                                    margin: UiRect::left(px(4)),
-                                    ..default()
-                                },
-                            ));
+                            side.spawn(Node {
+                                flex_grow: 1.0,
+                                ..default()
+                            });
+                            side.spawn(ui::primary_button("Done"))
+                                .observe(|_: On<Activate>, mut editor: ResMut<PaintEditor>| editor.open = false);
                         });
                     });
-                panel.spawn(ui::button_row()).with_children(|buttons| {
-                    buttons.spawn(ui::button("Cancel")).observe(
-                        |_: On<Activate>, mut editing: ResMut<Editing>, mut editor: ResMut<PaintEditor>| {
-                            editing.discard = true;
-                            editor.open = false;
-                        },
-                    );
-                    buttons
-                        .spawn(ui::primary_button("Done"))
-                        .observe(|_: On<Activate>, mut editor: ResMut<PaintEditor>| editor.open = false);
                 });
-            });
         });
+}
+
+/// How to work the view, under it.
+const PAINT_HINTS: [(&str, &str); 5] = [
+    ("LEFT MOUSE", "Paint"),
+    ("RIGHT MOUSE", "Turn around"),
+    ("WHEEL", "Closer, further"),
+    ("ALT + CLICK", "Take a colour"),
+    ("CTRL + Z", "Undo"),
+];
+
+/// A key in a little box, and what it does.
+fn hint(key: &str, what: &str) -> impl Bundle + use<> {
+    (
+        Node {
+            align_items: AlignItems::Center,
+            column_gap: px(6),
+            padding: UiRect::new(px(4), px(10), px(4), px(4)),
+            border_radius: BorderRadius::all(px(14)),
+            ..default()
+        },
+        BackgroundColor(ui::PANEL.with_alpha(0.8)),
+        children![
+            (
+                Node {
+                    padding: UiRect::axes(px(7), px(3)),
+                    border_radius: BorderRadius::all(px(10)),
+                    ..default()
+                },
+                BackgroundColor(ui::BUTTON_EDGE),
+                children![ui::weighted(key.to_string(), 10.0, 700, TEXT)],
+            ),
+            ui::label(what.to_string(), 12.0, DIM),
+        ],
+    )
 }
 
 /// A colour to paint with. Not styled like the other buttons (it keeps its
@@ -437,8 +548,8 @@ fn swatch(color: u8) -> impl Bundle {
         Node {
             width: px(SWATCH),
             height: px(SWATCH),
-            border: UiRect::all(px(2)),
-            border_radius: BorderRadius::all(px(5)),
+            border: UiRect::all(px(3)),
+            border_radius: BorderRadius::all(px(12)),
             ..default()
         },
         BackgroundColor(palette_color(color)),

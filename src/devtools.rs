@@ -25,7 +25,7 @@ use crate::{
     remote::{Corpse, RemotePlayer},
     weapons::{GUN_COUNT, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
     world::GameMap,
-    settings::{Settings, SettingsMenu},
+    settings::{Settings, SettingsMenu, SettingsTab},
 };
 
 pub struct DevToolsPlugin;
@@ -116,6 +116,7 @@ fn selftest_menu(
     time: Res<Time>,
     status: Res<MenuStatus>,
     mut page: ResMut<MenuPage>,
+    mut settings_menu: ResMut<SettingsMenu>,
     mut test: ResMut<SelfTest>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -139,8 +140,20 @@ fn selftest_menu(
             test.capture(&mut commands, file);
         }
     }
-    if test.reached(1 + 2 * pages.len() as u32, 2.0 + pages.len() as f32 * 0.8 + 0.4) {
+    // The settings' controls page (the match takes a picture of the other).
+    let end = 2.0 + pages.len() as f32 * 0.8;
+    let step = 1 + 2 * pages.len() as u32;
+    if test.reached(step, end) {
         *page = MenuPage::Home;
+        settings_menu.tab = SettingsTab::Controls;
+        settings_menu.open = true;
+    }
+    if test.reached(step + 1, end + 0.6) {
+        test.capture(&mut commands, "settings_controls.png");
+    }
+    if test.reached(step + 2, end + 1.0) {
+        settings_menu.open = false;
+        settings_menu.tab = SettingsTab::General;
         exit.write(AppExit::Success);
     }
 }
@@ -355,7 +368,15 @@ fn selftest_play(
         captured.marker = true;
         test.capture(&mut commands, "hit.png");
     }
-    if player.on_death_screen() && player.dead_for > 1.0 && controls.captured && !settings_menu.open && !captured.dead {
+    // Not while the scoreboard is held (below), which hides the death screen.
+    let scores_held = (5.0..6.6).contains(&test.clock);
+    if player.on_death_screen()
+        && player.dead_for > 1.0
+        && controls.captured
+        && !settings_menu.open
+        && !scores_held
+        && !captured.dead
+    {
         captured.dead = true;
         test.capture(&mut commands, "dead.png");
     }
