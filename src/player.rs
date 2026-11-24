@@ -4,7 +4,7 @@
 //! where we are), which keeps it perfectly responsive at any ping. That is the
 //! right trade-off for private lobbies among friends.
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::{
     input::mouse::AccumulatedMouseMotion,
@@ -15,7 +15,7 @@ use bevy::{
 use crate::{
     AppState,
     gun_model::{Fitted, FittedModels, GunHolder, GunPart, PartKind},
-    map::{self, CROUCH_EYE, PLAYER_HALF, STAND_EYE},
+    map::{self, CROUCH_EYE, Map, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
     remote::RemotePlayer,
@@ -30,7 +30,7 @@ const GROUND_ACCEL: f32 = 10.0;
 const FRICTION: f32 = 6.0;
 const STOP_SPEED: f32 = 3.0;
 /// Quake-style air strafing: in the air you can only add up to this much speed
-/// in the wished direction per frame, which is what makes strafe-jumping gain
+/// in the wished direction per step (see `TICK`), which is what makes strafe-jumping gain
 /// speed. How fast it is added is the host's air acceleration
 /// (`Session::air_accel`), times running speed.
 const AIR_WISH_SPEED: f32 = 1.0;
@@ -222,6 +222,16 @@ pub struct LocalPlayer {
     slide_boost_cooldown: f32,
     /// Eye height above the feet, eased between standing and crouching.
     view_height: f32,
+    /// Seconds of frame time not yet stepped through (less than `TICK`).
+    tick_time: f32,
+    /// Feet before the last movement step, and the feet drawn this frame.
+    last_feet: Vec3,
+    view_feet: Vec3,
+    /// Jump or dash pressed since the last movement step.
+    jump_queued: bool,
+    dash_queued: bool,
+    /// The yaw at the end of the last frame's movement.
+    frame_yaw: f32,
     /// 0 = hip, 1 = fully aimed down sights.
     pub aim: f32,
     /// Seconds the gun in hand has been held aimed since the last shot, for
@@ -287,6 +297,12 @@ impl Default for LocalPlayer {
             sliding: false,
             slide_boost_cooldown: 0.0,
             view_height: STAND_EYE,
+            tick_time: 0.0,
+            last_feet: Vec3::new(0.0, 10.0, 0.0) - PLAYER_HALF.y * Vec3::Y,
+            view_feet: Vec3::new(0.0, 10.0, 0.0) - PLAYER_HALF.y * Vec3::Y,
+            jump_queued: false,
+            dash_queued: false,
+            frame_yaw: 0.0,
             aim: 0.0,
             choked_for: 0.0,
             reload: 0.0,
@@ -364,12 +380,23 @@ impl LocalPlayer {
         map::player_half(self.crouching)
     }
 
+    /// Puts the player at `pos`, standing still, with the view there too
+    /// rather than gliding over from where it was.
+    pub fn teleport(&mut self, pos: Vec3) {
+        self.pos = pos;
+        self.vel = Vec3::ZERO;
+        self.last_feet = self.feet();
+        self.view_feet = self.last_feet;
+    }
+
     pub fn feet(&self) -> Vec3 {
         self.pos - Vec3::Y * self.half().y
     }
 
+    /// Where the eyes are drawn: between the last two movement steps (see
+    /// `TICK`), a few milliseconds behind `pos`.
     pub fn eye(&self) -> Vec3 {
-        self.feet() + Vec3::Y * self.view_height
+        self.view_feet + Vec3::Y * self.view_height
     }
 
     pub fn reloading(&self) -> bool {
@@ -497,8 +524,8 @@ fn handle_net(
                 grenade: kind,
             } if *id == session.my_id => {
                 *player = LocalPlayer {
-                    pos: Vec3::from(*pos),
                     yaw: *yaw,
+                    frame_yaw: *yaw,
                     alive: true,
                     health: MAX_HEALTH,
                     armor: START_ARMOR,
@@ -510,6 +537,7 @@ fn handle_net(
                     grenades: grenade(*kind).max,
                     ..default()
                 };
+                player.teleport(Vec3::from(*pos));
             }
             ServerMsg::Hit {
                 victim,
@@ -637,6 +665,31 @@ fn look(
     p.pitch = pitch;
 }
 
+/// Movement runs in fixed steps of this many seconds, whatever the frame
+/// rate, so every player moves the same way: air strafing in particular
+/// gains speed per step, and a varying step would hand faster machines more.
+pub const TICK: f32 = 1.0 / 128.0;
+/// At most this much time is caught up in one frame; below 10 fps the game
+/// runs slow rather than stepping a long way at once.
+const MAX_CATCH_UP: f32 = 0.1;
+/// Feet that move further than this in one step were teleported (a spawn, a
+/// respawn): the view jumps there instead of gliding across.
+const SNAP_DISTANCE: f32 = 2.0;
+
+/// The movement keys held this frame, for every step run in it.
+struct Held {
+    /// The wished direction relative to the view: x right, y forward.
+    keys: Vec2,
+    /// The view's turn over this frame. Each step takes the yaw for its
+    /// moment in the frame, so a turn steers every step of a long frame
+    /// rather than the first one only.
+    yaw_from: f32,
+    yaw_to: f32,
+    crouch: bool,
+    jump: bool,
+    aim: bool,
+}
+
 fn movement(
     time: Res<Time>,
     input: ActionInput,
@@ -644,37 +697,69 @@ fn movement(
     session: Res<Session>,
     mut player: ResMut<LocalPlayer>,
 ) {
-    let dt = time.delta_secs().min(0.05);
-    let air_accel = session.air_accel();
     let p = &mut *player;
+    // A press is kept until a step uses it, so it is never lost on a frame
+    // with no step nor used twice on a frame with several.
+    p.jump_queued |= input.just_pressed(Action::Jump);
+    p.dash_queued |= input.just_pressed(Action::Dash);
+
+    let axis = |plus: Action, minus: Action| input.pressed(plus) as u8 as f32 - input.pressed(minus) as u8 as f32;
+    let held = Held {
+        keys: Vec2::new(axis(Action::Right, Action::Left), axis(Action::Forward, Action::Back)),
+        yaw_from: p.frame_yaw,
+        yaw_to: p.yaw,
+        crouch: input.pressed(Action::Crouch),
+        jump: input.pressed(Action::Jump),
+        aim: input.pressed(Action::Aim),
+    };
+    advance(p, time.delta_secs(), &held, &map.0, session.air_accel(), session.frozen());
+    p.frame_yaw = p.yaw;
+}
+
+/// Runs as many movement steps as `frame` seconds hold, keeping the rest for
+/// the next frame, then places the view between the last two steps so it
+/// moves smoothly at any frame rate.
+fn advance(p: &mut LocalPlayer, frame: f32, held: &Held, map: &Map, air_accel: f32, frozen: bool) {
+    let before = p.tick_time;
+    p.tick_time = (p.tick_time + frame).min(MAX_CATCH_UP);
+    let turn = held.yaw_to - held.yaw_from;
+    // A big jump is a respawn facing somewhere new, not a turn.
+    let turn = if turn.abs() < PI { turn } else { 0.0 };
+    let mut into_frame = -before;
+    while p.tick_time >= TICK {
+        p.tick_time -= TICK;
+        into_frame += TICK;
+        let yaw = held.yaw_to - turn * (1.0 - into_frame / frame.max(1e-6)).clamp(0.0, 1.0);
+        // Wished direction on the ground plane.
+        let forward = map::look_dir(yaw, 0.0);
+        let right = Vec3::new(-forward.z, 0.0, forward.x);
+        let wish = (right * held.keys.x + forward * held.keys.y).normalize_or_zero();
+        p.last_feet = p.feet();
+        step(p, held, wish, forward, map, air_accel, frozen);
+        p.jump_queued = false;
+        p.dash_queued = false;
+    }
+    let feet = p.feet();
+    p.view_feet = if p.last_feet.distance_squared(feet) > SNAP_DISTANCE * SNAP_DISTANCE {
+        feet
+    } else {
+        p.last_feet.lerp(feet, p.tick_time / TICK)
+    };
+}
+
+/// One movement step of `TICK` seconds.
+fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, air_accel: f32, frozen: bool) {
+    let dt = TICK;
     p.dash_cooldown = (p.dash_cooldown - dt).max(0.0);
     p.slide_boost_cooldown = (p.slide_boost_cooldown - dt).max(0.0);
     // Held in place at the spawn until the countdown is over; looking around is fine.
-    if !p.alive || session.frozen() {
+    if !p.alive || frozen {
         return;
     }
 
-    // Wished direction on the ground plane, from the keys held.
-    let forward = map::look_dir(p.yaw, 0.0);
-    let right = Vec3::new(-forward.z, 0.0, forward.x);
-    let mut wish = Vec3::ZERO;
-    if input.pressed(Action::Forward) {
-        wish += forward;
-    }
-    if input.pressed(Action::Back) {
-        wish -= forward;
-    }
-    if input.pressed(Action::Right) {
-        wish += right;
-    }
-    if input.pressed(Action::Left) {
-        wish -= right;
-    }
-    let wish = wish.normalize_or_zero();
-
     // Crouching shrinks the box towards the feet; standing up needs headroom.
     let crouch_drop = PLAYER_HALF.y - map::CROUCH_HALF.y;
-    if input.pressed(Action::Crouch) {
+    if held.crouch {
         if !p.crouching {
             p.crouching = true;
             p.pos.y -= crouch_drop;
@@ -684,21 +769,21 @@ fn movement(
         }
     } else if p.crouching {
         let standing = p.pos + Vec3::Y * crouch_drop;
-        if map.0.is_free(standing, PLAYER_HALF) {
+        if map.is_free(standing, PLAYER_HALF) {
             p.crouching = false;
             p.sliding = false;
             p.pos = standing;
         }
     }
 
-    let aiming = input.pressed(Action::Aim) && !p.reloading() && p.slot != KNIFE_SLOT && p.hand.is_none();
+    let aiming = held.aim && !p.reloading() && p.slot != KNIFE_SLOT && p.hand.is_none();
     p.aim += (aiming as u8 as f32 - p.aim) * (dt * 14.0).min(1.0);
 
     if p.grounded {
         p.air_jumps = AIR_JUMPS;
         // Holding jump hops again the moment you land, skipping ground friction:
         // that is what lets you keep (and build) speed by bunny hopping.
-        if input.pressed(Action::Jump) {
+        if held.jump {
             p.vel.y = JUMP_SPEED;
             p.grounded = false;
             p.sliding = false;
@@ -725,7 +810,7 @@ fn movement(
             accelerate(&mut p.vel, wish, top_speed, GROUND_ACCEL * top_speed, dt);
         }
     } else {
-        if input.just_pressed(Action::Jump) && p.air_jumps > 0 {
+        if p.jump_queued && p.air_jumps > 0 {
             p.air_jumps -= 1;
             p.vel.y = JUMP_SPEED;
         }
@@ -733,7 +818,7 @@ fn movement(
     }
 
     // Dash: redirect all momentum where you are steering, with a minimum speed.
-    if input.just_pressed(Action::Dash) && p.dash_cooldown <= 0.0 {
+    if p.dash_queued && p.dash_cooldown <= 0.0 {
         p.dash_cooldown = DASH_COOLDOWN;
         let dir = if wish == Vec3::ZERO { forward } else { wish };
         let speed = p.vel.with_y(0.0).length().max(DASH_SPEED);
@@ -746,11 +831,11 @@ fn movement(
 
     let was_grounded = p.grounded;
     let half = p.half();
-    p.grounded = map.0.move_and_slide(&mut p.pos, &mut p.vel, half, dt);
+    p.grounded = map.move_and_slide(&mut p.pos, &mut p.vel, half, dt);
     // Down a slope or a stair: stay on the ground rather than skip off it.
     if was_grounded && !p.grounded && p.vel.y <= 0.0 {
         let drop = map::STEP_UP.max(p.horizontal_speed() * dt);
-        if map.0.snap_to_ground(&mut p.pos, half, drop) {
+        if map.snap_to_ground(&mut p.pos, half, drop) {
             p.grounded = true;
             p.vel.y = 0.0;
         }
@@ -760,7 +845,7 @@ fn movement(
         start_slide(p);
     }
 
-    if let Some(pad) = map.0.pad_at(p.feet()) {
+    if let Some(pad) = map.pad_at(p.feet()) {
         p.vel = pad.launch_velocity(p.vel);
         p.grounded = false;
         p.sliding = false;
@@ -1216,5 +1301,145 @@ fn send_state(player: Res<LocalPlayer>, mut connection: ResMut<Connection>) {
             sight: player.sight_id(),
             spawn_seq: player.spawn_seq,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::Block;
+
+    /// A floor at y = 0 and nothing else.
+    fn floor() -> Map {
+        let mut map = Map::empty(0);
+        map.blocks.push(Block {
+            min: Vec3::new(-1000.0, -1.0, -1000.0),
+            max: Vec3::new(1000.0, 0.0, 1000.0),
+            color: [0.0; 3],
+            visible: true,
+        });
+        map.finish()
+    }
+
+    fn standing(map: &Map) -> LocalPlayer {
+        let mut p = LocalPlayer {
+            alive: true,
+            grounded: true,
+            ..default()
+        };
+        p.teleport(Vec3::Y * PLAYER_HALF.y);
+        // Settle onto the floor.
+        advance(&mut p, 0.1, &idle(), map, DEFAULT_AIR_ACCEL.into(), false);
+        p
+    }
+
+    fn idle() -> Held {
+        Held {
+            keys: Vec2::ZERO,
+            yaw_from: 0.0,
+            yaw_to: 0.0,
+            crouch: false,
+            jump: false,
+            aim: false,
+        }
+    }
+
+    /// Runs `seconds` of play at `fps`, calling `input` before each frame
+    /// with the time; it may turn the view (`yaw`) and returns the keys held.
+    fn play(p: &mut LocalPlayer, map: &Map, fps: f32, seconds: f32, mut input: impl FnMut(&mut LocalPlayer, f32) -> Vec2) {
+        let frames = (seconds * fps).round() as u32;
+        for frame in 0..frames {
+            let yaw_from = p.yaw;
+            let keys = input(p, (frame + 1) as f32 / fps);
+            let held = Held { keys, yaw_from, yaw_to: p.yaw, ..idle() };
+            advance(p, 1.0 / fps, &held, map, DEFAULT_AIR_ACCEL.into(), false);
+        }
+    }
+
+    /// Strafing right in the air at 12 m/s while turning right at a steady
+    /// rate, as a mouse does: the speed gained in a second.
+    fn strafe_gain(fps: f32) -> f32 {
+        let map = Map::empty(0).finish();
+        let mut p = LocalPlayer { alive: true, ..default() };
+        p.teleport(Vec3::new(0.0, 500.0, 0.0));
+        p.vel = map::look_dir(0.0, 0.0) * 12.0;
+        play(&mut p, &map, fps, 1.0, |p, t| {
+            p.yaw = -2.0 * t;
+            Vec2::X
+        });
+        p.horizontal_speed() - 12.0
+    }
+
+    #[test]
+    fn air_strafing_gains_the_same_at_any_frame_rate() {
+        let reference = strafe_gain(60.0);
+        assert!(reference > 1.0, "strafing gained only {reference} m/s");
+        for fps in [30.0, 144.0, 240.0, 500.0] {
+            let gain = strafe_gain(fps);
+            assert!((gain - reference).abs() < 0.05 * reference, "{fps} fps gained {gain} m/s, 60 fps {reference}");
+        }
+    }
+
+    fn jump_height(fps: f32) -> f32 {
+        let map = floor();
+        let mut p = standing(&map);
+        p.vel.y = JUMP_SPEED;
+        p.grounded = false;
+        let start = p.feet().y;
+        let mut top = start;
+        play(&mut p, &map, fps, 1.0, |p, _| {
+            top = top.max(p.feet().y);
+            Vec2::ZERO
+        });
+        top - start
+    }
+
+    #[test]
+    fn jumps_reach_the_same_height_at_any_frame_rate() {
+        let reference = jump_height(60.0);
+        assert!(reference > 1.0, "jumped only {reference} m");
+        for fps in [30.0, 144.0, 300.0] {
+            let height = jump_height(fps);
+            assert!((height - reference).abs() < 0.03, "{fps} fps jumped {height} m, 60 fps {reference}");
+        }
+    }
+
+    #[test]
+    fn a_dash_pressed_between_steps_still_happens_once() {
+        let map = floor();
+        // At 1000 fps most frames run no step at all.
+        let mut p = standing(&map);
+        let (mut dashes, mut cooldown) = (0, 0.0);
+        play(&mut p, &map, 1000.0, 0.2, |p, t| {
+            if p.dash_cooldown > cooldown {
+                dashes += 1;
+            }
+            cooldown = p.dash_cooldown;
+            // Pressed on a frame that runs no step: the 11th of the 8th step.
+            if (t * 1000.0).round() == 11.0 {
+                p.dash_queued = true;
+            }
+            Vec2::ZERO
+        });
+        assert_eq!(dashes, 1);
+        assert!(p.dash_cooldown > 0.0 && p.dash_cooldown < DASH_COOLDOWN);
+    }
+
+    #[test]
+    fn the_view_follows_between_steps_and_jumps_on_a_teleport() {
+        let map = floor();
+        let mut p = standing(&map);
+        p.vel = Vec3::new(10.0, 0.0, 0.0);
+        let mut last = p.eye().x;
+        play(&mut p, &map, 1000.0, 0.05, |p, _| {
+            // Never backwards, never further than one step.
+            assert!(p.eye().x >= last - 1e-4 && p.eye().x - last < 10.0 * TICK);
+            last = p.eye().x;
+            Vec2::ZERO
+        });
+        assert!(p.pos.x - p.eye().x < 10.0 * TICK + 1e-4);
+        p.pos = Vec3::new(50.0, PLAYER_HALF.y, 0.0);
+        advance(&mut p, 0.0, &idle(), &map, DEFAULT_AIR_ACCEL.into(), false);
+        assert!((p.eye().x - 50.0).abs() < 1e-4);
     }
 }

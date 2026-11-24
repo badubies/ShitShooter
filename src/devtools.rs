@@ -492,8 +492,7 @@ fn selftest_play(
                 })
                 .find(|spot| map.0.is_free(*spot, PLAYER_HALF) && map.0.line_of_sight(*spot, lies + Vec3::Y * 0.3));
             if let Some(spot) = spot {
-                player.pos = spot;
-                player.vel = Vec3::ZERO;
+                player.teleport(spot);
                 let to = lies + Vec3::Y * 0.3 - player.eye();
                 player.yaw = (-to.x).atan2(-to.z);
                 player.pitch = to.y.atan2(to.with_y(0.0).length());
@@ -570,8 +569,7 @@ fn selftest_play(
     {
         // From the side: the cloth hangs out towards +x.
         let side = flag.spawns.iter().max_by(|a, b| (a.pos.z - flag.pos.z).abs().total_cmp(&(b.pos.z - flag.pos.z).abs()));
-        player.pos = side.map_or(flag.spawns[0].pos, |spawn| spawn.pos);
-        player.vel = Vec3::ZERO;
+        player.teleport(side.map_or(flag.spawns[0].pos, |spawn| spawn.pos));
         let to = flag.pos + Vec3::Y * 4.0 - player.eye();
         player.yaw = (-to.x).atan2(-to.z);
         player.pitch = to.y.atan2(to.with_y(0.0).length());
