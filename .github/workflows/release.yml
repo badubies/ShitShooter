@@ -2,8 +2,8 @@
 # Silicon) and Linux (x86-64) and publishes them as a new GitHub release
 # (build-1, build-2, ...). The launchers download from the latest release, so
 # friends get each push the next time they start it. The release also carries
-# the lobby server for Linux (a Raspberry Pi), which deploy/install.sh installs
-# and keeps up to date.
+# the lobby server for Linux (a Raspberry Pi), built by the Linux job, which
+# deploy/install.sh installs and keeps up to date.
 #
 # Each platform builds in its own job; the publish job waits for all of them,
 # so a release always has every platform's files or is not made at all.
@@ -52,30 +52,12 @@ jobs:
       - name: Build
         run: cargo build --release --locked --workspace
 
-      # The servers alone, for Linux on 64-bit ARM (a Raspberry Pi on a 64-bit
-      # OS), 32-bit ARM (older Pis and 32-bit Raspberry Pi OS) and x86-64. They
-      # are static musl exes linked by rust-lld (.cargo/config.toml), so they
-      # build here on Windows and run on any Linux.
-      - name: Build the Linux servers
-        shell: pwsh
-        run: |
-          $targets = 'aarch64-unknown-linux-musl', 'armv7-unknown-linux-musleabihf', 'x86_64-unknown-linux-musl'
-          rustup target add @targets
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          foreach ($target in $targets) {
-            cargo build --release --locked --no-default-features --target $target
-            if ($LASTEXITCODE -ne 0) { exit 1 }
-          }
-
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory out | Out-Null
           Copy-Item target\release\shitshooter.exe out\
           Copy-Item target\release\ShitShooterLauncher.exe out\
-          Copy-Item target\aarch64-unknown-linux-musl\release\shitshooter out\shitshooter-server-linux-arm64
-          Copy-Item target\armv7-unknown-linux-musleabihf\release\shitshooter out\shitshooter-server-linux-armv7
-          Copy-Item target\x86_64-unknown-linux-musl\release\shitshooter out\shitshooter-server-linux-x64
           # Every platform's launcher is built from the same source, so one
           # version number covers them all.
           $launcher = (& target\release\ShitShooterLauncher.exe --version).Trim()
@@ -123,7 +105,8 @@ jobs:
           if-no-files-found: error
 
   # x86-64 Linux. Built on Ubuntu 24.04, so it needs glibc 2.39 or newer
-  # (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22, Arch and newer).
+  # (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22, Arch and newer). This job
+  # also builds the lobby servers.
   linux:
     runs-on: ubuntu-24.04
     steps:
@@ -136,16 +119,34 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
+      # The musl targets are for the servers (next step), and rust-cache keeps
+      # their builds too.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl,armv7-unknown-linux-musleabihf,x86_64-unknown-linux-musl
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: cargo build --release --locked --workspace
 
+      # The servers alone, for Linux on 64-bit ARM (a Raspberry Pi on a 64-bit
+      # OS), 32-bit ARM (older Pis and 32-bit Raspberry Pi OS) and x86-64. They
+      # are static musl exes linked by rust-lld (.cargo/config.toml), so they
+      # run on any Linux, unlike the game above, which needs a recent glibc and
+      # desktop libraries.
+      - name: Build the servers
+        run: |
+          for target in aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-unknown-linux-musl; do
+            cargo build --release --locked --no-default-features --target "$target"
+          done
+
       - name: Package
         run: |
           mkdir out
+          cp target/aarch64-unknown-linux-musl/release/shitshooter out/shitshooter-server-linux-arm64
+          cp target/armv7-unknown-linux-musleabihf/release/shitshooter out/shitshooter-server-linux-armv7
+          cp target/x86_64-unknown-linux-musl/release/shitshooter out/shitshooter-server-linux-x64
           cp target/release/shitshooter out/shitshooter-linux-x64
           cp target/release/ShitShooterLauncher out/ShitShooterLauncher-linux-x64
           tar -czf out/ShitShooterLauncher-linux-x64.tar.gz -C target/release ShitShooterLauncher
