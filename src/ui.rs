@@ -1177,6 +1177,9 @@ fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
                     width: percent(100),
                     min_width: px(0),
                     aspect_ratio: Some(16.0 / 9.0),
+                    // The card clips square, so the picture rounds its own top
+                    // corners to the card's, inside its 1px edge.
+                    border_radius: BorderRadius::top(px(13)),
                     ..default()
                 },
                 Pickable::IGNORE,

@@ -361,7 +361,7 @@ fn lobby_row(lobby: &LobbyInfo, picked: bool, picture: Option<Handle<Image>>) ->
         BorderColor::all(kind.edge()),
         observe(move |_: On<Activate>, mut browser: ResMut<Browser>| browser.pick(Picked::Lobby(port))),
         children![
-            map_thumb(picture, 112.0, 63.0, 10.0),
+            map_thumb(picture, 112.0, 63.0, BorderRadius::all(px(10))),
             (
                 Node {
                     flex_grow: 1.0,
@@ -396,15 +396,17 @@ fn lobby_row(lobby: &LobbyInfo, picked: bool, picture: Option<Handle<Image>>) ->
     )
 }
 
-/// A map's picture, or a plain box when there is none.
-fn map_thumb(picture: Option<Handle<Image>>, width: f32, height: f32, round: f32) -> impl Bundle {
+/// A map's picture, or a plain box when there is none. A box's overflow is
+/// clipped square, so a picture at the top of a rounded box rounds its own
+/// corners to match.
+fn map_thumb(picture: Option<Handle<Image>>, width: f32, height: f32, radius: BorderRadius) -> impl Bundle {
     (
         picture.map(ImageNode::new).unwrap_or_default(),
         Node {
             width: px(width),
             height: px(height),
             flex_shrink: 0.0,
-            border_radius: BorderRadius::all(px(round)),
+            border_radius: radius,
             ..default()
         },
         BackgroundColor(BUTTON),
@@ -565,7 +567,7 @@ fn lobby_detail(lobby: &LobbyInfo, server: SocketAddr, prefs: &MenuPrefs, pictur
                     ..default()
                 },
                 children![(
-                    map_thumb(picture, 400.0, 225.0, 0.0),
+                    map_thumb(picture, 400.0, 225.0, BorderRadius::top(px(19))),
                     children![(
                         Node {
                             position_type: PositionType::Absolute,
