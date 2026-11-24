@@ -18,6 +18,7 @@ use crate::{
     props::{self, PROPS},
     protocol::{ClientMsg, FlagSnap, MODE_CONQUEST},
     remote::RemotePlayer,
+    settings::{Action, ActionInput, Settings},
     ui::{ACCENT, ALLY, DIM, ENEMY, TEXT, label, mask_image, set_text},
     world::GameMap,
 };
@@ -38,7 +39,8 @@ impl Plugin for MinimapPlugin {
             .add_systems(OnEnter(AppState::Playing), (spawn_minimap, reset_choice))
             .add_systems(
                 Update,
-                (update_minimap, update_deploy_map, update_deploy_mates, send_choice).run_if(in_state(AppState::Playing)),
+                (toggle_minimap, update_minimap, update_deploy_map, update_deploy_mates, send_choice)
+                    .run_if(in_state(AppState::Playing)),
             );
     }
 }
@@ -320,9 +322,18 @@ fn dot(size: f32) -> Node {
     }
 }
 
+/// The minimap key shows or hides the minimap, and remembers it.
+fn toggle_minimap(input: ActionInput, mut settings: ResMut<Settings>) {
+    if input.just_pressed(Action::Minimap) {
+        settings.show_minimap = !settings.show_minimap;
+        settings.save();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update_minimap(
     mut commands: Commands,
+    settings: Res<Settings>,
     session: Res<Session>,
     map: Res<GameMap>,
     player: Res<LocalPlayer>,
@@ -336,8 +347,10 @@ fn update_minimap(
     let (Some(picture), Ok((minimap, mut shown))) = (picture, minimap.single_mut()) else {
         return;
     };
-    // Out of the way of the death screen (and, in conquest, its own map).
-    shown.set_if_neq(if player.on_death_screen() { Visibility::Hidden } else { Visibility::Inherited });
+    // Out of the way of the death screen (and, in conquest, its own map), and
+    // away when the player has turned it off.
+    let hidden = !settings.show_minimap || player.on_death_screen();
+    shown.set_if_neq(if hidden { Visibility::Hidden } else { Visibility::Inherited });
     let conquest = session.mode == MODE_CONQUEST;
     let inner = MINIMAP - 4.0;
     let place = |at: Vec3, size: f32| {

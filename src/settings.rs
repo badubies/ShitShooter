@@ -105,10 +105,11 @@ pub enum Action {
     NextWeapon,
     PreviousWeapon,
     Scores,
+    Minimap,
 }
 
 impl Action {
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 19] = [
         Action::Forward,
         Action::Back,
         Action::Left,
@@ -127,6 +128,7 @@ impl Action {
         Action::NextWeapon,
         Action::PreviousWeapon,
         Action::Scores,
+        Action::Minimap,
     ];
 
     /// (name in the settings panel, name in the settings file, default binding)
@@ -151,6 +153,7 @@ impl Action {
             Action::NextWeapon => ("Next weapon", "next_weapon", WheelDown),
             Action::PreviousWeapon => ("Previous weapon", "previous_weapon", WheelUp),
             Action::Scores => ("Scoreboard", "scores", Key(KeyCode::Tab)),
+            Action::Minimap => ("Toggle minimap", "minimap", Key(KeyCode::KeyM)),
         }
     }
 
@@ -279,6 +282,8 @@ pub struct Settings {
     pub ui_scale: f32,
     /// Borderless full screen, rather than a window.
     pub fullscreen: bool,
+    /// The map in the top left corner while playing (see `minimap.rs`).
+    pub show_minimap: bool,
     /// The guns carried in the two slots. Never the same gun twice.
     pub primary: WeaponId,
     pub secondary: WeaponId,
@@ -307,6 +312,7 @@ impl Default for Settings {
             volume: 0.8,
             ui_scale: 1.0,
             fullscreen: false,
+            show_minimap: true,
             primary: RIFLE,
             secondary: PISTOL,
             sights: default_sights(),
@@ -438,6 +444,7 @@ impl Settings {
             port: std::mem::take(&mut self.port),
             lobby_server: std::mem::take(&mut self.lobby_server),
             fullscreen: self.fullscreen,
+            show_minimap: self.show_minimap,
             primary: self.primary,
             secondary: self.secondary,
             sights: self.sights,
@@ -557,6 +564,7 @@ impl Settings {
                 "volume" => settings.volume = number.unwrap_or(settings.volume),
                 "ui_scale" => settings.ui_scale = number.unwrap_or(settings.ui_scale),
                 "fullscreen" => settings.fullscreen = value.parse().unwrap_or(settings.fullscreen),
+                "minimap" => settings.show_minimap = value.parse().unwrap_or(settings.show_minimap),
                 "primary" => settings.primary = gun_named(value).unwrap_or(settings.primary),
                 "secondary" => settings.secondary = gun_named(value).unwrap_or(settings.secondary),
                 "grenade" => {
@@ -619,8 +627,9 @@ impl Settings {
             self.ui_scale
         );
         text.push_str(&format!(
-            "fullscreen = {}\nprimary = {}\nsecondary = {}\ngrenade = {}\n",
+            "fullscreen = {}\nminimap = {}\nprimary = {}\nsecondary = {}\ngrenade = {}\n",
             self.fullscreen,
+            self.show_minimap,
             weapon(self.primary).name,
             weapon(self.secondary).name,
             GRENADES[self.grenade as usize % GRENADE_KINDS].name
@@ -770,6 +779,9 @@ struct TabButton(SettingsTab);
 /// The button for a window (`false`) or borderless full screen (`true`).
 #[derive(Component)]
 struct WindowChoice(bool);
+/// The button that shows (`true`) or hides (`false`) the minimap.
+#[derive(Component)]
+struct MinimapChoice(bool);
 #[derive(Component)]
 struct DialSlider(Dial);
 /// The part of a dial's rail up to its thumb.
@@ -954,7 +966,7 @@ fn settings_box(node: Node) -> impl Bundle {
     )
 }
 
-/// The mouse, sound and window.
+/// The mouse, sound, window and HUD.
 fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
     page.spawn(Node {
         // Down to the buttons at the bottom.
@@ -1034,9 +1046,43 @@ fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
                     },
                     children![ui::label("Alt + Enter switches at any time.", 13.0, DIM)],
                 ),
+                (
+                    Node {
+                        margin: UiRect::top(px(14)),
+                        ..default()
+                    },
+                    children![ui::section("Minimap")],
+                ),
+                (MinimapChoice(true), ui::button("Shown"), observe(pick_minimap(true))),
+                (MinimapChoice(false), ui::button("Hidden"), observe(pick_minimap(false))),
+                (
+                    Node {
+                        margin: UiRect::top(px(4)),
+                        ..default()
+                    },
+                    children![ui::label(minimap_hint(settings), 13.0, DIM)],
+                ),
             ],
         ));
     });
+}
+
+fn pick_minimap(shown: bool) -> impl Fn(On<Activate>, ResMut<Settings>) {
+    move |_, mut settings| {
+        if settings.show_minimap != shown {
+            settings.show_minimap = shown;
+        }
+    }
+}
+
+/// Which key shows and hides the minimap in a game. The page is put up again
+/// when the Controls tab is left, so this follows a change of binding there.
+fn minimap_hint(settings: &Settings) -> String {
+    if settings.binds(Action::Minimap).next().is_some() {
+        format!("{} switches it in a game.", settings.key_names(Action::Minimap))
+    } else {
+        "Bind a key under Controls to switch it in a game.".to_string()
+    }
 }
 
 fn pick_window(fullscreen: bool) -> impl Fn(On<Activate>, ResMut<Settings>) {
@@ -1213,7 +1259,10 @@ const CONTROL_GROUPS: &[(&str, &[Action])] = &[
         "Move",
         &[Action::Forward, Action::Back, Action::Left, Action::Right, Action::Jump, Action::Crouch, Action::Dash],
     ),
-    ("Fight", &[Action::Fire, Action::Aim, Action::Reload, Action::Grenade, Action::Ping, Action::Scores]),
+    (
+        "Fight",
+        &[Action::Fire, Action::Aim, Action::Reload, Action::Grenade, Action::Ping, Action::Scores, Action::Minimap],
+    ),
     (
         "Weapons",
         &[Action::Primary, Action::Secondary, Action::Knife, Action::NextWeapon, Action::PreviousWeapon],
@@ -1253,13 +1302,20 @@ fn style_panel(
     mut commands: Commands,
     menu: Res<SettingsMenu>,
     mut settings: ResMut<Settings>,
-    mut buttons: Query<(Option<&TabButton>, Option<&WindowChoice>, &mut ui::ButtonKind, &mut BorderColor)>,
+    mut buttons: Query<(
+        Option<&TabButton>,
+        Option<&WindowChoice>,
+        Option<&MinimapChoice>,
+        &mut ui::ButtonKind,
+        &mut BorderColor,
+    )>,
     sliders: Query<(Entity, &DialSlider, &SliderValue)>,
 ) {
-    for (tab, window, mut kind, mut border) in &mut buttons {
-        let picked = match (tab, window) {
-            (Some(tab), _) => tab.0 == menu.tab,
-            (_, Some(window)) => window.0 == settings.fullscreen,
+    for (tab, window, minimap, mut kind, mut border) in &mut buttons {
+        let picked = match (tab, window, minimap) {
+            (Some(tab), _, _) => tab.0 == menu.tab,
+            (_, Some(window), _) => window.0 == settings.fullscreen,
+            (_, _, Some(minimap)) => minimap.0 == settings.show_minimap,
             _ => continue,
         };
         let wanted = if picked { ui::ButtonKind::Picked } else { ui::ButtonKind::Normal };
@@ -1349,6 +1405,7 @@ mod tests {
             volume: 0.35,
             ui_scale: 1.25,
             fullscreen: true,
+            show_minimap: false,
             primary: 3,
             secondary: 1,
             sights: [IRON_SIGHTS, RED_DOT, IRON_SIGHTS, RED_DOT, RED_DOT],
@@ -1358,6 +1415,7 @@ mod tests {
         settings.set_bind(Action::Grenade, 0, Bind::Mouse(MouseButton::Middle));
         settings.set_bind(Action::Crouch, 0, Bind::Key(KeyCode::KeyC));
         settings.set_bind(Action::Forward, 1, Bind::Key(KeyCode::ArrowUp));
+        settings.set_bind(Action::Minimap, 0, Bind::Key(KeyCode::KeyN));
         // Taken from reload, which is left with nothing.
         settings.set_bind(Action::Jump, 1, Bind::Key(KeyCode::KeyR));
         assert_eq!(settings.binds(Action::Reload).count(), 0);
