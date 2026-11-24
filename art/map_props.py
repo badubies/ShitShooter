@@ -348,6 +348,16 @@ def slab_with_hole(p, x0, y0, x1, y1, z0, z1, hole, m):
     p.box(hx0, hy1, z0, hx1, y1, z1, m)
 
 
+def ring(p, x0, y0, x1, y1, inset, z0, z1, m, collide=False):
+    """A band round the outside of the rectangle, `inset` wide inwards from
+    its edge. Never a solid slab: one across the whole footprint would show
+    as a ceiling inside and fight the real ceiling or floor for the pixels."""
+    p.box(x0, y0, z0, x1, y0 + inset, z1, m, collide)
+    p.box(x0, y1 - inset, z0, x1, y1, z1, m, collide)
+    p.box(x0, y0 + inset, z0, x0 + inset, y1 - inset, z1, m, collide)
+    p.box(x1 - inset, y0 + inset, z0, x1, y1 - inset, z1, m, collide)
+
+
 FLOOR = 0.15
 DOOR_TOP = 2.35
 SILL = 1.0
@@ -417,8 +427,8 @@ def house_tall(name, wall_m, C):
     wall(p, "y", -D + 0.2, D - 0.2, -W, -W + 0.2, TOP + 0.2, TOP + 1.0, wall_m)
     wall(p, "y", -D + 0.2, D - 0.2, W - 0.2, W, TOP + 0.2, TOP + 1.0, wall_m)
     # A band between the floors, and a cap on the parapet.
-    p.box(-W - 0.06, -D - 0.06, F2 - 0.15, W + 0.06, D + 0.06, F2 + 0.05, C["trim"], False)
-    p.box(-W - 0.06, -D - 0.06, TOP + 1.0, W + 0.06, D + 0.06, TOP + 1.08, C["trim"], False)
+    ring(p, -W - 0.06, -D - 0.06, W + 0.06, D + 0.06, 0.06, F2 - 0.15, F2 + 0.05, C["trim"])
+    ring(p, -W - 0.06, -D - 0.06, W + 0.06, D + 0.06, 0.26, TOP + 1.0, TOP + 1.08, C["trim"], True)
     # A water tank on the roof.
     p.cylinder(0.6, 0.6, TOP + 0.2, TOP + 1.6, C["metal"], 10, x=2.6, y=1.8)
     p.collide(2.0, 1.2, TOP + 0.2, 3.2, 2.4, TOP + 1.6)
@@ -445,7 +455,7 @@ def barn(C):
         yy = sy * (D + 0.02)
         for sx in (-1, 1):
             x_in = sx * 2.0
-            p.box(x_in + sx * 0.05, yy + sy * 0.0, FLOOR, x_in + sx * 0.12, yy + sy * 2.0, 3.85, C["barn_red"], False)
+            p.box(x_in + sx * 0.05, yy, FLOOR, x_in + sx * 0.14, yy + sy * 2.0, 3.85, C["barn_red"], False)
     # Hayloft over the back half.
     LOFT = 3.0
     loft_front = 1.5
@@ -459,7 +469,9 @@ def barn(C):
     # Bales on the loft and on the floor.
     for x, y, z in ((2.6, 5.5, LOFT), (2.6, 6.8, LOFT), (1.2, 6.8, LOFT), (3.6, -5.5, FLOOR), (-3.2, -6.4, FLOOR)):
         p.box(x - 0.6, y - 0.45, z, x + 0.6, y + 0.45, z + 0.8, C["hay"])
-    p.box(-W, -D, H, W, D, H + 0.05, C["wood"], False)
+    # The ceiling stops at the gable ends (they stand on the walls from H up),
+    # and is solid: you cannot jump up through it from the loft.
+    p.box(-W, -D + 0.25, H, W, D - 0.25, H + 0.05, C["wood"])
     gable_roof(p, -W, -D, W, D, H, H + 3.4, C["roof_dark"], C["barn_red"], along="y", over=0.5)
     # A white cross brace on each big door frame.
     return p
@@ -502,8 +514,8 @@ def warehouse(C):
     p.box(-W, -D, H, W, D, H + 0.25, C["sheet"])
     # Skylights.
     for y in (-6.0, 0.0, 6.0):
-        p.box(-2.0, y - 1.2, H + 0.25, 2.0, y + 1.2, H + 0.4, C["window"], False)
-    p.box(-W - 0.1, -D - 0.1, H, W + 0.1, D + 0.1, H + 0.15, C["metal_dark"], False)
+        p.box(-2.0, y - 1.2, H + 0.25, 2.0, y + 1.2, H + 0.4, C["window"])
+    ring(p, -W - 0.1, -D - 0.1, W + 0.1, D + 0.1, 0.1, H, H + 0.15, C["metal_dark"])
     return p
 
 
@@ -779,14 +791,14 @@ def crate(C, name="crate", s=1.2):
     h = s / 2
     p.box(-h, -h, 0.0, h, h, s, C["wood_light"])
     e = 0.08
-    for z in (0.0, s - e):
+    for z in (0.0, s - e + 0.01):
         for y in (-h - 0.01, h - e + 0.01):
             p.box(-h - 0.01, y, z, h + 0.01, y + e, z + e, C["wood"], False)
         for x in (-h - 0.01, h - e + 0.01):
             p.box(x, -h - 0.01, z, x + e, h + 0.01, z + e, C["wood"], False)
     for x in (-h - 0.01, h - e + 0.01):
         for y in (-h - 0.01, h - e + 0.01):
-            p.box(x, y, 0.0, x + e, y + e, s, C["wood"], False)
+            p.box(x, y, 0.0, x + e, y + e, s + 0.01, C["wood"], False)
     return p
 
 
@@ -856,7 +868,7 @@ def container(C):
         for y in (-W - 0.04, W):
             p.box(x - 0.04, y, 0.1, x + 0.04, y + 0.04, H - 0.1, C["roof_green"], False)
     for x in (-L - 0.03, L - 0.05):
-        p.box(x, -W, 0.0, x + 0.08, W, H, C["metal_dark"], False)
+        p.box(x, -W - 0.06, 0.0, x + 0.08, W + 0.06, H + 0.03, C["metal_dark"], False)
     return p
 
 
