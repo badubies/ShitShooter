@@ -35,5 +35,11 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
+# Leaves the debug info and symbols out of release builds, which makes the
+# downloads much smaller. Crash messages keep their file and line, and only
+# backtraces lose function names.
+[profile.release]
+strip = true
+
 [workspace]
 members = ["launcher"]
