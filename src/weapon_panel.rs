@@ -211,6 +211,8 @@ fn spawn_panel(mut commands: Commands) {
     };
 
     commands.spawn((
+        crate::ui::HudScaled,
+        crate::ui::HiddenWhenDead,
         Node {
             position_type: PositionType::Absolute,
             right: px(20),

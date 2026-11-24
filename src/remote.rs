@@ -539,6 +539,7 @@ fn draw_ally_tags(
     mut commands: Commands,
     session: Res<Session>,
     window: Single<&Window, With<PrimaryWindow>>,
+    ui_scale: Res<UiScale>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
     remotes: Query<(&RemotePlayer, &Transform), Without<MainCamera>>,
     mut tags: Query<(Entity, &AllyTag, &mut Node, &mut Visibility)>,
@@ -549,7 +550,7 @@ fn draw_ally_tags(
         Projection::Perspective(perspective) => perspective.fov,
         _ => 1.0,
     };
-    let size = Vec2::new(window.width(), window.height());
+    let size = crate::ui::ui_size(&window, &ui_scale);
 
     let mut shown = Vec::new();
     for (remote, transform) in &remotes {

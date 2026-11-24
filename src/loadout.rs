@@ -39,9 +39,10 @@ use crate::{
     world::GRENADE_MODELS,
 };
 
-/// Thumbnails are this many pixels, larger than they are shown so they stay sharp.
-const THUMB_SIZE: UVec2 = UVec2::new(320, 120);
-const STAGE_SIZE: UVec2 = UVec2::new(640, 240);
+/// Thumbnails are this many pixels, larger than they are shown so they stay
+/// sharp on a big screen, where the interface is scaled up (see `ui::scale_ui`).
+const THUMB_SIZE: UVec2 = UVec2::new(640, 240);
+const STAGE_SIZE: UVec2 = UVec2::new(960, 360);
 /// Width over height of both: the stage on the card keeps the same shape.
 const ASPECT: f32 = 8.0 / 3.0;
 /// The render layer of the stage. Thumbnails take the ones after it. (The

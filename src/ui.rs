@@ -108,6 +108,8 @@ impl Plugin for UiPlugin {
             .add_systems(
                 Update,
                 (
+                    scale_ui,
+                    scale_hud,
                     style_buttons,
                     style_fields,
                     wheel_scroll,
@@ -413,6 +415,66 @@ fn style_fields(focus: Res<InputFocus>, mut fields: Query<(Entity, &mut BorderCo
             *border = BorderColor::all(wanted);
         }
     }
+}
+
+/// The window size every screen is laid out for. They are all drawn bigger or
+/// smaller to take the same share of any window.
+pub const DESIGN_SIZE: Vec2 = Vec2::new(1280.0, 720.0);
+
+/// Scales the whole interface to the window, by whichever of its width and
+/// height is the tighter fit so nothing ever runs off a screen of another
+/// shape, and then by the player's own "Menu and HUD size".
+fn scale_ui(window: Single<&Window, With<PrimaryWindow>>, mut scale: ResMut<UiScale>) {
+    let fit = (window.width() / DESIGN_SIZE.x).min(window.height() / DESIGN_SIZE.y);
+    // A minimised window is 0 by 0.
+    let wanted = fit.max(0.25);
+    if (scale.0 - wanted).abs() > 1e-3 {
+        scale.0 = wanted;
+    }
+}
+
+/// A HUD element that the player's "HUD size" makes bigger or smaller.
+#[derive(Component)]
+pub struct HudScaled;
+
+/// Sizes each HUD element by the player's "HUD size", about the corner or
+/// edge of the screen it is pinned to: one in the bottom left grows up and to
+/// the right, and elements stacked from the same corner keep clear of each
+/// other. (The menus are never sized this way: they are laid out to fill the
+/// window, see `scale_ui`.)
+fn scale_hud(settings: Res<Settings>, mut elements: Query<(&Node, &ComputedNode, &mut UiTransform), With<HudScaled>>) {
+    let scale = settings.ui_scale;
+    // How far an edge is from the screen's edge, if the element is pinned by it.
+    let offset = |edge: Val| match edge {
+        Val::Px(px) => Some(px),
+        _ => None,
+    };
+    for (node, computed, mut transform) in &mut elements {
+        let half = computed.size() * computed.inverse_scale_factor / 2.0;
+        // Its centre moves away from the corner as it grows.
+        let shift = |near: Option<f32>, far: Option<f32>, half: f32| match (near, far) {
+            (Some(near), _) => (scale - 1.0) * (near + half),
+            (None, Some(far)) => -(scale - 1.0) * (far + half),
+            (None, None) => 0.0,
+        };
+        let wanted = UiTransform {
+            translation: Val2::px(
+                shift(offset(node.left), offset(node.right), half.x),
+                shift(offset(node.top), offset(node.bottom), half.y),
+            ),
+            scale: Vec2::splat(scale),
+            rotation: Rot2::IDENTITY,
+        };
+        if *transform != wanted {
+            *transform = wanted;
+        }
+    }
+}
+
+/// The window's size in the interface's own units (window pixels divided by
+/// `UiScale`), for placing things over the 3D view.
+pub fn ui_size(window: &Window, scale: &UiScale) -> Vec2 {
+    Vec2::new(window.width(), window.height()) / scale.0
 }
 
 /// A box whose contents scroll with the mouse wheel while the pointer is on it.
@@ -1337,8 +1399,8 @@ struct ScoreboardPanel;
 #[derive(Component)]
 struct PausePanel;
 
-/// A HUD element pinned to part of the screen. Never blocks mouse clicks.
-fn hud_anchor(node: Node) -> impl Bundle {
+/// Something pinned to part of the screen during a match. Never blocks mouse clicks.
+fn pinned(node: Node) -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
@@ -1349,9 +1411,15 @@ fn hud_anchor(node: Node) -> impl Bundle {
     )
 }
 
-/// A full-screen HUD layer that centres its content.
+/// A HUD element pinned to part of the screen, sized by the player's "HUD size".
+fn hud_anchor(node: Node) -> impl Bundle {
+    (pinned(node), HudScaled)
+}
+
+/// A full-screen HUD layer that centres its content. Not sized by "HUD size":
+/// what is in it lines up with the view (the crosshair, the choke ring).
 fn hud_layer() -> impl Bundle {
-    hud_anchor(Node {
+    pinned(Node {
         width: percent(100),
         height: percent(100),
         flex_direction: FlexDirection::Column,
@@ -1692,8 +1760,9 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         )],
     ));
 
-    // Kill feed, top right.
+    // Kill feed, top right. Hidden on the death screen, which says who got us.
     commands.spawn((
+        KillFeedPanel,
         hud_anchor(Node {
             right: px(20),
             top: px(14),
@@ -1713,8 +1782,10 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ],
     ));
 
-    // Health, bottom left.
+    // Health, bottom left. Hidden on the death screen, like the speed and the
+    // weapon panel, which would be in the way of its buttons.
     commands.spawn((
+        HiddenWhenDead,
         hud_anchor(Node {
             left: px(20),
             bottom: px(18),
@@ -1745,7 +1816,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     // Speed and dash, bottom middle. Hidden on the death screen, which
     // reaches down to it.
     commands.spawn((
-        SpeedPanel,
+        HiddenWhenDead,
         hud_anchor(Node {
             width: percent(100),
             bottom: px(22),
@@ -1783,7 +1854,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             // Clear of the clock and scores at the top, and conquest's flags.
-            padding: UiRect::top(px(118)),
+            padding: UiRect::top(px(DEATH_SCREEN_TOP)),
             row_gap: px(16),
             display: Display::None,
             ..default()
@@ -2087,8 +2158,17 @@ fn update_key_hints(
     }
 }
 
+/// A HUD element that says nothing while we are dead (health, speed, ammo),
+/// hidden on the death screen.
 #[derive(Component)]
-struct SpeedPanel;
+pub struct HiddenWhenDead;
+
+#[derive(Component)]
+struct KillFeedPanel;
+
+/// The space the death screen leaves above it for the clock and scores (and
+/// conquest's flags), at a HUD size of 100%.
+const DEATH_SCREEN_TOP: f32 = 118.0;
 
 /// The death screen (see `spawn_hud`).
 #[derive(Component)]
@@ -2584,6 +2664,7 @@ fn update_choke_ring(
     window: Single<&Window, With<PrimaryWindow>>,
     projection: Single<&Projection, With<MainCamera>>,
     ring: Single<(&mut Node, &mut BorderColor, &mut Visibility), With<ChokeRing>>,
+    ui_scale: Res<UiScale>,
 ) {
     let (mut node, mut border, mut visibility) = ring.into_inner();
     let shown = player.alive && player.weapon().choke.is_some() && player.aim > 0.05;
@@ -2596,7 +2677,7 @@ fn update_choke_ring(
         _ => 1.0,
     };
     // Where the edge of the cone lands on the screen.
-    let radius = player.spread().tan() / (fov / 2.0).tan() * window.height() / 2.0;
+    let radius = player.spread().tan() / (fov / 2.0).tan() * ui_size(&window, &ui_scale).y / 2.0;
     let size = px((radius * 2.0).round());
     if node.width != size {
         node.width = size;
@@ -2615,6 +2696,7 @@ fn update_choke_ring(
 fn update_overlays(
     input: ActionInput,
     session: Res<Session>,
+    settings: Res<Settings>,
     player: Res<LocalPlayer>,
     smoke_fog: Res<SmokeFog>,
     controls: Res<Controls>,
@@ -2624,7 +2706,8 @@ fn update_overlays(
         Single<&mut Node, With<PausePanel>>,
         Query<&mut Node, With<LeaderOnly>>,
         Single<&mut Node, With<DeathScreen>>,
-        Single<&mut Node, With<SpeedPanel>>,
+        Query<&mut Node, With<HiddenWhenDead>>,
+        Single<&mut Node, With<KillFeedPanel>>,
     )>,
 ) {
     // White ticks for a hit, yellow for a headshot; red, and held a little
@@ -2655,7 +2738,16 @@ fn update_overlays(
     let paused = !controls.captured && !show_scores;
     let dead = player.on_death_screen() && !paused && !show_scores;
     set_shown(&mut nodes.p3(), dead);
-    set_shown(&mut nodes.p4(), !player.on_death_screen());
+    for mut node in &mut nodes.p4() {
+        set_shown(&mut node, !player.on_death_screen());
+    }
+    set_shown(&mut nodes.p5(), !dead);
+    // Clear of the clock and scores at the top, however big the HUD is.
+    let top = px(DEATH_SCREEN_TOP * settings.ui_scale.max(1.0));
+    let mut death = nodes.p3();
+    if death.padding.top != top {
+        death.padding.top = top;
+    }
     set_shown(&mut nodes.p0(), show_scores);
     set_shown(&mut nodes.p1(), paused);
     for mut node in &mut nodes.p2() {

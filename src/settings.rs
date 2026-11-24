@@ -274,6 +274,9 @@ pub struct Settings {
     pub fov: f32,
     /// Master volume, 0 to 1.
     pub volume: f32,
+    /// How big the HUD is, on top of the size the whole interface is scaled to
+    /// for the window (see `ui::scale_hud`): 1 is as designed.
+    pub ui_scale: f32,
     /// Borderless full screen, rather than a window.
     pub fullscreen: bool,
     /// The guns carried in the two slots. Never the same gun twice.
@@ -302,6 +305,7 @@ impl Default for Settings {
             ads_sensitivity: 1.0,
             fov: 75.0,
             volume: 0.8,
+            ui_scale: 1.0,
             fullscreen: false,
             primary: RIFLE,
             secondary: PISTOL,
@@ -320,10 +324,11 @@ enum Dial {
     AdsSensitivity,
     Fov,
     Volume,
+    UiScale,
 }
 
 impl Dial {
-    const ALL: [Dial; 4] = [Dial::Sensitivity, Dial::AdsSensitivity, Dial::Fov, Dial::Volume];
+    const ALL: [Dial; 5] = [Dial::Sensitivity, Dial::AdsSensitivity, Dial::Fov, Dial::Volume, Dial::UiScale];
 
     /// (label, step, minimum, maximum)
     fn info(self) -> (&'static str, f32, f32, f32) {
@@ -332,6 +337,7 @@ impl Dial {
             Dial::AdsSensitivity => ("Aim sensitivity", 0.05, 0.2, 2.0),
             Dial::Fov => ("Field of view", 5.0, 50.0, 100.0),
             Dial::Volume => ("Volume", 0.05, 0.0, 1.0),
+            Dial::UiScale => ("HUD size", 0.05, 0.75, 1.5),
         }
     }
 }
@@ -391,6 +397,7 @@ impl Settings {
             Dial::AdsSensitivity => &mut self.ads_sensitivity,
             Dial::Fov => &mut self.fov,
             Dial::Volume => &mut self.volume,
+            Dial::UiScale => &mut self.ui_scale,
         }
     }
 
@@ -400,6 +407,7 @@ impl Settings {
             Dial::AdsSensitivity => format!("x {:.2}", self.ads_sensitivity),
             Dial::Fov => format!("{:.0}", self.fov),
             Dial::Volume => format!("{:.0}%", self.volume * 100.0),
+            Dial::UiScale => format!("{:.0}%", self.ui_scale * 100.0),
         }
     }
 
@@ -547,6 +555,7 @@ impl Settings {
                 "ads_sensitivity" => settings.ads_sensitivity = number.unwrap_or(settings.ads_sensitivity),
                 "fov" => settings.fov = number.unwrap_or(settings.fov),
                 "volume" => settings.volume = number.unwrap_or(settings.volume),
+                "ui_scale" => settings.ui_scale = number.unwrap_or(settings.ui_scale),
                 "fullscreen" => settings.fullscreen = value.parse().unwrap_or(settings.fullscreen),
                 "primary" => settings.primary = gun_named(value).unwrap_or(settings.primary),
                 "secondary" => settings.secondary = gun_named(value).unwrap_or(settings.secondary),
@@ -598,7 +607,7 @@ impl Settings {
 
     fn to_text(&self) -> String {
         let mut text = format!(
-            "name = {}\naddress = {}\nport = {}\nlobby_server = {}\nsensitivity = {}\nads_sensitivity = {}\nfov = {}\nvolume = {}\n",
+            "name = {}\naddress = {}\nport = {}\nlobby_server = {}\nsensitivity = {}\nads_sensitivity = {}\nfov = {}\nvolume = {}\nui_scale = {}\n",
             self.name,
             self.address,
             self.port,
@@ -606,7 +615,8 @@ impl Settings {
             self.sensitivity,
             self.ads_sensitivity,
             self.fov,
-            self.volume
+            self.volume,
+            self.ui_scale
         );
         text.push_str(&format!(
             "fullscreen = {}\nprimary = {}\nsecondary = {}\ngrenade = {}\n",
@@ -1337,6 +1347,7 @@ mod tests {
             sensitivity: 3.4,
             fov: 90.0,
             volume: 0.35,
+            ui_scale: 1.25,
             fullscreen: true,
             primary: 3,
             secondary: 1,

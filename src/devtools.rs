@@ -172,7 +172,7 @@ fn selftest_lobby(
     settings: Res<Settings>,
     mut loadout: ResMut<LoadoutScreen>,
     choices: Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
-    window: Single<Entity, With<PrimaryWindow>>,
+    window: Single<(Entity, &Window), With<PrimaryWindow>>,
     mut pointer: MessageWriter<PointerInput>,
 ) {
     test.clock += time.delta_secs();
@@ -231,26 +231,26 @@ fn selftest_lobby(
         loadout.open = true;
     }
     if test.reached(7, 4.2) {
-        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, SHOTGUN)), false);
+        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, SHOTGUN)), false);
     }
     if test.reached(8, 4.6) {
         test.capture(&mut commands, "loadout_hover.png");
     }
     // Picking sees where the pointer is a frame after it moves there.
     if test.reached(9, 4.8) {
-        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, SHOTGUN)), true);
+        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, SHOTGUN)), true);
     }
     if test.reached(10, 5.1) {
         println!("[selftest] after a click on the shotgun's card: {}", weapon(settings.primary).name);
         test.capture(&mut commands, "loadout_clicked.png");
-        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, RIFLE)), false);
+        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, RIFLE)), false);
     }
     if test.reached(11, 5.2) {
-        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, RIFLE)), true);
+        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, RIFLE)), true);
     }
     if test.reached(12, 5.5) {
         println!("[selftest] and on the rifle's: {}", weapon(settings.primary).name);
-        point(&choices, *window, &mut pointer, None, false);
+        point(&choices, window.0, window.1.scale_factor(), &mut pointer, None, false);
         loadout.open = false;
     }
     if test.reached(13, 5.6) {
@@ -265,12 +265,14 @@ fn selftest_lobby(
 fn point(
     choices: &Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
     window: Entity,
+    scale_factor: f32,
     pointer: &mut MessageWriter<PointerInput>,
     target: Option<Choice>,
     click: bool,
 ) {
     let card = choices.iter().find(|(choice, ..)| Some(**choice) == target);
-    let position = card.map_or(Vec2::splat(5.0), |(_, at, node)| at.translation * node.inverse_scale_factor);
+    // Node positions are in physical pixels; the pointer is in the window's.
+    let position = card.map_or(Vec2::splat(5.0), |(_, at, _)| at.translation / scale_factor);
     let location = Location {
         target: NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(window)).expect("a window")),
         position,

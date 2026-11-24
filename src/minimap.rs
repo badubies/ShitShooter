@@ -266,6 +266,7 @@ fn spawn_minimap(mut commands: Commands, map: Res<GameMap>, picture: Option<Res<
     commands
         .spawn((
             Minimap,
+            crate::ui::HudScaled,
             Node {
                 position_type: PositionType::Absolute,
                 left: px(20),

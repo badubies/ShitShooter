@@ -215,6 +215,7 @@ fn draw_markers(
     session: Res<Session>,
     pings: Res<Pings>,
     window: Single<&Window, With<PrimaryWindow>>,
+    ui_scale: Res<UiScale>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
     mut markers: Query<(Entity, &PingMarker, &mut Node)>,
     mut labels: Query<(&PingLabel, &mut Text, &mut TextColor)>,
@@ -225,7 +226,7 @@ fn draw_markers(
         Projection::Perspective(perspective) => perspective.fov,
         _ => 1.0,
     };
-    let size = Vec2::new(window.width(), window.height());
+    let size = crate::ui::ui_size(&window, &ui_scale);
 
     for (entity, marker, _) in &markers {
         if !pings.list.iter().any(|ping| ping.from == marker.0) {

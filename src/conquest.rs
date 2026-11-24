@@ -244,6 +244,7 @@ fn spawn_hud(mut commands: Commands, session: Res<Session>, map: Res<GameMap>) {
         )
     });
     commands.spawn((
+        crate::ui::HudScaled,
         Node {
             position_type: PositionType::Absolute,
             width: percent(100),
@@ -260,6 +261,7 @@ fn spawn_hud(mut commands: Commands, session: Res<Session>, map: Res<GameMap>) {
     // The capture bar, under the crosshair.
     commands.spawn((
         CaptureBar,
+        crate::ui::HudScaled,
         Node {
             position_type: PositionType::Absolute,
             width: percent(100),
@@ -403,6 +405,7 @@ fn update_markers(
     map: Res<GameMap>,
     player: Res<LocalPlayer>,
     window: Single<&Window, With<PrimaryWindow>>,
+    ui_scale: Res<UiScale>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
     mut markers: Query<(&Marker, &mut Node, &mut Visibility)>,
     mut letters: Query<(&MarkerLetter, &mut TextColor)>,
@@ -413,7 +416,7 @@ fn update_markers(
         Projection::Perspective(perspective) => perspective.fov,
         _ => 1.0,
     };
-    let size = Vec2::new(window.width(), window.height());
+    let size = crate::ui::ui_size(&window, &ui_scale);
     for (marker, mut node, mut visibility) in &mut markers {
         let Some(point) = map.0.flags.get(marker.0) else {
             continue;
