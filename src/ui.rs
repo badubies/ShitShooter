@@ -1,59 +1,80 @@
-//! All the 2D interface: main menu, lobby, in-game HUD, scoreboard and pause menu.
+//! The 2D interface's building blocks (the look of buttons, fields and
+//! panels), and the connecting screen, lobby, in-game HUD, scoreboard and pause
+//! menu. The main menu is in `menu.rs`.
 
 use bevy::{
     clipboard::Clipboard,
     input_focus::{
-        FocusCause, InputFocus,
-        tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin},
+        InputFocus,
+        tab_navigation::{TabIndex, TabNavigationPlugin},
     },
     picking::{hover::Hovered, pointer::PointerButton},
     prelude::*,
-    text::{EditableText, TextCursorStyle, TextEdit},
+    text::{EditableText, TextCursorStyle},
     ui::Pressed,
     ui_widgets::{Activate, Button, TextInput, observe},
     window::PrimaryWindow,
 };
 
 use crate::{
-    AppState, LaunchArgs,
-    browser::lobby_server_panel,
+    AppState,
     combat::{HIT_MARKER_TIME, KillFeed, Notices},
     grenade::SmokeFog,
     gun_model::FittedModels,
     map::MAP_NAMES,
-    net::{self, Connection, MenuStatus, Session},
+    menu::{Field, MenuPage},
+    net::{self, Connection, Session},
     paint::{Skins, palette_color},
     loadout::{LoadoutCard, loadout_card},
     paint_editor::on_open_paint,
     player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, ask_respawn},
     protocol::*,
-    server::ServerSettings,
     settings::{Action, ActionInput, Settings, on_open_settings},
     world::{GameMap, MainCamera},
 };
 
-pub const PANEL: Color = Color::srgba(0.05, 0.06, 0.09, 0.93);
-pub const PANEL_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
+// The menus are warm-dark see-through panels over the live map, with thin
+// light edges and soft shadows. Orange marks the one thing to press next, and
+// whatever is picked.
+
+/// Over the map behind a menu, so the panels read.
+pub const SCRIM: Color = Color::srgba(0.047, 0.039, 0.035, 0.74);
+pub const PANEL: Color = Color::srgba(0.094, 0.078, 0.067, 0.92);
+/// The edge of panels and cards: the text colour, faint.
+pub const PANEL_EDGE: Color = Color::srgba(1.0, 0.925, 0.84, 0.09);
 /// A box inside a panel, a shade lighter than it.
-pub const CARD: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
-pub const BUTTON: Color = Color::srgb(0.16, 0.18, 0.24);
-const BUTTON_HOVER: Color = Color::srgb(0.25, 0.29, 0.40);
-const BUTTON_PRESS: Color = Color::srgb(0.95, 0.55, 0.15);
-pub const BUTTON_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
+pub const CARD: Color = Color::srgba(1.0, 0.925, 0.84, 0.04);
+pub const BUTTON: Color = Color::srgba(1.0, 0.925, 0.84, 0.07);
+const BUTTON_HOVER: Color = Color::srgba(1.0, 0.925, 0.84, 0.13);
+const BUTTON_PRESS: Color = Color::srgba(1.0, 0.925, 0.84, 0.19);
+pub const BUTTON_EDGE: Color = Color::srgba(1.0, 0.925, 0.84, 0.12);
 /// The one button on a screen that moves things along.
-const PRIMARY: Color = Color::srgb(0.93, 0.53, 0.13);
-const PRIMARY_HOVER: Color = Color::srgb(1.0, 0.66, 0.28);
-const PRIMARY_PRESS: Color = Color::srgb(1.0, 0.80, 0.50);
+const PRIMARY: Color = Color::srgb(1.0, 0.541, 0.122);
+const PRIMARY_HOVER: Color = Color::srgb(1.0, 0.62, 0.27);
+const PRIMARY_PRESS: Color = Color::srgb(0.91, 0.47, 0.07);
 /// Text on a primary button.
-const ON_PRIMARY: Color = Color::srgb(0.09, 0.07, 0.05);
-const DANGER_HOVER: Color = Color::srgb(0.62, 0.20, 0.18);
-pub const FIELD: Color = Color::srgb(0.10, 0.11, 0.15);
-const FIELD_EDGE: Color = Color::srgb(0.3, 0.33, 0.42);
-pub const TEXT: Color = Color::srgb(0.92, 0.93, 0.96);
-pub const DIM: Color = Color::srgb(0.60, 0.63, 0.70);
-pub const ACCENT: Color = Color::srgb(1.0, 0.62, 0.2);
-const DANGER: Color = Color::srgb(1.0, 0.35, 0.3);
-const GOOD: Color = Color::srgb(0.38, 0.86, 0.50);
+pub const ON_PRIMARY: Color = Color::srgb(0.102, 0.055, 0.016);
+/// A big card that is a button (the main menu's choices, a lobby in the list).
+const TILE: Color = Color::srgba(0.094, 0.078, 0.067, 0.88);
+const TILE_HOVER: Color = Color::srgba(0.15, 0.125, 0.105, 0.92);
+const TILE_PRESS: Color = Color::srgba(0.19, 0.16, 0.135, 0.94);
+/// Whatever is picked: a mode, a map, a lobby in the list.
+const PICKED: Color = Color::srgba(1.0, 0.541, 0.122, 0.13);
+const PICKED_HOVER: Color = Color::srgba(1.0, 0.541, 0.122, 0.18);
+const PICKED_PRESS: Color = Color::srgba(1.0, 0.541, 0.122, 0.24);
+const DANGER_HOVER: Color = Color::srgba(1.0, 0.42, 0.38, 0.20);
+pub const FIELD: Color = Color::srgba(0.047, 0.039, 0.035, 0.72);
+const FIELD_EDGE: Color = Color::srgba(1.0, 0.925, 0.84, 0.14);
+pub const TEXT: Color = Color::srgb(0.965, 0.933, 0.894);
+pub const DIM: Color = Color::srgb(0.70, 0.647, 0.584);
+/// Footnotes, and what can't be picked.
+pub const FAINT: Color = Color::srgb(0.557, 0.51, 0.447);
+pub const ACCENT: Color = Color::srgb(1.0, 0.541, 0.122);
+/// Errors, and the killer's name.
+pub const DANGER: Color = Color::srgb(1.0, 0.541, 0.502);
+/// The text of Leave and Quit.
+pub const DANGER_TEXT: Color = Color::srgb(1.0, 0.706, 0.659);
+pub const GOOD: Color = Color::srgb(0.373, 0.824, 0.498);
 /// Behind the HUD's panels: see-through, so the game shows past them.
 pub const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
 pub const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
@@ -72,23 +93,14 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        let args = app.world().resource::<LaunchArgs>().clone();
-        // What was typed last time, unless the command line says otherwise.
-        let saved = app.world().resource::<Settings>().clone();
+        // Archivo in place of Bevy's built-in font, for every piece of text.
+        // It is a variable font: `TextFont::weight` and `width` pick its
+        // boldness and how wide it runs (see `heading`).
+        app.world_mut()
+            .resource_mut::<Assets<Font>>()
+            .insert(AssetId::default(), Font::from_bytes(include_bytes!("fonts/Archivo.ttf").to_vec()))
+            .expect("the default font's slot");
         app.add_plugins(TabNavigationPlugin)
-            .insert_resource(MenuPrefs {
-                name: args.name.clone().unwrap_or(saved.name),
-                address: args.join.clone().unwrap_or(saved.address),
-                port: if args.server.port == DEFAULT_PORT {
-                    saved.port
-                } else {
-                    args.server.port.to_string()
-                },
-                password: args.server.password.clone(),
-                server: saved.lobby_server,
-            })
-            .add_systems(Startup, auto_launch)
-            .add_systems(OnEnter(AppState::Menu), spawn_menu)
             .add_systems(OnEnter(AppState::Connecting), spawn_connecting)
             .add_systems(OnEnter(AppState::Lobby), spawn_lobby)
             .add_systems(OnEnter(AppState::Playing), spawn_hud)
@@ -97,7 +109,6 @@ impl Plugin for UiPlugin {
                 (
                     style_buttons,
                     style_fields,
-                    update_menu_status.run_if(in_state(AppState::Menu)),
                     update_connecting.run_if(in_state(AppState::Connecting)),
                     update_lobby.run_if(in_state(AppState::Lobby)),
                     update_rosters,
@@ -118,26 +129,6 @@ impl Plugin for UiPlugin {
     }
 }
 
-/// What was last typed into the menu, so it survives leaving and coming back.
-#[derive(Resource, Clone)]
-pub(crate) struct MenuPrefs {
-    pub name: String,
-    pub address: String,
-    pub port: String,
-    pub password: String,
-    /// The lobby server's address.
-    pub server: String,
-}
-
-#[derive(Component, Clone, Copy, PartialEq)]
-pub(crate) enum Field {
-    Name,
-    Address,
-    Port,
-    Password,
-    Server,
-}
-
 // ---------------------------------------------------------------- building blocks
 
 pub fn label(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
@@ -151,9 +142,36 @@ pub fn label(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     )
 }
 
+/// Text in a given weight (see `FontWeight`), in the normal width.
+pub fn weighted(text: impl Into<String>, size: f32, weight: u16, color: Color) -> impl Bundle {
+    (
+        Text::new(text),
+        TextFont {
+            font_size: FontSize::Px(size),
+            weight: FontWeight(weight),
+            ..default()
+        },
+        TextColor(color),
+    )
+}
+
+/// A title: extra bold, wide capitals.
+pub fn heading(text: &str, size: f32, color: Color) -> impl Bundle + use<> {
+    (
+        Text::new(text.to_uppercase()),
+        TextFont {
+            font_size: FontSize::Px(size),
+            weight: FontWeight::EXTRA_BOLD,
+            width: FontWidth::EXPANDED,
+            ..default()
+        },
+        TextColor(color),
+    )
+}
+
 /// The small dim capitals over a group of controls.
-pub fn section(text: &str) -> impl Bundle {
-    label(text.to_uppercase(), 13.0, DIM)
+pub fn section(text: &str) -> impl Bundle + use<> {
+    weighted(text.to_uppercase(), 12.0, 700, DIM)
 }
 
 /// How a button is coloured.
@@ -163,8 +181,12 @@ pub enum ButtonKind {
     Normal,
     /// The main thing to do on a screen: filled with the accent colour.
     Primary,
-    /// Leaving and quitting: turns red under the mouse.
+    /// Leaving and quitting: red text, turns red under the mouse.
     Danger,
+    /// A big card that is a button.
+    Tile,
+    /// What is picked, among things to pick from.
+    Picked,
 }
 
 impl ButtonKind {
@@ -173,14 +195,46 @@ impl ButtonKind {
         match self {
             ButtonKind::Normal => [BUTTON, BUTTON_HOVER, BUTTON_PRESS],
             ButtonKind::Primary => [PRIMARY, PRIMARY_HOVER, PRIMARY_PRESS],
-            ButtonKind::Danger => [BUTTON, DANGER_HOVER, DANGER],
+            ButtonKind::Danger => [BUTTON, DANGER_HOVER, DANGER_HOVER],
+            ButtonKind::Tile => [TILE, TILE_HOVER, TILE_PRESS],
+            ButtonKind::Picked => [PICKED, PICKED_HOVER, PICKED_PRESS],
+        }
+    }
+
+    pub fn edge(self) -> Color {
+        match self {
+            ButtonKind::Primary | ButtonKind::Picked => PRIMARY,
+            ButtonKind::Tile => PANEL_EDGE,
+            _ => BUTTON_EDGE,
+        }
+    }
+
+    /// The colour of the text on it.
+    pub fn ink(self) -> Color {
+        match self {
+            ButtonKind::Primary => ON_PRIMARY,
+            ButtonKind::Danger => DANGER_TEXT,
+            _ => TEXT,
+        }
+    }
+
+    /// Under it: a glow for the primary button, a soft shadow for tiles.
+    pub fn shadow(self) -> BoxShadow {
+        match self {
+            ButtonKind::Primary => BoxShadow::new(PRIMARY.with_alpha(0.22), px(0), px(6), px(0), px(18)),
+            ButtonKind::Tile => BoxShadow::new(Color::BLACK.with_alpha(0.38), px(0), px(16), px(0), px(40)),
+            _ => BoxShadow::default(),
         }
     }
 }
 
 /// The box of a button, without its text.
 pub fn button_box(kind: ButtonKind, small: bool) -> impl Bundle {
-    let (across, down) = if small { (10, 4) } else { (18, 9) };
+    let (across, down, round) = match (small, kind) {
+        (true, _) => (12, 6, 9),
+        (false, ButtonKind::Primary) => (32, 15, 14),
+        (false, _) => (20, 12, 12),
+    };
     (
         Button,
         kind,
@@ -190,75 +244,101 @@ pub fn button_box(kind: ButtonKind, small: bool) -> impl Bundle {
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
             border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(6)),
+            border_radius: BorderRadius::all(px(round)),
             ..default()
         },
         BackgroundColor(kind.colors()[0]),
-        BorderColor::all(BUTTON_EDGE),
+        BorderColor::all(kind.edge()),
+        kind.shadow(),
     )
 }
 
-fn button_of(text: &str, kind: ButtonKind, small: bool) -> impl Bundle {
-    let color = if kind == ButtonKind::Primary { ON_PRIMARY } else { TEXT };
-    let size = if small { 15.0 } else { 18.0 };
+fn button_of(text: &str, kind: ButtonKind, small: bool) -> impl Bundle + use<> {
+    // The primary button's text is like a heading; the rest is plain.
+    let (text, font) = if kind == ButtonKind::Primary && !small {
+        let font = TextFont {
+            font_size: FontSize::Px(19.0),
+            weight: FontWeight::EXTRA_BOLD,
+            width: FontWidth::EXPANDED,
+            ..default()
+        };
+        (text.to_uppercase(), font)
+    } else {
+        let font = TextFont {
+            font_size: FontSize::Px(if small { 14.0 } else { 16.0 }),
+            weight: FontWeight::SEMIBOLD,
+            ..default()
+        };
+        (text.to_string(), font)
+    };
     (
         button_box(kind, small),
-        children![(label(text, size, color), Pickable::IGNORE)],
+        children![(Text::new(text), font, TextColor(kind.ink()), Pickable::IGNORE)],
     )
 }
 
-pub fn button(text: &str) -> impl Bundle {
+pub fn button(text: &str) -> impl Bundle + use<> {
     button_of(text, ButtonKind::Normal, false)
 }
 
-pub fn primary_button(text: &str) -> impl Bundle {
+pub fn primary_button(text: &str) -> impl Bundle + use<> {
     button_of(text, ButtonKind::Primary, false)
 }
 
-fn danger_button(text: &str) -> impl Bundle {
+pub(crate) fn danger_button(text: &str) -> impl Bundle + use<> {
     button_of(text, ButtonKind::Danger, false)
 }
 
-pub(crate) fn small_button(text: &str) -> impl Bundle {
+pub(crate) fn small_button(text: &str) -> impl Bundle + use<> {
     button_of(text, ButtonKind::Normal, true)
 }
 
-/// A caption with a one-line text field under it.
-pub(crate) fn field(caption: &str, field: Field, initial: &str, max_chars: usize, tab: i32) -> impl Bundle {
+/// A caption with a one-line text field under it, `width` characters wide.
+pub(crate) fn field_sized(
+    caption: &str,
+    field: Field,
+    initial: &str,
+    max_chars: usize,
+    tab: i32,
+    width: f32,
+) -> impl Bundle + use<> {
     (
         Node {
             flex_direction: FlexDirection::Column,
-            row_gap: px(5),
+            row_gap: px(8),
             ..default()
         },
-        children![
-            section(caption),
-            (
-                field,
-                TextInput,
-                EditableText {
-                    visible_width: Some(19.0),
-                    max_characters: Some(max_chars),
-                    ..EditableText::new(initial)
-                },
-                TextLayout::no_wrap(),
-                TextFont {
-                    font_size: FontSize::Px(20.0),
-                    ..default()
-                },
-                TextColor(TEXT),
-                TextCursorStyle::default(),
-                TabIndex(tab),
-                Node {
-                    border: UiRect::all(px(2)),
-                    padding: UiRect::axes(px(8), px(5)),
-                    border_radius: BorderRadius::all(px(4)),
-                    ..default()
-                },
-                BorderColor::all(FIELD_EDGE),
-                BackgroundColor(FIELD),
-            )
-        ],
+        children![section(caption), text_box(field, initial, max_chars, tab, width)],
+    )
+}
+
+/// A one-line text field, `width` characters wide, with no caption.
+pub(crate) fn text_box(field: Field, initial: &str, max_chars: usize, tab: i32, width: f32) -> impl Bundle + use<> {
+    (
+        field,
+        TextInput,
+        EditableText {
+            visible_width: Some(width),
+            max_characters: Some(max_chars),
+            ..EditableText::new(initial)
+        },
+        TextLayout::no_wrap(),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            weight: FontWeight::SEMIBOLD,
+            ..default()
+        },
+        TextColor(TEXT),
+        TextCursorStyle::default(),
+        TabIndex(tab),
+        Node {
+            border: UiRect::all(px(1)),
+            padding: UiRect::axes(px(16), px(13)),
+            border_radius: BorderRadius::all(px(12)),
+            ..default()
+        },
+        BorderColor::all(FIELD_EDGE),
+        BackgroundColor(FIELD),
     )
 }
 
@@ -282,36 +362,42 @@ pub fn panel() -> impl Bundle {
         Node {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
-            row_gap: px(14),
-            padding: UiRect::axes(px(30), px(26)),
+            row_gap: px(16),
+            padding: UiRect::all(px(28)),
             border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(12)),
+            border_radius: BorderRadius::all(px(24)),
             ..default()
         },
         BackgroundColor(PANEL),
         BorderColor::all(PANEL_EDGE),
+        soft_shadow(),
     )
+}
+
+/// The shadow under panels.
+pub fn soft_shadow() -> BoxShadow {
+    BoxShadow::new(Color::BLACK.with_alpha(0.45), px(0), px(24), px(0), px(48))
 }
 
 /// A box inside a panel that groups a few controls under a `section` caption.
 pub fn card() -> impl Bundle {
-    (card_node(), BackgroundColor(CARD), BorderColor::all(HUD_EDGE))
+    (card_node(), BackgroundColor(CARD), BorderColor::all(PANEL_EDGE))
 }
 
 pub fn card_node() -> Node {
     Node {
         flex_direction: FlexDirection::Column,
-        row_gap: px(10),
-        padding: UiRect::all(px(16)),
+        row_gap: px(12),
+        padding: UiRect::all(px(18)),
         border: UiRect::all(px(1)),
-        border_radius: BorderRadius::all(px(8)),
+        border_radius: BorderRadius::all(px(16)),
         ..default()
     }
 }
 
 pub fn button_row() -> Node {
     Node {
-        column_gap: px(12),
+        column_gap: px(10),
         align_items: AlignItems::Center,
         ..default()
     }
@@ -366,280 +452,15 @@ pub fn set_shown(node: &mut Mut<Node>, shown: bool) {
     }
 }
 
-// ---------------------------------------------------------------- main menu
-
-#[derive(Component)]
-struct MenuStatusText;
-
-/// One half of the menu: what it does, the field it needs and the button.
-fn menu_card(title: &str, hint: &str, input: impl Bundle, action: impl Bundle) -> impl Bundle {
-    (
-        card(),
-        children![
-            label(title, 20.0, TEXT),
-            label(hint, 14.0, DIM),
-            input,
-            (
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    margin: UiRect::top(px(4)),
-                    ..default()
-                },
-                children![action],
-            ),
-        ],
-    )
-}
-
-fn spawn_menu(mut commands: Commands, prefs: Res<MenuPrefs>) {
-    commands.spawn((
-        screen(AppState::Menu),
-        TabGroup::new(0),
-        children![
-            (
-                // The lobby server beside the rest, so its list has room.
-                Node {
-                    column_gap: px(16),
-                    ..default()
-                },
-                children![
-                    (
-                        panel(),
-                        children![
-                            label("SHITSHOOTER", 56.0, ACCENT),
-                            label("fast arena shooter, hosted by you", 17.0, DIM),
-                            (
-                                Node {
-                                    flex_direction: FlexDirection::Column,
-                                    row_gap: px(14),
-                                    margin: UiRect::top(px(8)),
-                                    ..default()
-                                },
-                                children![
-                                    (
-                                        Node {
-                                            flex_direction: FlexDirection::Row,
-                                            justify_content: JustifyContent::SpaceBetween,
-                                            ..card_node()
-                                        },
-                                        BackgroundColor(CARD),
-                                        BorderColor::all(HUD_EDGE),
-                                        children![
-                                            field("Your name", Field::Name, &prefs.name, 16, 0),
-                                            field("Lobby password (optional)", Field::Password, &prefs.password, 32, 1),
-                                        ],
-                                    ),
-                                    (
-                                        Node {
-                                            column_gap: px(14),
-                                            ..default()
-                                        },
-                                        children![
-                                            menu_card(
-                                                "Host",
-                                                "Start a lobby on this PC.",
-                                                field("UDP port", Field::Port, &prefs.port, 5, 2),
-                                                (primary_button("Host lobby"), observe(on_host)),
-                                            ),
-                                            menu_card(
-                                                "Join",
-                                                "Connect to a friend's lobby.",
-                                                (
-                                                    Node {
-                                                        align_items: AlignItems::FlexEnd,
-                                                        column_gap: px(8),
-                                                        ..default()
-                                                    },
-                                                    children![
-                                                        field("Address", Field::Address, &prefs.address, ADDRESS_CHARS, 3),
-                                                        (small_button("Paste"), observe(on_paste_address)),
-                                                    ],
-                                                ),
-                                                (primary_button("Join lobby"), observe(on_join)),
-                                            ),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                            (label("", 16.0, DANGER), MenuStatusText),
-                            (
-                                button_row(),
-                                children![
-                                    (button("Paint yourself"), observe(on_open_paint)),
-                                    (button("Settings"), observe(on_open_settings)),
-                                    (danger_button("Quit"), observe(on_quit)),
-                                ],
-                            ),
-                        ],
-                    ),
-                    lobby_server_panel(&prefs.server),
-                ],
-            ),
-            (
-                Node {
-                    position_type: PositionType::Absolute,
-                    right: px(16),
-                    bottom: px(12),
-                    ..default()
-                },
-                children![label(format!("version {}", crate::VERSION), 13.0, DIM)],
-            ),
-        ],
-    ));
-}
-
-/// Shows the error, if there is one; takes up no room otherwise.
-fn update_menu_status(
-    status: Res<MenuStatus>,
-    mut text: Single<(&mut Text, &mut Node), With<MenuStatusText>>,
-) {
-    let (text, node) = &mut *text;
-    if text.0 != status.0 {
-        text.0 = status.0.clone();
-    }
-    set_shown(node, !status.0.is_empty());
-}
-
-/// Takes what is in the text fields, and remembers it for the next time the
-/// game is started (all but the password, which is not written to disk).
-pub(crate) fn read_fields(fields: &Query<(&Field, &EditableText)>, prefs: &mut MenuPrefs, settings: &mut Settings) {
-    for (field, text) in fields {
-        let value = text.value().to_string().trim().to_string();
-        match field {
-            Field::Name => prefs.name = value,
-            Field::Address => prefs.address = value,
-            Field::Port => prefs.port = value,
-            Field::Password => prefs.password = value,
-            Field::Server => prefs.server = value,
-        }
-    }
-    settings.name = prefs.name.clone();
-    settings.address = prefs.address.clone();
-    settings.port = prefs.port.clone();
-    settings.lobby_server = prefs.server.clone();
-    settings.save();
-}
-
-fn start_host(
-    commands: &mut Commands,
-    prefs: &MenuPrefs,
-    args: &LaunchArgs,
-    status: &mut MenuStatus,
-    next_state: &mut NextState<AppState>,
-) {
-    let Ok(port) = prefs.port.parse::<u16>() else {
-        status.0 = format!("'{}' is not a valid port.", prefs.port);
-        return;
-    };
-    let settings = ServerSettings {
-        port,
-        password: prefs.password.clone(),
-        ..args.server.clone()
-    };
-    finish_connect(net::host(commands, settings, &prefs.name), status, next_state);
-}
-
-fn start_join(
-    commands: &mut Commands,
-    prefs: &MenuPrefs,
-    status: &mut MenuStatus,
-    next_state: &mut NextState<AppState>,
-) {
-    let result = net::join(commands, &prefs.address, &prefs.password, &prefs.name);
-    finish_connect(result, status, next_state);
-}
-
-pub(crate) fn finish_connect(result: Result<(), String>, status: &mut MenuStatus, next_state: &mut NextState<AppState>) {
-    match result {
-        Ok(()) => {
-            status.0.clear();
-            next_state.set(AppState::Connecting);
-        }
-        Err(message) => status.0 = message,
-    }
-}
-
-fn on_host(
-    _: On<Activate>,
-    mut commands: Commands,
-    fields: Query<(&Field, &EditableText)>,
-    args: Res<LaunchArgs>,
-    mut prefs: ResMut<MenuPrefs>,
-    mut settings: ResMut<Settings>,
-    mut status: ResMut<MenuStatus>,
-    mut next_state: ResMut<NextState<AppState>>,
-) {
-    read_fields(&fields, &mut prefs, &mut settings);
-    start_host(&mut commands, &prefs, &args, &mut status, &mut next_state);
-}
-
-fn on_join(
-    _: On<Activate>,
-    mut commands: Commands,
-    fields: Query<(&Field, &EditableText)>,
-    mut prefs: ResMut<MenuPrefs>,
-    mut settings: ResMut<Settings>,
-    mut status: ResMut<MenuStatus>,
-    mut next_state: ResMut<NextState<AppState>>,
-) {
-    read_fields(&fields, &mut prefs, &mut settings);
-    start_join(&mut commands, &prefs, &mut status, &mut next_state);
-}
-
-/// Longest address the Address field takes.
-pub(crate) const ADDRESS_CHARS: usize = 64;
-
-/// Replaces what is in the Address field with the first line of the clipboard.
-fn on_paste_address(
-    _: On<Activate>,
-    mut clipboard: ResMut<Clipboard>,
-    mut fields: Query<(Entity, &Field, &mut EditableText)>,
-    mut focus: ResMut<InputFocus>,
-    mut status: ResMut<MenuStatus>,
-) {
-    let pasted = match clipboard.fetch_text().poll_result() {
-        Some(Ok(text)) => text.lines().next().unwrap_or("").trim().chars().take(ADDRESS_CHARS).collect::<String>(),
-        _ => String::new(),
-    };
-    if pasted.is_empty() {
-        status.0 = "There is no text on the clipboard to paste.".to_string();
-        return;
-    }
-    let Some((entity, _, mut text)) = fields.iter_mut().find(|(_, field, _)| **field == Field::Address) else {
-        return;
-    };
-    text.clear();
-    text.queue_edit(TextEdit::Insert(pasted.into()));
-    focus.set(entity, FocusCause::Navigated);
-    status.0.clear();
-}
-
-fn on_quit(_: On<Activate>, mut exit: MessageWriter<AppExit>) {
-    exit.write(AppExit::Success);
-}
-
-/// `--host` / `--join` on the command line skip the menu.
-fn auto_launch(
-    mut commands: Commands,
-    args: Res<LaunchArgs>,
-    prefs: Res<MenuPrefs>,
-    mut status: ResMut<MenuStatus>,
-    mut next_state: ResMut<NextState<AppState>>,
-) {
-    if args.host {
-        start_host(&mut commands, &prefs, &args, &mut status, &mut next_state);
-    } else if args.join.is_some() {
-        start_join(&mut commands, &prefs, &mut status, &mut next_state);
-    }
-}
-
 fn on_leave(
     _: On<Activate>,
     mut commands: Commands,
     mut connection: Option<ResMut<Connection>>,
+    mut page: ResMut<MenuPage>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     net::disconnect(&mut commands, connection.as_deref_mut());
+    *page = MenuPage::Home;
     next_state.set(AppState::Menu);
 }
 
@@ -652,21 +473,40 @@ struct ConnectingDots;
 fn spawn_connecting(mut commands: Commands, session: Res<Session>) {
     commands.spawn((
         screen(AppState::Connecting),
-        children![(
-            panel(),
-            children![
-                (
-                    Node::default(),
+        BackgroundColor(SCRIM),
+        children![
+            (
+                Node {
+                    width: px(480),
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                children![(
+                    panel(),
                     children![
-                        label("Connecting", 26.0, TEXT),
-                        // Three characters wide whatever it shows, so the line does not shift.
-                        (label("", 26.0, ACCENT), ConnectingDots, Node { width: px(50), ..default() }),
+                        (
+                            Node {
+                                align_items: AlignItems::Baseline,
+                                ..default()
+                            },
+                            children![
+                                heading("Connecting", 28.0, TEXT),
+                                // Three characters wide whatever it shows, so the line does not shift.
+                                (heading("", 28.0, ACCENT), ConnectingDots, Node { width: px(50), ..default() }),
+                            ],
+                        ),
+                        label(session.server_label.clone(), 16.0, DIM),
                     ],
-                ),
-                label(session.server_label.clone(), 17.0, DIM),
-                (danger_button("Cancel"), observe(on_leave)),
-            ],
-        )],
+                )],
+            ),
+            (
+                Node {
+                    margin: UiRect::top(px(20)),
+                    ..default()
+                },
+                children![(danger_button("Cancel"), observe(on_leave))],
+            ),
+        ],
     ));
 }
 
@@ -901,7 +741,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
     let connected = format!("Connected to {}", session.server_label);
     commands.spawn(screen(AppState::Lobby)).with_children(|screen| {
         screen.spawn(panel()).with_children(|panel| {
-            panel.spawn(label("LOBBY", 40.0, ACCENT));
+            panel.spawn(heading("Lobby", 36.0, TEXT));
 
             match share {
                 // Hosting: how the others get in.
@@ -1640,7 +1480,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ))
         .with_children(|screen| {
             screen.spawn(panel()).with_children(|panel| {
-                panel.spawn(label("PAUSED", 36.0, ACCENT));
+                panel.spawn(heading("Paused", 34.0, TEXT));
                 panel.spawn((
                     button_row(),
                     children![

@@ -320,7 +320,7 @@ fn spawn_editor(
         ))
         .with_children(|screen| {
             screen.spawn(ui::panel()).with_children(|panel| {
-                panel.spawn(ui::label("PAINT YOURSELF", 36.0, ACCENT));
+                panel.spawn(ui::heading("Paint yourself", 34.0, ui::TEXT));
                 panel
                     .spawn(Node {
                         column_gap: px(16),

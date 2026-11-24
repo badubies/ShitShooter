@@ -840,7 +840,7 @@ fn spawn_panel(commands: &mut Commands) {
         ))
         .with_children(|screen| {
             screen.spawn(ui::panel()).with_children(|panel| {
-                panel.spawn(ui::label("SETTINGS", 36.0, ACCENT));
+                panel.spawn(ui::heading("Settings", 34.0, TEXT));
 
                 panel
                     .spawn(Node {

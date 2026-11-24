@@ -14,6 +14,7 @@ use bevy::{
 
 use crate::{
     AppState, LaunchArgs,
+    menu::MenuPage,
     net::{Connection, MenuStatus, Session},
     paint::{MyPaint, PlayerModel},
     paint_editor::PaintEditor,
@@ -114,6 +115,7 @@ fn selftest_menu(
     mut commands: Commands,
     time: Res<Time>,
     status: Res<MenuStatus>,
+    mut page: ResMut<MenuPage>,
     mut test: ResMut<SelfTest>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -122,7 +124,23 @@ fn selftest_menu(
         println!("[selftest] menu status: '{}'", status.0);
         test.capture(&mut commands, "menu.png");
     }
-    if test.reached(1, 2.5) {
+    // Each of the other pages, a moment after it is put up.
+    let pages = [
+        (MenuPage::Online, "menu_online.png"),
+        (MenuPage::Host, "menu_host.png"),
+        (MenuPage::Join, "menu_join.png"),
+    ];
+    for (index, (to, file)) in pages.into_iter().enumerate() {
+        let at = 2.0 + index as f32 * 0.8;
+        if test.reached(1 + 2 * index as u32, at) {
+            *page = to;
+        }
+        if test.reached(2 + 2 * index as u32, at + 0.6) {
+            test.capture(&mut commands, file);
+        }
+    }
+    if test.reached(1 + 2 * pages.len() as u32, 2.0 + pages.len() as f32 * 0.8 + 0.4) {
+        *page = MenuPage::Home;
         exit.write(AppExit::Success);
     }
 }

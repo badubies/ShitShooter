@@ -43,6 +43,8 @@ mod gun_model;
 #[cfg(feature = "client")]
 mod loadout;
 #[cfg(feature = "client")]
+mod menu;
+#[cfg(feature = "client")]
 mod minimap;
 #[cfg(feature = "client")]
 mod net;
@@ -349,7 +351,7 @@ fn run_game(args: LaunchArgs) {
             loadout::LoadoutPlugin,
             // Before the UI, which starts from the saved settings.
             settings::SettingsPlugin,
-            (ui::UiPlugin, weapon_panel::WeaponPanelPlugin),
+            (ui::UiPlugin, menu::MenuPlugin, weapon_panel::WeaponPanelPlugin),
             audio::AudioPlugin,
             devtools::DevToolsPlugin,
         ))

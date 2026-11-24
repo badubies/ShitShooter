@@ -8,7 +8,7 @@ default = ["client"]
 # The game itself. Without it only the servers are built (`--server`, `--hub`),
 # with none of Bevy's graphics, audio or windows, so they build for a
 # Raspberry Pi or any Linux box: see "Running a lobby server" in the README.
-client = ["bevy/default", "bevy/wav", "bevy/system_clipboard", "dep:winit"]
+client = ["bevy/default", "bevy/wav", "bevy/jpeg", "bevy/system_clipboard", "dep:winit"]
 
 [dependencies]
 # Only the math, unless the `client` feature adds the rest.
