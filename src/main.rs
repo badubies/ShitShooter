@@ -325,6 +325,10 @@ fn run_game(args: LaunchArgs) {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "ShitShooter".into(),
+                        // Wayland's app ID and X11's window class, which tie the
+                        // window to the launcher's app menu entry and its icon.
+                        // Windows would take it as the window class: not needed.
+                        name: (!cfg!(windows)).then(|| APP_ID.into()),
                         ..default()
                     }),
                     ..default()
@@ -384,8 +388,87 @@ fn set_window_icon(
     });
 }
 
+/// The same name as the launcher's app menu entry on Linux
+/// (`io.github.badubies.ShitShooter.desktop`).
+#[cfg(feature = "client")]
+const APP_ID: &str = "io.github.badubies.ShitShooter";
+
+/// The largest picture in icon.ico, which build.rs copies out.
 #[cfg(all(not(windows), feature = "client"))]
-fn set_window_icon() {}
+const ICON_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icon.png"));
+
+/// Gives the game its icon off Windows: the window's on Linux with X11 (on
+/// Wayland it comes from the launcher's app menu entry), and the Dock's on a
+/// Mac, where windows have none.
+#[cfg(all(not(windows), feature = "client"))]
+fn set_window_icon(
+    mut done: Local<bool>,
+    window: Option<Single<Entity, With<bevy::window::PrimaryWindow>>>,
+    _main_thread: bevy::ecs::system::NonSendMarker,
+) {
+    if *done {
+        return;
+    }
+    let Some(window) = window else { return };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+        let Some(winit_window) = windows.get_window(*window) else { return };
+        *done = true;
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        match icon_rgba() {
+            Ok((rgba, width, height)) => match winit::window::Icon::from_rgba(rgba, width, height) {
+                Ok(icon) => winit_window.set_window_icon(Some(icon)),
+                Err(err) => warn!("could not load the window icon: {err}"),
+            },
+            Err(err) => warn!("could not load the window icon: {err}"),
+        }
+    });
+}
+
+/// `ICON_PNG` as RGBA pixels, with its width and height.
+#[cfg(all(not(windows), feature = "client"))]
+fn icon_rgba() -> Result<(Vec<u8>, u32, u32), String> {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
+    let image = Image::from_buffer(
+        ICON_PNG,
+        ImageType::Extension("png"),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::Default,
+        RenderAssetUsages::MAIN_WORLD,
+    )
+    .map_err(|err| err.to_string())?;
+    let (width, height) = (image.width(), image.height());
+    image
+        .data
+        .filter(|data| data.len() == (width * height * 4) as usize)
+        .map(|data| (data, width, height))
+        .ok_or_else(|| "not 8-bit RGBA".to_string())
+}
+
+/// Sets the Dock icon, which a game started as a plain executable rather than
+/// a .app does not have.
+#[cfg(all(target_os = "macos", feature = "client"))]
+fn set_dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+    let Some(main_thread) = MainThreadMarker::new() else {
+        warn!("could not set the Dock icon: not on the main thread");
+        return;
+    };
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(ICON_PNG)) else {
+        warn!("could not set the Dock icon: bad picture");
+        return;
+    };
+    // SAFETY: called on the main thread (checked above) with a valid image.
+    unsafe { NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image)) };
+}
+
 
 #[cfg(feature = "client")]
 /// `shitshooter.log`, written next to the exe on every run. When the game will

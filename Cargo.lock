@@ -5249,6 +5249,9 @@ name = "shitshooter"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "postcard",
  "renet",
  "renet_netcode",
@@ -5259,7 +5262,7 @@ dependencies = [
 
 [[package]]
 name = "shitshooter-launcher"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "sha2",
  "ureq",

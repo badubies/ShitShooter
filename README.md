@@ -8,7 +8,7 @@ Download the launcher for your computer from the [latest release](https://github
 
 - **Windows:** download **ShitShooterLauncher.exe**, right-click it → **Properties** → tick **Unblock** → **OK**, then run it. (Windows blocks downloaded exes that aren't signed. Without this, double-clicking it does nothing.)
 - **Mac (Apple Silicon):** download **ShitShooterLauncher-macos-arm64.zip**, unzip it and double-click **ShitShooterLauncher**; it runs in a Terminal window. The first time, macOS refuses to open it because it isn't notarized: click **Done**, go to System Settings → **Privacy & Security**, click **Open Anyway** next to ShitShooterLauncher, then double-click it again.
-- **Linux (x86-64):** download **ShitShooterLauncher-linux-x64.tar.gz**, then in a terminal: `tar xzf ShitShooterLauncher-linux-x64.tar.gz && ./ShitShooterLauncher`. The game needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22 or newer).
+- **Linux (x86-64):** download **ShitShooterLauncher-linux-x64.tar.gz**, then in a terminal: `tar xzf ShitShooterLauncher-linux-x64.tar.gz && ./ShitShooterLauncher`. The game needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22 or newer). After that, ShitShooter is in your app menu too, which starts the launcher.
 
 The game is installed to `%LOCALAPPDATA%\ShitShooter` on Windows, `~/Library/Application Support/ShitShooter` on a Mac and `~/.local/share/ShitShooter` on Linux, so the launcher can live anywhere (desktop, downloads...). Without internet it starts the version already installed. Any arguments given to the launcher are passed on to the game, e.g. `ShitShooterLauncher.exe --join 1.2.3.4`.
 

@@ -2,7 +2,7 @@
 name = "shitshooter-launcher"
 # Bump this when the launcher changes: launchers already out there see the new
 # number in the latest release and replace themselves with the new build.
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 
 [[bin]]

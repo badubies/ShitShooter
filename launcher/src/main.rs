@@ -57,8 +57,10 @@ fn main() {
     if let Err(message) = run(&args) {
         println!("\n{message}");
         pause();
+        close_terminal_window();
         std::process::exit(1);
     }
+    close_terminal_window();
 }
 
 fn run(args: &[String]) -> Result<()> {
@@ -119,6 +121,11 @@ fn run(args: &[String]) -> Result<()> {
         }
     }
 
+    if cfg!(target_os = "linux")
+        && let Err(e) = install_menu_entry(&dir)
+    {
+        println!("Could not add ShitShooter to the app menu ({e}).");
+    }
     launch_game(&game, &dir, args)
 }
 
@@ -133,14 +140,81 @@ fn install_dir() -> PathBuf {
     } else if cfg!(target_os = "macos") {
         home().map(|home| home.join("Library").join("Application Support"))
     } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute())
-            .or_else(|| home().map(|home| home.join(".local").join("share")))
+        xdg_data_home()
     };
     base.map(|base| base.join("ShitShooter"))
         .or_else(|| Some(std::env::current_exe().ok()?.parent()?.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// `$XDG_DATA_HOME`, by default `~/.local/share`: where Linux keeps programs'
+/// data, and their app menu entries in `applications/`.
+fn xdg_data_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local").join("share")))
+}
+
+/// The game's app ID, which its window carries (`APP_ID` in the game's
+/// src/main.rs), and the name of its app menu entry on Linux.
+const APP_ID: &str = "io.github.badubies.ShitShooter";
+
+/// The largest picture in the game's icon.ico, which build.rs copies out.
+const ICON_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icon.png"));
+
+/// On Linux, adds ShitShooter to the app menu, starting this launcher. Wayland
+/// also takes the game window's icon from here, from the entry named after the
+/// window's app ID. Rewritten on every start, so it follows the launcher when
+/// it is moved.
+fn install_menu_entry(dir: &Path) -> std::io::Result<()> {
+    let Some(data_home) = xdg_data_home() else { return Ok(()) };
+    let icon = dir.join("icon.png");
+    write_if_changed(&icon, ICON_PNG)?;
+    let apps = data_home.join("applications");
+    fs::create_dir_all(&apps)?;
+    write_if_changed(
+        &apps.join(format!("{APP_ID}.desktop")),
+        menu_entry(&std::env::current_exe()?, &icon).as_bytes(),
+    )
+}
+
+/// The `.desktop` file for `install_menu_entry`. The launcher runs in a terminal,
+/// so the download progress shows.
+fn menu_entry(launcher: &Path, icon: &Path) -> String {
+    // Values escape backslashes. The command line also quotes its argument,
+    // escaping ", `, $ and \ inside the quotes, and doubles %.
+    let value = |text: &str| text.replace('\\', "\\\\");
+    let mut quoted = String::from("\"");
+    for c in launcher.to_string_lossy().chars() {
+        match c {
+            '"' | '`' | '$' | '\\' => quoted.extend(['\\', c]),
+            '%' => quoted.push_str("%%"),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=ShitShooter\n\
+         Comment=Fast free-for-all arena shooter\n\
+         Exec={}\n\
+         Icon={}\n\
+         Terminal=true\n\
+         Categories=Game;ActionGame;\n\
+         StartupWMClass={APP_ID}\n",
+        value(&quoted),
+        value(&icon.to_string_lossy()),
+    )
+}
+
+/// Writes `path` unless it already holds exactly `contents`.
+fn write_if_changed(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    if fs::read(path).is_ok_and(|old| old == contents) {
+        return Ok(());
+    }
+    fs::write(path, contents)
 }
 
 /// This platform's name in release file names, e.g. `macos-arm64`.
@@ -484,6 +558,71 @@ fn update_launcher(agent: &ureq::Agent, args: &[String]) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// Finds this launcher's Terminal window: the one-tab window on our tty.
+const FIND_TERMINAL_WINDOW: &str = r#"on run argv
+    tell application "Terminal"
+        repeat with w in windows
+            if (count of tabs of w) is 1 and tty of tab 1 of w is item 1 of argv then return id of w
+        end repeat
+    end tell
+    return ""
+end run"#;
+
+/// Closes Terminal window `item 1 of argv` once nothing runs in it any more,
+/// giving up after 10 seconds.
+const CLOSE_TERMINAL_WINDOW: &str = r#"on run argv
+    set windowId to (item 1 of argv) as integer
+    tell application "Terminal"
+        repeat 100 times
+            delay 0.1
+            try
+                if (count of processes of tab 1 of window id windowId) is 0 then
+                    close window id windowId
+                    return
+                end if
+            on error
+                return
+            end try
+        end repeat
+    end tell
+end run"#;
+
+/// On a Mac, closes the Terminal window the launcher was double-clicked into,
+/// as a Windows console closes by itself. Terminal keeps it open by default,
+/// showing "[Process completed]". The window closes only once nothing runs in
+/// it: started from a shell someone typed into, it stays, since the shell does.
+#[cfg(unix)]
+fn close_terminal_window() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let in_terminal = std::env::var_os("TERM_PROGRAM").is_some_and(|program| program == "Apple_Terminal");
+    if !cfg!(target_os = "macos") || !in_terminal {
+        return;
+    }
+    let output = |command: &mut Command| {
+        let output = command.stderr(Stdio::null()).output().ok()?;
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (output.status.success() && !text.is_empty()).then_some(text)
+    };
+    let Some(tty) = output(Command::new("/usr/bin/tty").stdin(Stdio::inherit())) else { return };
+    let Some(window) = output(Command::new("/usr/bin/osascript").args(["-e", FIND_TERMINAL_WINDOW, &tty]))
+    else {
+        return;
+    };
+    // Outlives the launcher, in its own process group with no hold on the
+    // terminal, so it is not closed with it.
+    let _ = Command::new("/usr/bin/osascript")
+        .args(["-e", CLOSE_TERMINAL_WINDOW, &window])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(not(unix))]
+fn close_terminal_window() {}
+
 /// Deletes the previous launcher left behind by a self-update. It may still be
 /// running for a moment, in which case this is retried on the next start.
 fn remove_old_launcher() {
@@ -529,6 +668,15 @@ mod tests {
             assert_eq!(launcher, "ShitShooterLauncher-linux-x64");
         }
         assert_eq!(with_suffix(Path::new("a/ShitShooterLauncher.exe"), ".old"), Path::new("a/ShitShooterLauncher.exe.old"));
+    }
+
+    #[test]
+    fn writes_menu_entry() {
+        let entry = menu_entry(Path::new("/home/a b/50% \"x\"/ShitShooterLauncher"), Path::new("/i/icon.png"));
+        assert!(entry.contains("\nExec=\"/home/a b/50%% \\\\\"x\\\\\"/ShitShooterLauncher\"\n"), "{entry}");
+        assert!(entry.contains("\nIcon=/i/icon.png\n"));
+        assert!(entry.ends_with("StartupWMClass=io.github.badubies.ShitShooter\n"));
+        assert!(ICON_PNG.starts_with(b"\x89PNG"));
     }
 
     #[test]
