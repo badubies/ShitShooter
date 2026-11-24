@@ -11,7 +11,7 @@ use crate::{
     map::Map,
     net::Session,
     protocol::{GRENADE_KINDS, HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, MODE_HILL},
-    ui::{ALLY, ENEMY},
+    ui::{BLUE, RED},
 };
 
 pub struct WorldPlugin;
@@ -141,7 +141,7 @@ fn setup(
         ..default()
     });
     let ally_outline = materials.add(StandardMaterial {
-        base_color: ALLY,
+        base_color: BLUE,
         unlit: true,
         cull_mode: Some(Face::Front),
         ..default()
@@ -208,8 +208,8 @@ fn setup(
 
     let hill_materials = [
         Color::srgba(0.9, 0.9, 0.9, 0.04),
-        ALLY.with_alpha(0.11),
-        ENEMY.with_alpha(0.11),
+        BLUE.with_alpha(0.11),
+        RED.with_alpha(0.11),
         Color::srgba(1.0, 0.8, 0.1, 0.11),
     ]
     .map(|color| {
@@ -272,8 +272,7 @@ fn show_hill(
         let shade = match session.hill {
             HILL_EMPTY => 0,
             HILL_CONTESTED => 3,
-            held if held - HILL_HELD == session.team_of(session.my_id) => 1,
-            _ => 2,
+            held => 1 + ((held - HILL_HELD) & 1) as usize,
         };
         let holder = &assets.hill_materials[shade];
         if material.0 != *holder {

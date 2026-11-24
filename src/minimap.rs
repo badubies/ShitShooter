@@ -19,7 +19,7 @@ use crate::{
     protocol::{ClientMsg, FlagSnap, MODE_CONQUEST},
     remote::RemotePlayer,
     settings::{Action, ActionInput, Settings},
-    ui::{ACCENT, ALLY, DIM, ENEMY, TEXT, label, mask_image, set_text},
+    ui::{ACCENT, DIM, TEXT, label, mask_image, set_text, team_color},
     world::GameMap,
 };
 
@@ -254,13 +254,10 @@ fn reset_choice(mut choice: ResMut<SpawnChoice>) {
     *choice = SpawnChoice::default();
 }
 
-/// The colour a flag is shown in, from our side: neutral, ours or theirs.
-fn flag_color(session: &Session, flag: Option<&FlagSnap>) -> Color {
-    match flag.and_then(|flag| flag.owner) {
-        None => NEUTRAL,
-        Some(team) if team == session.team_of(session.my_id) => ALLY,
-        Some(_) => ENEMY,
-    }
+/// The colour a flag is shown in: neutral, or the colour of the team that
+/// holds it.
+fn flag_color(flag: Option<&FlagSnap>) -> Color {
+    flag.and_then(|flag| flag.owner).map_or(NEUTRAL, team_color)
 }
 
 fn spawn_minimap(mut commands: Commands, map: Res<GameMap>, picture: Option<Res<MapPicture>>, arrow: Res<Arrow>) {
@@ -369,7 +366,7 @@ fn update_minimap(
             node.left = left;
             node.top = top;
         }
-        border.set_if_neq(BorderColor::all(flag_color(&session, session.flags.get(flag.0))));
+        border.set_if_neq(BorderColor::all(flag_color(session.flags.get(flag.0))));
     }
     for (mut node, mut transform) in &mut me {
         let (left, top) = place(player.pos, 14.0);
@@ -400,7 +397,7 @@ fn update_minimap(
                     border_radius: BorderRadius::MAX,
                     ..default()
                 },
-                BackgroundColor(ALLY),
+                BackgroundColor(team_color(session.team_of(session.my_id))),
                 Pickable::IGNORE,
                 ChildOf(minimap),
             ));
@@ -512,9 +509,9 @@ fn update_deploy_map(
     }
     for (point, mut border, mut background) in &mut points {
         let color = if point.0 == 0 {
-            ALLY
+            team_color(mine)
         } else {
-            flag_color(&session, session.flags.get(point.0 as usize - 1))
+            flag_color(session.flags.get(point.0 as usize - 1))
         };
         let chosen = choice.point == Some(point.0);
         border.set_if_neq(BorderColor::all(if chosen { ACCENT } else { color }));
@@ -583,7 +580,7 @@ fn update_deploy_mates(
                 border_radius: BorderRadius::MAX,
                 ..default()
             },
-            BackgroundColor(ALLY),
+            BackgroundColor(team_color(session.team_of(session.my_id))),
             BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.7)),
             Pickable::IGNORE,
             ChildOf(holder),

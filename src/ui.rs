@@ -81,10 +81,21 @@ pub const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
 pub const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
 /// The empty part of a bar.
 pub const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
-/// Our team, wherever it shows: the outline around teammates, their names,
-/// our score. Everybody else is the enemy.
-pub const ALLY: Color = Color::srgb(0.30, 0.86, 1.0);
-pub const ENEMY: Color = Color::srgb(1.0, 0.42, 0.38);
+/// The two teams' colours, the same for everybody whichever team they are
+/// on: team 0 is blue, team 1 red. See `team_color`.
+pub const BLUE: Color = Color::srgb(0.30, 0.86, 1.0);
+pub const RED: Color = Color::srgb(1.0, 0.42, 0.38);
+
+/// The colour of team `team` (0 blue, 1 red), wherever it shows: the outline
+/// around teammates, their names, the score, the flags they hold.
+pub fn team_color(team: u8) -> Color {
+    if team & 1 == 0 { BLUE } else { RED }
+}
+
+/// The name of team `team`: "Blue" or "Red".
+pub fn team_name(team: u8) -> &'static str {
+    if team & 1 == 0 { "Blue" } else { "Red" }
+}
 /// At or below this, health is shown in red and the bar pulses.
 const LOW_HEALTH: i32 = 30;
 /// Armor on the HUD, the same blue as the pickups.
@@ -737,10 +748,13 @@ fn update_rosters(
                 });
                 return;
             }
-            // Our team first.
-            for (team, title, color) in [(key.my_team, "YOUR TEAM", ALLY), (key.my_team ^ 1, "ENEMY TEAM", ENEMY)] {
+            // Blue first, then red, whichever we are on.
+            for team in [0, 1] {
+                let color = team_color(team);
                 groups.spawn(column()).with_children(|rows| {
-                    let title = format!("{title}  -  {}", key.team_scores[team as usize & 1]);
+                    let yours = if team == key.my_team & 1 { "  (YOURS)" } else { "" };
+                    let name = team_name(team).to_uppercase();
+                    let title = format!("{name} TEAM{yours}  -  {}", key.team_scores[team as usize]);
                     rows.spawn(roster_heading(title, color));
                     for player in key.roster.iter().filter(|player| player.team & 1 == team) {
                         rows.spawn(roster_row(player, color, &key));
@@ -753,8 +767,8 @@ fn update_rosters(
 
 // ---------------------------------------------------------------- lobby
 
-// The players fill the lobby: in the team modes the screen splits into our
-// team's half and the enemy's, a line for every slot, and in free for all
+// The players fill the lobby: in the team modes the screen splits into the
+// blue team's half on the left and the red team's on the right, a line for every slot, and in free for all
 // everyone is in two columns. What the match will be is on a button in the
 // top left corner, which opens the picker for it.
 
@@ -899,8 +913,8 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
             DespawnOnExit(AppState::Lobby),
         ))
         .with_children(|screen| {
-            screen.spawn(team_tint(ALLY, true));
-            screen.spawn(team_tint(ENEMY, false));
+            screen.spawn(team_tint(team_color(0), true));
+            screen.spawn(team_tint(team_color(1), false));
             screen.spawn((
                 PickerCatcher,
                 Node {
@@ -1047,8 +1061,8 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                 border_radius: BorderRadius::all(px(12)),
                                 ..default()
                             },
-                            BackgroundColor(ALLY.with_alpha(0.12)),
-                            BorderColor::all(ALLY.with_alpha(0.4)),
+                            BackgroundColor(BLUE.with_alpha(0.12)),
+                            BorderColor::all(BLUE.with_alpha(0.4)),
                             children![(weighted("", 15.0, 700, TEXT), LobbyText::Result)],
                         ));
                         row.spawn(Node {
@@ -1480,14 +1494,17 @@ fn update_lobby_teams(
                 ..default()
             })
             .with_children(|row| {
-                // Our team on the left, the enemy facing it on the right.
-                for (team, title, color) in [(key.my_team, "Your team", ALLY), (key.my_team ^ 1, "Enemy team", ENEMY)] {
-                    let right = team != key.my_team;
+                // Blue on the left, red facing it on the right, whichever
+                // we are on. The other team's open slots take a click.
+                for team in [0, 1] {
+                    let color = team_color(team);
+                    let right = team == 1;
                     if right {
                         row.spawn(team_seam());
                     }
                     let on_team = players(Some(team));
-                    let join = (right && on_team.len() < TEAM_SIZE).then_some(color);
+                    let join = (team != key.my_team & 1 && on_team.len() < TEAM_SIZE).then_some(color);
+                    let title = format!("{} team", team_name(team));
                     row.spawn(Node {
                         flex_grow: 1.0,
                         flex_basis: px(0),
@@ -1496,7 +1513,7 @@ fn update_lobby_teams(
                         ..default()
                     })
                     .with_children(|column| {
-                        column.spawn(team_heading(title, on_team.len(), TEAM_SIZE, color, right));
+                        column.spawn(team_heading(&title, on_team.len(), TEAM_SIZE, color, right));
                         for slot in 0..TEAM_SIZE.max(on_team.len()) {
                             spawn_slot(column, &key, on_team.get(slot).copied(), slot, join, right);
                         }
@@ -2257,7 +2274,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                         },
                         children![
                             weighted("FRAGGED BY", 12.0, 700, DANGER_TEXT),
-                            (heading("", 44.0, ENEMY), Hud::Killer, hud_shadow()),
+                            (heading("", 44.0, RED), Hud::Killer, hud_shadow()),
                             (label("", 15.0, TEXT), Hud::KillerNote, hud_shadow()),
                         ],
                     ),
@@ -2671,7 +2688,7 @@ fn top_bar(session: &Session) -> TopBar {
     TopBar {
         labels: ["YOUR TEAM".to_string(), "ENEMY".to_string()],
         scores: [session.team_scores[mine], session.team_scores[mine ^ 1]],
-        colors: [ALLY, ENEMY],
+        colors: [team_color(mine as u8), team_color(mine as u8 ^ 1)],
         info,
     }
 }
@@ -2762,7 +2779,7 @@ fn update_hud(
                 let ready = !player.alive && player.killed_by.is_none();
                 (if ready { "Get ready..." } else { "" }.to_string(), DANGER)
             }
-            Hud::Killer => (if by_myself { "YOURSELF".to_string() } else { killer.to_uppercase() }, ENEMY),
+            Hud::Killer => (if by_myself { "YOURSELF".to_string() } else { killer.to_uppercase() }, RED),
             Hud::KillerNote => {
                 let tally = match killer_kills {
                     Some(kills) if killer_leads => format!("that's {kills} for {killer}, who leads"),

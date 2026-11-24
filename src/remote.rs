@@ -12,7 +12,7 @@ use crate::{
     player::{GRAVITY, LocalPlayer, PlayerSystems, magazine_out},
     gun_model::{FittedModels, GunHolder, GunModelSystems, GunPart, PartKind},
     protocol::*,
-    ui::ALLY,
+    ui::team_color,
     weapons::{SightId, WeaponId, weapon},
     world::{GameMap, MainCamera, SharedAssets},
 };
@@ -522,8 +522,19 @@ fn interpolate(
     }
 }
 
-/// Teammates get an outline; nobody else does.
-fn show_outlines(session: Res<Session>, mut outlines: Query<(&AllyOutline, &mut Visibility)>) {
+/// Teammates get an outline, in our team's colour; nobody else does.
+fn show_outlines(
+    session: Res<Session>,
+    assets: Res<SharedAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut outlines: Query<(&AllyOutline, &mut Visibility)>,
+) {
+    let color = team_color(session.team_of(session.my_id));
+    if materials.get(&assets.ally_outline).is_some_and(|material| material.base_color != color)
+        && let Some(mut material) = materials.get_mut(&assets.ally_outline)
+    {
+        material.base_color = color;
+    }
     for (outline, mut visibility) in &mut outlines {
         let ally = session.team_mode() && !session.enemies(session.my_id, outline.0);
         visibility.set_if_neq(if ally {
@@ -551,6 +562,7 @@ fn draw_ally_tags(
         _ => 1.0,
     };
     let size = crate::ui::ui_size(&window, &ui_scale);
+    let color = team_color(session.team_of(session.my_id));
 
     let mut shown = Vec::new();
     for (remote, transform) in &remotes {
@@ -588,7 +600,7 @@ fn draw_ally_tags(
             DespawnOnExit(AppState::Playing),
             children![
                 (
-                    crate::ui::label(name, 14.0, ALLY),
+                    crate::ui::label(name, 14.0, color),
                     TextLayout::justify(Justify::Center),
                     TextShadow {
                         offset: Vec2::splat(1.5),
@@ -603,7 +615,7 @@ fn draw_ally_tags(
                         ..default()
                     },
                     UiTransform::from_rotation(Rot2::degrees(45.0)),
-                    BackgroundColor(ALLY.with_alpha(0.8)),
+                    BackgroundColor(color.with_alpha(0.8)),
                 ),
             ],
         ));
