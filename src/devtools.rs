@@ -24,6 +24,7 @@ use crate::{
     loadout::{Choice, LoadoutScreen},
     remote::{Corpse, RemotePlayer},
     weapons::{GUN_COUNT, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
+    ui::MatchChoice,
     world::GameMap,
     settings::{Settings, SettingsMenu, SettingsTab},
 };
@@ -169,9 +170,10 @@ fn selftest_lobby(
     mut editor: ResMut<PaintEditor>,
     model: Res<PlayerModel>,
     sliders: Query<Entity, With<Slider>>,
-    settings: Res<Settings>,
+    (settings, map): (Res<Settings>, Res<GameMap>),
     mut loadout: ResMut<LoadoutScreen>,
     choices: Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
+    match_choices: Query<(&MatchChoice, &UiGlobalTransform)>,
     window: Single<(Entity, &Window), With<PrimaryWindow>>,
     mut pointer: MessageWriter<PointerInput>,
 ) {
@@ -197,8 +199,36 @@ fn selftest_lobby(
     if test.reached(1, 1.5) {
         test.capture(&mut commands, "lobby.png");
     }
+    // The lobby's chips and cards, clicked: team deathmatch on Arena, then
+    // back to free for all on Depot. Each click is checked once the server
+    // has answered.
+    let scale = window.1.scale_factor();
+    let card_at = |target: Choice| {
+        choices.iter().find(|(choice, ..)| **choice == target).map(|(_, at, _)| at.translation / scale)
+    };
+    let chip_at = |target: MatchChoice| {
+        match_choices.iter().find(|(choice, _)| **choice == target).map(|(_, at)| at.translation / scale)
+    };
+    let clicks = [MatchChoice::Mode(1), MatchChoice::Map(0), MatchChoice::Mode(0), MatchChoice::Map(1)];
+    for (index, target) in clicks.into_iter().enumerate() {
+        let at = 1.7 + index as f32 * 0.3;
+        // Picking sees where the pointer is a frame after it moves there.
+        if test.reached(2 + 2 * index as u32, at) {
+            if index == 2 {
+                println!("[selftest] after clicking Team deathmatch and Arena: mode {} map {}", session.mode, map.0.id);
+            }
+            point(window.0, &mut pointer, chip_at(target), false);
+        }
+        if test.reached(3 + 2 * index as u32, at + 0.1) {
+            point(window.0, &mut pointer, chip_at(target), true);
+        }
+    }
+    if test.reached(10, 2.9) {
+        println!("[selftest] after clicking the chips and cards: mode {} map {}", session.mode, map.0.id);
+        point(window.0, &mut pointer, None, false);
+    }
     // Stripes on the paint job, and a look at them on the paint screen.
-    if test.reached(2, 2.0) {
+    if test.reached(11, 3.2) {
         let mut canvas = paint.canvas.clone();
         for (pixel, texel) in canvas.0.iter_mut().zip(&model.texels) {
             if let Some((point, _)) = texel
@@ -211,7 +241,7 @@ fn selftest_lobby(
         editor.open = true;
     }
     // The brush size slider (the only slider there is) moved to 12 cm.
-    if test.reached(3, 2.5) {
+    if test.reached(12, 3.7) {
         for entity in &sliders {
             commands.trigger(SetSliderValue {
                 entity,
@@ -219,60 +249,51 @@ fn selftest_lobby(
             });
         }
     }
-    if test.reached(4, 3.0) {
+    if test.reached(13, 4.2) {
         test.capture(&mut commands, "paint.png");
     }
-    if test.reached(5, 3.3) {
+    if test.reached(14, 4.5) {
         editor.open = false;
     }
     // The loadout screen, with the pointer: on the shotgun's card (the stage
     // shows it), a click on it, and back to the rifle.
-    if test.reached(6, 3.6) {
+    if test.reached(15, 4.8) {
         loadout.open = true;
     }
-    if test.reached(7, 4.2) {
-        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, SHOTGUN)), false);
+    if test.reached(16, 5.4) {
+        point(window.0, &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), false);
     }
-    if test.reached(8, 4.6) {
+    if test.reached(17, 5.8) {
         test.capture(&mut commands, "loadout_hover.png");
     }
     // Picking sees where the pointer is a frame after it moves there.
-    if test.reached(9, 4.8) {
-        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, SHOTGUN)), true);
+    if test.reached(18, 6.0) {
+        point(window.0, &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), true);
     }
-    if test.reached(10, 5.1) {
+    if test.reached(19, 6.3) {
         println!("[selftest] after a click on the shotgun's card: {}", weapon(settings.primary).name);
         test.capture(&mut commands, "loadout_clicked.png");
-        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, RIFLE)), false);
+        point(window.0, &mut pointer, card_at(Choice::Gun(0, RIFLE)), false);
     }
-    if test.reached(11, 5.2) {
-        point(&choices, window.0, window.1.scale_factor(), &mut pointer, Some(Choice::Gun(0, RIFLE)), true);
+    if test.reached(20, 6.4) {
+        point(window.0, &mut pointer, card_at(Choice::Gun(0, RIFLE)), true);
     }
-    if test.reached(12, 5.5) {
+    if test.reached(21, 6.7) {
         println!("[selftest] and on the rifle's: {}", weapon(settings.primary).name);
-        point(&choices, window.0, window.1.scale_factor(), &mut pointer, None, false);
+        point(window.0, &mut pointer, None, false);
         loadout.open = false;
     }
-    if test.reached(13, 5.6) {
+    if test.reached(22, 6.8) {
         println!("[selftest] roster: {:?}", session.roster.iter().map(|p| &p.name).collect::<Vec<_>>());
         connection.send(&ClientMsg::StartMatch);
     }
 }
 
-/// Moves the pointer onto the loadout screen's card for `target` (or off to
-/// a corner, for `None`), and clicks there if `click`. A click only lands on
+/// Moves the pointer to `position` (in the window's pixels; or off to a
+/// corner, for `None`), and clicks there if `click`. A click only lands on
 /// what was under the pointer the frame before.
-fn point(
-    choices: &Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
-    window: Entity,
-    scale_factor: f32,
-    pointer: &mut MessageWriter<PointerInput>,
-    target: Option<Choice>,
-    click: bool,
-) {
-    let card = choices.iter().find(|(choice, ..)| Some(**choice) == target);
-    // Node positions are in physical pixels; the pointer is in the window's.
-    let position = card.map_or(Vec2::splat(5.0), |(_, at, _)| at.translation / scale_factor);
+fn point(window: Entity, pointer: &mut MessageWriter<PointerInput>, position: Option<Vec2>, click: bool) {
+    let position = position.unwrap_or(Vec2::splat(5.0));
     let location = Location {
         target: NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(window)).expect("a window")),
         position,

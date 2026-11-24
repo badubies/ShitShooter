@@ -787,8 +787,8 @@ struct ResultBanner;
 struct CopyLabel;
 
 /// A chip or card with which the leader picks the match.
-#[derive(Component, Clone, Copy, PartialEq)]
-enum MatchChoice {
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub(crate) enum MatchChoice {
     Mode(u8),
     Map(u8),
     AirAccel(u16),
