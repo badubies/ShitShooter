@@ -89,6 +89,18 @@ impl Terrain {
         }
     }
 
+    /// The colour of the ground at (x, z): that of the nearest vertex. None
+    /// for plain grass.
+    pub fn color(&self, x: f32, z: f32) -> Option<[f32; 3]> {
+        if self.colors.is_empty() {
+            return None;
+        }
+        let last = (self.size - 1) as f32;
+        let i = ((x - self.origin.x) / self.cell).round().clamp(0.0, last) as usize;
+        let j = ((z - self.origin.y) / self.cell).round().clamp(0.0, last) as usize;
+        Some(self.colors[j * self.size + i])
+    }
+
     /// The up-facing normal of the triangle under (x, z).
     pub fn normal(&self, x: f32, z: f32) -> Vec3 {
         let (i, j, u, v) = self.locate(x, z);

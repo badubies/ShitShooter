@@ -37,6 +37,9 @@ const AIR_WISH_SPEED: f32 = 1.0;
 /// Extra air control (m/s²) that only applies below running speed.
 const AIR_CONTROL_ACCEL: f32 = 25.0;
 pub const GRAVITY: f32 = 22.0;
+/// Seconds in the air after which coming down counts as a landing (and is
+/// heard), rather than stepping off a kerb.
+pub const LANDING_AIR_TIME: f32 = 0.25;
 const JUMP_SPEED: f32 = 8.0;
 const AIR_JUMPS: u32 = 1;
 const DASH_SPEED: f32 = 20.0;
@@ -182,6 +185,12 @@ pub struct LocalPlayer {
     pub yaw: f32,
     pub pitch: f32,
     pub grounded: bool,
+    /// Seconds since we were last on the ground.
+    air_time: f32,
+    /// Counts up each time we land after `LANDING_AIR_TIME` in the air.
+    /// Bunny hopping is off the ground again the next step, before a frame
+    /// ends, so this is how the landings are noticed.
+    pub landings: u32,
     pub air_jumps: u32,
     pub dash_cooldown: f32,
     pub alive: bool,
@@ -274,6 +283,8 @@ impl Default for LocalPlayer {
             yaw: 0.0,
             pitch: 0.0,
             grounded: false,
+            air_time: 0.0,
+            landings: 0,
             air_jumps: AIR_JUMPS,
             dash_cooldown: 0.0,
             alive: false,
@@ -856,6 +867,14 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
     if p.grounded && !was_grounded && p.crouching {
         start_slide(p);
     }
+    if p.grounded {
+        if !was_grounded && p.air_time > LANDING_AIR_TIME {
+            p.landings = p.landings.wrapping_add(1);
+        }
+        p.air_time = 0.0;
+    } else {
+        p.air_time += dt;
+    }
 
     if let Some(pad) = map.pad_at(p.feet()) {
         p.vel = pad.launch_velocity(p.vel);
@@ -1365,6 +1384,26 @@ mod tests {
             let keys = input(p, (frame + 1) as f32 / fps);
             let held = Held { keys, yaw_from, yaw_to: p.yaw, ..idle() };
             advance(p, 1.0 / fps, &held, map, DEFAULT_AIR_ACCEL.into(), false);
+        }
+    }
+
+    /// Holding jump hops again the step after landing, so the player is
+    /// almost never on the ground when a frame ends; every landing must
+    /// still be counted (it is what makes the sound).
+    #[test]
+    fn every_bunny_hop_landing_is_counted() {
+        let map = floor();
+        // Airborne 2 * JUMP_SPEED / GRAVITY per hop.
+        let hops = (4.0 / (2.0 * JUMP_SPEED / GRAVITY)) as u32;
+        for fps in [30.0, 60.0, 144.0, 240.0] {
+            let mut p = standing(&map);
+            let before = p.landings;
+            let frames = (4.0 * fps) as u32;
+            for _ in 0..frames {
+                let held = Held { jump: true, ..idle() };
+                advance(&mut p, 1.0 / fps, &held, &map, DEFAULT_AIR_ACCEL.into(), false);
+            }
+            assert_eq!(p.landings - before, hops, "{fps} fps");
         }
     }
 

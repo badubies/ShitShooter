@@ -11,10 +11,12 @@ use bevy::{
 
 use crate::{
     AppState,
-    player::{LocalPlayer, PlayerSystems},
+    map::Map,
+    player::{LANDING_AIR_TIME, LocalPlayer, PlayerSystems},
     protocol::PlayerId,
     weapons::{WeaponId, weapon},
     remote::{RemotePlayer, RemoteSystems},
+    world::GameMap,
 };
 
 const SAMPLE_RATE: u32 = 44_100;
@@ -59,9 +61,9 @@ pub enum Sound {
     Headshot,
     /// The chime of a kill.
     Kill,
-    Footstep,
+    Footstep(Surface),
     /// Hitting the ground after a jump or fall.
-    Land,
+    Land(Surface),
     /// The clack of a weapon being taken out.
     Reload,
     /// A magazine released and sliding out.
@@ -114,7 +116,12 @@ pub struct SoundCue {
 #[derive(Resource)]
 struct Sounds {
     gunshot: Handle<AudioSource>,
-    footsteps: Vec<Handle<AudioSource>>,
+    /// Indexed by `Surface`: a few takes of each, so no two steps in a row
+    /// sound the same.
+    footsteps: [Vec<Handle<AudioSource>>; Surface::COUNT],
+    landings: [Vec<Handle<AudioSource>>; Surface::COUNT],
+    /// The take of a footstep played last, not to be played again next.
+    last_footstep: usize,
     clack: Handle<AudioSource>,
     swish: Handle<AudioSource>,
     explosion: Handle<AudioSource>,
@@ -144,7 +151,13 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
     };
     commands.insert_resource(Sounds {
         gunshot: add(synth_gunshot()),
-        footsteps: (0..4).map(|variant| add(synth_footstep(variant))).collect(),
+        footsteps: Surface::ALL.map(|surface| {
+            (0..FOOTSTEP_TAKES).map(|take| add(synth_footstep(surface, take, false))).collect()
+        }),
+        landings: Surface::ALL.map(|surface| {
+            (0..LANDING_TAKES).map(|take| add(synth_footstep(surface, take, true))).collect()
+        }),
+        last_footstep: 0,
         clack: add(synth_clack()),
         swish: add(synth_swish()),
         explosion: add(synth_explosion()),
@@ -180,16 +193,26 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             Sound::Hit => (sounds.tick.clone(), 0.55, 0.96 + random * 0.08),
             Sound::Headshot => (sounds.tick.clone(), 0.85, 1.6),
             Sound::Kill => (sounds.chime.clone(), 0.6, 1.0),
-            Sound::Footstep => (
-                sounds.footsteps[(random * 97.0) as usize % sounds.footsteps.len()].clone(),
-                if own { 0.3 } else { 1.0 },
-                0.9 + random * 0.25,
-            ),
-            Sound::Land => (
-                sounds.footsteps[0].clone(),
-                if own { 0.55 } else { 1.0 },
-                0.62 + random * 0.08,
-            ),
+            Sound::Footstep(surface) => {
+                let takes = &sounds.footsteps[surface as usize];
+                let mut take = (random * 997.0) as usize % takes.len();
+                if take == sounds.last_footstep {
+                    take = (take + 1) % takes.len();
+                }
+                let source = takes[take].clone();
+                sounds.last_footstep = take;
+                // The takes differ already: only a little more pitch and level.
+                let loudness = 0.85 + 0.15 * next_random(&mut sounds.rng);
+                (source, loudness * if own { 0.34 } else { 1.15 }, 0.95 + random * 0.1)
+            }
+            Sound::Land(surface) => {
+                let takes = &sounds.landings[surface as usize];
+                (
+                    takes[(random * 997.0) as usize % takes.len()].clone(),
+                    if own { 0.5 } else { 1.15 },
+                    0.95 + random * 0.1,
+                )
+            }
             Sound::Reload => (sounds.clack.clone(), 0.5, 0.95 + random * 0.1),
             Sound::Pin => (sounds.clack.clone(), 0.35, 2.4 + random * 0.2),
             Sound::Throw => (sounds.swish.clone(), 0.5, 0.95 + random * 0.1),
@@ -243,30 +266,30 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
 /// Our own steps: one per stride while running on the ground, plus a thump on landing.
 fn local_footsteps(
     player: Res<LocalPlayer>,
+    map: Res<GameMap>,
     time: Res<Time>,
     mut cues: MessageWriter<SoundCue>,
     mut stride: Local<f32>,
-    mut airborne_for: Local<f32>,
+    mut heard_landings: Local<u32>,
 ) {
+    let landed = player.landings != *heard_landings;
+    *heard_landings = player.landings;
     if !player.alive {
         *stride = 0.0;
-        *airborne_for = 0.0;
         return;
     }
-    let dt = time.delta_secs();
+    let feet = player.pos - Vec3::Y * crate::map::player_half(player.crouching).y;
+    if landed {
+        cues.write(SoundCue {
+            sound: Sound::Land(surface_under(&map.0, feet)),
+            at: None,
+        });
+    }
     if !player.grounded {
-        *airborne_for += dt;
         // Start the next stride half way, so the first step after landing comes quickly.
         *stride = STRIDE * 0.5;
         return;
     }
-    if *airborne_for > 0.25 {
-        cues.write(SoundCue {
-            sound: Sound::Land,
-            at: None,
-        });
-    }
-    *airborne_for = 0.0;
 
     let speed = player.horizontal_speed();
     // Crouch-walking and sliding are silent.
@@ -274,11 +297,11 @@ fn local_footsteps(
         *stride = STRIDE * 0.5;
         return;
     }
-    *stride += speed * dt;
+    *stride += speed * time.delta_secs();
     if *stride >= STRIDE {
         *stride -= STRIDE;
         cues.write(SoundCue {
-            sound: Sound::Footstep,
+            sound: Sound::Footstep(surface_under(&map.0, feet)),
             at: None,
         });
     }
@@ -289,11 +312,16 @@ struct RemoteStride {
     last_pos: Vec3,
     stride: f32,
     airborne_for: f32,
+    /// Coming down fast, as of the last frame.
+    falling: bool,
 }
 
 /// Other players' steps. The server does not tell us whether they are on the
-/// ground, so that is inferred from how they move: running without rising or falling.
+/// ground, so that is inferred from how they move: running without rising or
+/// falling. A bunny hop never runs level, so falling one frame and rising the
+/// next with the ground right under the feet is a landing too.
 fn remote_footsteps(
+    map: Res<GameMap>,
     time: Res<Time>,
     remotes: Query<(&RemotePlayer, &Transform)>,
     mut cues: MessageWriter<SoundCue>,
@@ -319,16 +347,30 @@ fn remote_footsteps(
             state.airborne_for = 0.0;
             continue;
         }
-        let feet = pos - Vec3::Y * crate::map::PLAYER_HALF.y;
-        let vertical_speed = moved.y.abs() / dt;
-        if vertical_speed > 1.5 {
+        let feet = pos - Vec3::Y * crate::map::player_half(remote.crouching).y;
+        let vertical_speed = moved.y / dt;
+        if vertical_speed.abs() > 1.5 {
+            let bounced = vertical_speed > 0.0
+                && state.falling
+                && map.0.raycast(feet + Vec3::Y * 0.3, Vec3::NEG_Y, 0.8).is_some();
+            if bounced {
+                if state.airborne_for > LANDING_AIR_TIME {
+                    cues.write(SoundCue {
+                        sound: Sound::Land(surface_under(&map.0, feet)),
+                        at: Some(feet),
+                    });
+                }
+                state.airborne_for = 0.0;
+            }
+            state.falling = vertical_speed < 0.0;
             state.airborne_for += dt;
             state.stride = STRIDE * 0.5;
             continue;
         }
-        if state.airborne_for > 0.25 {
+        state.falling = false;
+        if state.airborne_for > LANDING_AIR_TIME {
             cues.write(SoundCue {
-                sound: Sound::Land,
+                sound: Sound::Land(surface_under(&map.0, feet)),
                 at: Some(feet),
             });
         }
@@ -343,7 +385,7 @@ fn remote_footsteps(
         if state.stride >= STRIDE {
             state.stride -= STRIDE;
             cues.write(SoundCue {
-                sound: Sound::Footstep,
+                sound: Sound::Footstep(surface_under(&map.0, feet)),
                 at: Some(feet),
             });
         }
@@ -625,20 +667,428 @@ fn synth_gunshot() -> Vec<f32> {
     })
 }
 
-/// A dull, short thud. Each variant is filtered and pitched a little differently.
-fn synth_footstep(variant: u32) -> Vec<f32> {
-    let mut rng = 0x1234_5678 + variant * 7919;
-    let mut low_passed = 0.0;
-    let softness = 0.07 + 0.025 * variant as f32;
-    let tone = 75.0 + 12.0 * variant as f32;
-    samples(0.12, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        low_passed += (noise - low_passed) * softness;
-        let scuff = low_passed * (-t * 38.0).exp() * 2.2;
-        let thud = (TAU * tone * t).sin() * (-t * 50.0).exp() * 0.7;
-        // A few milliseconds of fade-in avoids a click.
-        (scuff + thud).tanh() * (t * 400.0).min(1.0) * 0.8
-    })
+// ---------------------------------------------------------------- footsteps
+
+/// Footsteps keep little above this (grass and gravel a bit more, see
+/// `Tread::cutoff`): boots, clothes and the way to the ears soak up the top end.
+const FOOTSTEP_CUTOFF: f32 = 3200.0;
+/// Different takes of each footstep, and of each landing.
+const FOOTSTEP_TAKES: u32 = 8;
+const LANDING_TAKES: u32 = 3;
+
+/// What a foot comes down on, which decides how the step sounds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Surface {
+    /// Concrete, asphalt, floors, roofs: anything built.
+    Hard,
+    /// Grass, fresh or dry.
+    Grass,
+    /// Bare, packed earth.
+    Dirt,
+    /// Loose stones and rock.
+    Gravel,
+    /// Wading through the creek.
+    Water,
+}
+
+impl Surface {
+    const COUNT: usize = 5;
+    const ALL: [Surface; Surface::COUNT] =
+        [Surface::Hard, Surface::Grass, Surface::Dirt, Surface::Gravel, Surface::Water];
+}
+
+/// What the feet at `feet` are standing on. The map does not say, so it is
+/// worked out: wading if they are below the creek's surface, hard if they
+/// are on a block or a paved road, and on the bare ground its colour tells
+/// grass (green) from earth (brown) and stones (light grey).
+fn surface_under(map: &Map, feet: Vec3) -> Surface {
+    let at = Vec2::new(feet.x, feet.z);
+    let wading = map.water.iter().any(|(points, width)| {
+        points.windows(2).any(|pair| {
+            let (a, b) = (pair[0], pair[1]);
+            let (distance, along) = nearest_on_segment(at, Vec2::new(a.x, a.z), Vec2::new(b.x, b.z));
+            distance < width / 2.0 && feet.y < a.y + (b.y - a.y) * along + 0.05
+        })
+    });
+    if wading {
+        return Surface::Water;
+    }
+    let Some(terrain) = &map.terrain else {
+        return Surface::Hard;
+    };
+    if feet.y - terrain.height(at.x, at.y) > 0.15 {
+        return Surface::Hard;
+    }
+    let paved = map.roads.iter().any(|road| {
+        road.paved
+            && road
+                .points
+                .windows(2)
+                .any(|pair| nearest_on_segment(at, pair[0], pair[1]).0 < road.width / 2.0)
+    });
+    if paved {
+        return Surface::Hard;
+    }
+    let Some([r, g, b]) = terrain.color(at.x, at.y) else {
+        return Surface::Grass;
+    };
+    if g - (r + b) / 2.0 > 0.07 {
+        Surface::Grass
+    } else if r - b < 0.12 && g > 0.35 {
+        // Grey and light: stones. Dark mud is grey too.
+        Surface::Gravel
+    } else {
+        Surface::Dirt
+    }
+}
+
+/// Distance from `at` to the segment from `a` to `b`, and how far along it
+/// (0..1) the nearest point is.
+fn nearest_on_segment(at: Vec2, a: Vec2, b: Vec2) -> (f32, f32) {
+    let ab = b - a;
+    let along = ((at - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+    (at.distance(a + ab * along), along)
+}
+
+/// How a step on one surface is put together. Each part of the foot that
+/// meets the ground (heel, then the ball of the foot) makes a tap, a thud
+/// and a thump, and crushes or brushes grains of the surface.
+struct Tread {
+    length: f32,
+    /// Seconds the sole takes to meet the ground: soft ground gives.
+    attack: f32,
+    /// The sharp tap of the sole: band-passed noise (frequency, q, decay per second, gain).
+    tap: (f32, f32, f32, f32),
+    /// The weight coming down: low-passed noise (cutoff, decay, gain).
+    thud: (f32, f32, f32),
+    /// The ground and the leg taking the blow: a low, damped sine (frequency, decay, gain).
+    thump: (f32, f32, f32),
+    /// Grains per second at the peak, and seconds they keep coming.
+    grain_rate: f32,
+    grain_time: f32,
+    /// Lowest and highest pitch of a grain, how sharply it rings, how fast it dies, and its gain.
+    grain_pitch: (f32, f32),
+    grain_q: f32,
+    grain_decay: f32,
+    grain_gain: f32,
+    /// The sole sliding as it rolls off: band-passed noise (frequency, gain).
+    scuff: (f32, f32),
+    /// Everything above this is taken out (see `muffle`).
+    cutoff: f32,
+    /// Peak level, so that the surfaces sit together: hard ground is loud,
+    /// grass quiet.
+    level: f32,
+}
+
+fn tread(surface: Surface) -> Tread {
+    match surface {
+        Surface::Hard => Tread {
+            length: 0.22,
+            attack: 0.0005,
+            tap: (1700.0, 0.9, 320.0, 2.4),
+            thud: (900.0, 160.0, 1.3),
+            thump: (115.0, 65.0, 0.3),
+            grain_rate: 900.0,
+            grain_time: 0.014,
+            grain_pitch: (3500.0, 9000.0),
+            grain_q: 5.0,
+            grain_decay: 1800.0,
+            grain_gain: 0.8,
+            scuff: (4200.0, 0.08),
+            cutoff: FOOTSTEP_CUTOFF,
+            level: 0.98,
+        },
+        // Dry blades brushed and snapped: short ticks of noise, not
+        // ringing ones (which sound like bubbles), and brighter than the
+        // rest so it stays crisp.
+        Surface::Grass => Tread {
+            length: 0.22,
+            attack: 0.002,
+            tap: (900.0, 0.8, 200.0, 0.5),
+            thud: (450.0, 55.0, 2.6),
+            thump: (70.0, 45.0, 0.3),
+            grain_rate: 6000.0,
+            grain_time: 0.04,
+            grain_pitch: (2500.0, 7000.0),
+            grain_q: 0.7,
+            grain_decay: 3000.0,
+            grain_gain: 1.6,
+            scuff: (3800.0, 0.18),
+            cutoff: 5000.0,
+            level: 0.47,
+        },
+        Surface::Dirt => Tread {
+            length: 0.22,
+            attack: 0.002,
+            tap: (1300.0, 0.9, 240.0, 0.9),
+            thud: (550.0, 68.0, 2.8),
+            thump: (85.0, 50.0, 0.3),
+            grain_rate: 1800.0,
+            grain_time: 0.025,
+            grain_pitch: (1500.0, 6000.0),
+            grain_q: 4.0,
+            grain_decay: 1600.0,
+            grain_gain: 1.4,
+            scuff: (2600.0, 0.14),
+            cutoff: FOOTSTEP_CUTOFF,
+            level: 0.61,
+        },
+        Surface::Gravel => Tread {
+            length: 0.24,
+            attack: 0.0015,
+            tap: (1500.0, 1.0, 260.0, 0.5),
+            thud: (600.0, 68.0, 2.2),
+            thump: (85.0, 50.0, 0.3),
+            grain_rate: 2600.0,
+            grain_time: 0.04,
+            grain_pitch: (1100.0, 6500.0),
+            grain_q: 8.0,
+            grain_decay: 900.0,
+            grain_gain: 2.0,
+            scuff: (2400.0, 0.08),
+            cutoff: 3600.0,
+            level: 0.55,
+        },
+        Surface::Water => unreachable!("water splashes instead"),
+    }
+}
+
+/// One step on `surface`, or with `landing` both feet hitting the ground
+/// at once. Each take is shaped a little differently.
+fn synth_footstep(surface: Surface, take: u32, landing: bool) -> Vec<f32> {
+    if surface == Surface::Water {
+        return synth_splash(take, landing);
+    }
+    let mut rng = 0x1234_5678 ^ (surface as u32 + 1).wrapping_mul(0x9e37_79b9) ^ (take * 2 + landing as u32 + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let tread = tread(surface);
+    // Scales a number by up to `spread` either way.
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+
+    // (start, gain, how much brighter): heel, then the ball of the foot.
+    // Running lands on the front of the foot, the heel only just ahead: far
+    // enough apart to give the step a shape, close enough to be one blow.
+    let roll = vary(0.016, 0.3);
+    let mut contacts = vec![(0.002, 1.0, 1.0), (0.002 + roll, vary(0.4, 0.25), vary(1.2, 0.1))];
+    if landing {
+        // The other foot, a moment later, and it lands flatter.
+        let other = vary(0.012, 0.4);
+        contacts.push((0.002 + other, vary(0.85, 0.1), 0.9));
+        contacts.push((0.002 + other + roll * 0.6, vary(0.4, 0.2), 1.1));
+    }
+    let weight: f32 = if landing { 1.4 } else { 1.0 };
+    let (tap_frequency, tap_q, tap_decay, tap_gain) = tread.tap;
+    let (thud_cutoff, thud_decay, thud_gain) = tread.thud;
+    let (thump_frequency, thump_decay, thump_gain) = tread.thump;
+    let thump_frequency = vary(thump_frequency, 0.12) / weight.sqrt();
+    let mut tap = Biquad::new(Pass::Band, vary(tap_frequency, 0.15), tap_q);
+    let mut thud = Biquad::new(Pass::Low, vary(thud_cutoff, 0.15), 0.7);
+    let mut scuff = Biquad::new(Pass::Band, vary(tread.scuff.0, 0.2), 0.8);
+    let scuff_gain = vary(tread.scuff.1, 0.4);
+    let grain_rate = vary(tread.grain_rate, 0.25) * weight;
+    let grain_time = vary(tread.grain_time, 0.25) * weight.sqrt();
+    let (low, high) = tread.grain_pitch;
+    let mut grains = Grains::new(tread.grain_decay);
+    // Webbing and kit rattling as we land.
+    let mut rattle = Grains::new(250.0);
+    // (sample it starts on, pitch)
+    let rattles: Vec<(usize, f32)> = (0..if landing { 5 } else { 0 })
+        .map(|_| (((0.01 + random() * 0.07) * SAMPLE_RATE as f32) as usize, 2600.0 + random() * 3800.0))
+        .collect();
+    let mut thump_phases = vec![0.0_f32; contacts.len()];
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+
+    let mut sound = samples(tread.length, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let chance = next_random(&mut noise_rng);
+        let (mut taps, mut thuds, mut thumps, mut density) = (0.0, 0.0, 0.0, 0.0);
+        for ((at, gain, brightness), phase) in contacts.iter().zip(&mut thump_phases) {
+            if t < *at {
+                continue;
+            }
+            let since = t - at;
+            let onset = (since / tread.attack).min(1.0);
+            taps += gain * onset * (-since * tap_decay * brightness).exp();
+            thuds += gain * onset * (-since * thud_decay / weight).exp();
+            // The thump drops in pitch as the blow is taken up.
+            *phase += TAU * thump_frequency * (1.0 + 0.5 * (-since * 70.0).exp()) / SAMPLE_RATE as f32;
+            thumps += gain * onset * phase.sin() * (-since * thump_decay / weight).exp();
+            density += gain * (since / 0.004).min(1.0) * (-since / grain_time).exp();
+        }
+        if chance < grain_rate * density / SAMPLE_RATE as f32 {
+            // Mostly faint ticks, now and then a loud one; the loud ones
+            // right at the blow; late ones on their own sound like echoes.
+            let size = next_random(&mut noise_rng).powi(3) * density.min(1.0);
+            let pitch = low * (high / low).powf(next_random(&mut noise_rng));
+            grains.add(pitch, tread.grain_q, size);
+        }
+        let index = (t * SAMPLE_RATE as f32).round() as usize;
+        for (at, pitch) in &rattles {
+            if *at == index {
+                rattle.add(*pitch, 30.0, 0.3);
+            }
+        }
+        let scuffs = contacts.get(1).map_or(0.0, |(at, ..)| {
+            let since = t - at;
+            if since < 0.0 { 0.0 } else { (since / 0.01).min(1.0) * (-since * 60.0).exp() }
+        });
+        tap.run(noise * taps) * tap_gain
+            + thud.run(noise * thuds) * thud_gain
+            + thumps * thump_gain
+            + grains.run(noise) * tread.grain_gain * tread.grain_q.sqrt()
+            + scuff.run(noise * scuffs) * scuff_gain
+            + rattle.run(noise) * 3.0
+    });
+    muffle(&mut sound, tread.cutoff);
+    finish(&mut sound, tread.level);
+    sound
+}
+
+/// A foot coming down in shallow water: the slosh of the water pushed
+/// aside, a spray, and the bubbles it traps ringing out as they rise, then
+/// a few drops falling back.
+fn synth_splash(take: u32, landing: bool) -> Vec<f32> {
+    let mut rng = 0x00a9_7e12 ^ (take * 2 + landing as u32 + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let size = if landing { 1.5 } else { 1.0 };
+    // (start, pitch, gain). A bubble's pitch is set by its size: big ones
+    // are deep and ring longer.
+    let mut bubbles: Vec<(f32, f32, f32)> = (0..if landing { 26 } else { 14 })
+        .map(|_| {
+            let pitch = 350.0 * (2200.0_f32 / 350.0).powf(random());
+            (0.008 + random().powi(2) * 0.2 * size, pitch, (0.3 + 0.7 * random()) * (600.0 / pitch).sqrt())
+        })
+        .collect();
+    bubbles.extend((0..if landing { 7 } else { 4 }).map(|_| {
+        (0.16 + random() * 0.26 * size, 1400.0 + random() * 2400.0, 0.25 + 0.3 * random())
+    }));
+    let mut slosh = Biquad::new(Pass::Low, 420.0 + random() * 160.0, 0.9);
+    let mut spray = Biquad::new(Pass::Band, 2400.0 + random() * 1200.0, 0.6);
+    let mut thud = Biquad::new(Pass::Low, 160.0, 0.7);
+    let mut phases = vec![0.0_f32; bubbles.len()];
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+    let mut sound = samples(0.5 * size, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let push = (t / 0.012).min(1.0) * (-t * 13.0 / size).exp();
+        let spraying = (t / 0.004).min(1.0) * (-t * 22.0 / size).exp();
+        let blow = (t / 0.002).min(1.0) * (-t * 35.0).exp();
+        let mut out = slosh.run(noise * push) * 3.0 + spray.run(noise * spraying) * 0.9 + thud.run(noise * blow) * 4.0 * size;
+        for ((at, pitch, gain), phase) in bubbles.iter().zip(&mut phases) {
+            if t < *at {
+                continue;
+            }
+            let since = t - at;
+            // Minnaert resonance, damped and rising as the bubble shrinks
+            // (van den Doel's model).
+            let damping = 0.13 * pitch + 0.0072 * pitch.powf(1.5);
+            *phase += TAU * pitch * (1.0 + 0.1 * damping * since) / SAMPLE_RATE as f32;
+            out += phase.sin() * (-damping * since).exp() * (since * 4000.0).min(1.0) * gain;
+        }
+        out
+    });
+    muffle(&mut sound, FOOTSTEP_CUTOFF);
+    finish(&mut sound, if landing { 0.64 } else { 0.57 });
+    sound
+}
+
+#[derive(Clone, Copy)]
+enum Pass {
+    Low,
+    Band,
+}
+
+/// A two-pole filter (from the Audio EQ Cookbook). The band pass peaks at 1.
+#[derive(Clone, Copy)]
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    x: [f32; 2],
+    y: [f32; 2],
+}
+
+impl Biquad {
+    fn new(pass: Pass, frequency: f32, q: f32) -> Biquad {
+        let w = TAU * frequency.min(SAMPLE_RATE as f32 * 0.45) / SAMPLE_RATE as f32;
+        let (sin, cos) = w.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let b = match pass {
+            Pass::Low => [(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0],
+            Pass::Band => [alpha, 0.0, -alpha],
+        };
+        let a0 = 1.0 + alpha;
+        Biquad {
+            b: b.map(|b| b / a0),
+            a: [-2.0 * cos / a0, (1.0 - alpha) / a0],
+            x: [0.0; 2],
+            y: [0.0; 2],
+        }
+    }
+
+    fn run(&mut self, input: f32) -> f32 {
+        let output = self.b[0] * input + self.b[1] * self.x[0] + self.b[2] * self.x[1]
+            - self.a[0] * self.y[0]
+            - self.a[1] * self.y[1];
+        self.x = [input, self.x[0]];
+        self.y = [output, self.y[0]];
+        output
+    }
+}
+
+/// Many tiny impacts, each a burst of noise ringing a filter of its own:
+/// stones knocking, grit crushed, blades of grass flicked (Perry Cook's
+/// PhISEM, more or less).
+struct Grains {
+    live: Vec<(Biquad, f32)>,
+    /// How much a grain's burst keeps each sample.
+    keep: f32,
+}
+
+impl Grains {
+    /// Grains whose bursts die away at `decay` per second.
+    fn new(decay: f32) -> Grains {
+        Grains {
+            live: Vec::new(),
+            keep: (-decay / SAMPLE_RATE as f32).exp(),
+        }
+    }
+
+    fn add(&mut self, pitch: f32, q: f32, size: f32) {
+        self.live.push((Biquad::new(Pass::Band, pitch, q), size));
+    }
+
+    fn run(&mut self, noise: f32) -> f32 {
+        let mut out = 0.0;
+        for (filter, burst) in &mut self.live {
+            out += filter.run(noise * *burst);
+            *burst *= self.keep;
+        }
+        self.live.retain(|(_, burst)| *burst > 1e-4);
+        out
+    }
+}
+
+/// Takes off the top end: a steep low pass at `cutoff`.
+fn muffle(sound: &mut [f32], cutoff: f32) {
+    let mut filters = [Biquad::new(Pass::Low, cutoff, 0.707); 2];
+    for sample in sound.iter_mut() {
+        for filter in &mut filters {
+            *sample = filter.run(*sample);
+        }
+    }
+}
+
+/// Fades the tail to exactly zero and scales the loudest sample to `peak`.
+fn finish(sound: &mut [f32], peak: f32) {
+    let count = sound.len();
+    for (i, sample) in sound.iter_mut().enumerate() {
+        *sample *= ((count - 1 - i) as f32 / 400.0).min(1.0);
+    }
+    let loudest = sound.iter().fold(0.0_f32, |loudest, s| loudest.max(s.abs()));
+    if loudest > 0.0 {
+        for sample in sound.iter_mut() {
+            *sample *= peak / loudest;
+        }
+    }
 }
 
 fn samples(seconds: f32, mut wave: impl FnMut(f32) -> f32) -> Vec<f32> {
@@ -707,13 +1157,90 @@ mod tests {
             synth_shell_in(),
             synth_pump(),
         ];
-        all.extend((0..4).map(synth_footstep));
+        for surface in Surface::ALL {
+            all.extend((0..FOOTSTEP_TAKES).map(|take| synth_footstep(surface, take, false)));
+            all.extend((0..LANDING_TAKES).map(|take| synth_footstep(surface, take, true)));
+        }
         for sound in all {
             let peak = sound.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
             assert!(peak > 0.3 && peak <= 1.0, "peak {peak}");
             assert!(sound.iter().all(|s| s.is_finite()));
             assert_eq!(*sound.last().unwrap(), 0.0);
             assert_eq!(wav_bytes(&sound).len(), 44 + sound.len() * 2);
+        }
+    }
+
+    /// Each map is walked on what it looks like: built maps are hard all
+    /// over, the valley is mostly grass with its creek and roads, the
+    /// hamlet earth and stones.
+    #[test]
+    fn maps_have_their_surfaces() {
+        for (id, expected) in [
+            (0, vec![Surface::Hard]),
+            (1, vec![Surface::Hard]),
+            (2, vec![Surface::Grass, Surface::Dirt, Surface::Gravel, Surface::Water, Surface::Hard]),
+            (3, vec![Surface::Dirt, Surface::Gravel]),
+        ] {
+            let map = Map::by_id(id);
+            let [low, high] = map.bounds;
+            let mut found = Vec::new();
+            for i in 0..60 {
+                for j in 0..60 {
+                    let at = low + (high - low) * Vec2::new(i as f32, j as f32) / 59.0;
+                    let feet = Vec3::new(at.x, map.ground(at.x, at.y).unwrap_or(0.0), at.y);
+                    let surface = surface_under(&map, feet);
+                    if !found.contains(&surface) {
+                        found.push(surface);
+                    }
+                }
+            }
+            found.sort_by_key(|surface| *surface as u8);
+            let mut expected = expected;
+            expected.sort_by_key(|surface| *surface as u8);
+            assert_eq!(found, expected, "map {id}");
+        }
+    }
+
+    /// Writes the footsteps out to listen to: each take, and a run of
+    /// steps on each surface at running pace. `cargo test write_footsteps
+    /// -- --ignored`, into `target/sounds` (or `$SOUND_DIR`).
+    #[test]
+    #[ignore]
+    fn write_footsteps() {
+        let dir = std::env::var("SOUND_DIR").unwrap_or_else(|_| "target/sounds".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        // Seconds between steps when running.
+        let pace = STRIDE / 9.5;
+        let mut rng = 1;
+        for surface in Surface::ALL {
+            let name = format!("{surface:?}").to_lowercase();
+            let takes: Vec<_> = (0..FOOTSTEP_TAKES).map(|take| synth_footstep(surface, take, false)).collect();
+            for (take, sound) in takes.iter().enumerate() {
+                std::fs::write(format!("{dir}/{name}_{take}.wav"), wav_bytes(sound)).unwrap();
+            }
+            for take in 0..LANDING_TAKES {
+                let sound = synth_footstep(surface, take, true);
+                std::fs::write(format!("{dir}/{name}_land_{take}.wav"), wav_bytes(&sound)).unwrap();
+            }
+            // Twelve steps, then a landing.
+            let step = (pace * SAMPLE_RATE as f32) as usize;
+            let mut run = vec![0.0; step * 14 + SAMPLE_RATE as usize];
+            let mut last = 0;
+            for n in 0..12 {
+                let mut take = (next_random(&mut rng) * 997.0) as usize % takes.len();
+                if take == last {
+                    take = (take + 1) % takes.len();
+                }
+                last = take;
+                let loudness = 0.85 + 0.15 * next_random(&mut rng);
+                for (i, s) in takes[take].iter().enumerate() {
+                    run[n * step + i] += s * loudness;
+                }
+            }
+            for (i, s) in synth_footstep(surface, 0, true).iter().enumerate() {
+                run[step * 13 + i] += s;
+            }
+            std::fs::write(format!("{dir}/run_{name}.wav"), wav_bytes(&run)).unwrap();
         }
     }
 }
