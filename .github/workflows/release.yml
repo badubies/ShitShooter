@@ -1,8 +1,12 @@
-# Every push to main builds the game and the launcher on Windows and publishes
-# them as a new GitHub release (build-1, build-2, ...). The launcher downloads
-# from the latest release, so friends get each push the next time they start it.
-# The release also carries the lobby server for Linux (a Raspberry Pi), which
-# deploy/install.sh installs and keeps up to date.
+# Every push to main builds the game and the launcher for Windows, macOS (Apple
+# Silicon) and Linux (x86-64) and publishes them as a new GitHub release
+# (build-1, build-2, ...). The launchers download from the latest release, so
+# friends get each push the next time they start it. The release also carries
+# the lobby server for Linux (a Raspberry Pi), which deploy/install.sh installs
+# and keeps up to date.
+#
+# Each platform builds in its own job; the publish job waits for all of them,
+# so a release always has every platform's files or is not made at all.
 name: Release
 
 on:
@@ -23,9 +27,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Same as build-release.ps1: links the C runtime into the exe, so it runs on
-  # PCs without the Visual C++ Redistributable.
-  RUSTFLAGS: -C target-feature=+crt-static
   SHITSHOOTER_BUILD: build-${{ github.run_number }}
   # The lobby server the game's menu lists by default (e.g. mypi.duckdns.org).
   # Set it under Settings > Secrets and variables > Actions > Variables; unset,
@@ -35,8 +36,12 @@ env:
   KEEP_RELEASES: 10
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
+    env:
+      # Same as build-release.ps1: links the C runtime into the exe, so it runs
+      # on PCs without the Visual C++ Redistributable.
+      RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v5
 
@@ -71,12 +76,105 @@ jobs:
           Copy-Item target\aarch64-unknown-linux-musl\release\shitshooter out\shitshooter-server-linux-arm64
           Copy-Item target\armv7-unknown-linux-musleabihf\release\shitshooter out\shitshooter-server-linux-armv7
           Copy-Item target\x86_64-unknown-linux-musl\release\shitshooter out\shitshooter-server-linux-x64
-          Set-Content out\version.txt $env:SHITSHOOTER_BUILD -NoNewline
+          # Every platform's launcher is built from the same source, so one
+          # version number covers them all.
           $launcher = (& target\release\ShitShooterLauncher.exe --version).Trim()
           Set-Content out\launcher-version.txt $launcher -NoNewline
+          Get-ChildItem out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/
+          if-no-files-found: error
+
+  # Apple Silicon Macs. The launcher downloads shitshooter-macos-arm64 and
+  # updates itself from ShitShooterLauncher-macos-arm64; new players download
+  # the .zip, which keeps the launcher's executable bit.
+  macos:
+    runs-on: macos-latest
+    env:
+      # Runs on macOS 11 (Big Sur) and newer, the first for Apple Silicon.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --workspace
+
+      - name: Package
+        run: |
+          mkdir out
+          cp target/release/shitshooter out/shitshooter-macos-arm64
+          cp target/release/ShitShooterLauncher out/ShitShooterLauncher-macos-arm64
+          # Rust's linker signs arm64 exes ad hoc, which macOS requires.
+          codesign --verify --verbose target/release/shitshooter target/release/ShitShooterLauncher
+          ditto -c -k target/release/ShitShooterLauncher out/ShitShooterLauncher-macos-arm64.zip
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/
+          if-no-files-found: error
+
+  # x86-64 Linux. Built on Ubuntu 24.04, so it needs glibc 2.39 or newer
+  # (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22, Arch and newer).
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      # Bevy's sound, gamepads and windows (X11 and Wayland).
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --workspace
+
+      - name: Package
+        run: |
+          mkdir out
+          cp target/release/shitshooter out/shitshooter-linux-x64
+          cp target/release/ShitShooterLauncher out/ShitShooterLauncher-linux-x64
+          tar -czf out/ShitShooterLauncher-linux-x64.tar.gz -C target/release ShitShooterLauncher
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Version and asset list
+        shell: pwsh
+        run: |
+          Set-Content out/version.txt $env:SHITSHOOTER_BUILD -NoNewline
           # Asset list, one line per file under assets/: "<sha256> <size> <path>".
           # The launcher compares it with what is installed and downloads only
-          # the files that changed.
+          # the files that changed. Assets are the same on every platform.
           $lines = @()
           if (Test-Path assets) {
             $root = (Resolve-Path assets).Path
@@ -86,9 +184,9 @@ jobs:
               "$hash $($_.Length) $path"
             }
           }
-          Set-Content out\assets.txt ($lines -join "`n") -NoNewline
+          Set-Content out/assets.txt ($lines -join "`n") -NoNewline
           Get-ChildItem out
-          Get-Content out\assets.txt
+          Get-Content out/assets.txt
 
       # Asset files live in one release that is never deleted (tag "assets"),
       # each named by its hash, so a file is uploaded once and every later build
@@ -112,7 +210,7 @@ jobs:
             [string[]]@(gh release view assets --json assets --jq '.assets[].name'))
           if ($LASTEXITCODE -ne 0) { exit 1 }
           New-Item -ItemType Directory upload | Out-Null
-          foreach ($line in Get-Content out\assets.txt) {
+          foreach ($line in Get-Content out/assets.txt) {
             if (-not $line) { continue }
             $hash, $size, $path = $line -split ' ', 3
             if ($have.Add($hash)) {
@@ -137,7 +235,11 @@ jobs:
           @"
           $subject
 
-          **New player?** Download **ShitShooterLauncher.exe** below, right-click it → Properties → tick **Unblock** → OK, then run it. It installs the game and keeps it up to date.
+          **New player?** Download the launcher for your computer below. It installs the game and keeps it up to date.
+
+          - **Windows:** **ShitShooterLauncher.exe**. Right-click it → Properties → tick **Unblock** → OK, then run it.
+          - **Mac (Apple Silicon):** **ShitShooterLauncher-macos-arm64.zip**. Unzip it and double-click **ShitShooterLauncher**. The first time, macOS refuses to open it: click **Done**, then go to System Settings → Privacy & Security, click **Open Anyway** next to ShitShooterLauncher, and double-click it again.
+          - **Linux (x86-64):** **ShitShooterLauncher-linux-x64.tar.gz**. In a terminal: ``tar xzf ShitShooterLauncher-linux-x64.tar.gz && ./ShitShooterLauncher``
 
           Commit: $env:GITHUB_SHA
           "@ | Set-Content notes.md

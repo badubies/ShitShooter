@@ -1,9 +1,15 @@
 //! ShitShooter launcher: installs the newest game build from the GitHub
 //! releases, then starts it. Friends only ever download this once.
 //!
-//! The game lives in `%LOCALAPPDATA%\ShitShooter`, so the launcher itself can
-//! sit anywhere (desktop, downloads). Without internet it starts whatever is
-//! installed. Any arguments are passed on to the game (e.g. `--join <addr>`).
+//! The game lives in `%LOCALAPPDATA%\ShitShooter` (on a Mac in
+//! `~/Library/Application Support/ShitShooter`, on Linux in
+//! `~/.local/share/ShitShooter`), so the launcher itself can sit anywhere
+//! (desktop, downloads). Without internet it starts whatever is installed. Any
+//! arguments are passed on to the game (e.g. `--join <addr>`).
+//!
+//! Each platform has its own game and launcher files in the release (see
+//! `game_download` and `launcher_download`). Windows keeps the original names,
+//! so launchers from before the Mac and Linux builds still find them.
 //!
 //! Game assets (models, textures, sounds) go to `assets\` next to the game, where
 //! Bevy looks for them. Each build lists its assets in `assets.txt`, and only the
@@ -19,8 +25,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const REPO: &str = "badubies/ShitShooter";
-const GAME_EXE: &str = "shitshooter.exe";
-const LAUNCHER_EXE: &str = "ShitShooterLauncher.exe";
+/// The game's file name in the install folder.
+const GAME_EXE: &str = if cfg!(windows) { "shitshooter.exe" } else { "shitshooter" };
 /// Release asset holding the game build name (e.g. `build-42`).
 const GAME_VERSION_FILE: &str = "version.txt";
 /// Release asset holding the launcher version, for the launcher's self-update.
@@ -116,13 +122,70 @@ fn run(args: &[String]) -> Result<()> {
     launch_game(&game, &dir, args)
 }
 
-/// Where the game is installed: `%LOCALAPPDATA%\ShitShooter`, or next to the
-/// launcher if that variable is somehow missing.
+/// Where the game is installed: `%LOCALAPPDATA%\ShitShooter` on Windows,
+/// `~/Library/Application Support/ShitShooter` on a Mac and
+/// `$XDG_DATA_HOME/ShitShooter` (`~/.local/share/ShitShooter`) on Linux, or
+/// next to the launcher if those variables are somehow missing.
 fn install_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|base| PathBuf::from(base).join("ShitShooter"))
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        home().map(|home| home.join("Library").join("Application Support"))
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| home().map(|home| home.join(".local").join("share")))
+    };
+    base.map(|base| base.join("ShitShooter"))
         .or_else(|| Some(std::env::current_exe().ok()?.parent()?.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// This platform's name in release file names, e.g. `macos-arm64`.
+fn platform() -> String {
+    let os = std::env::consts::OS;
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    };
+    format!("{os}-{arch}")
+}
+
+/// The game's file in the release, e.g. `shitshooter-macos-arm64`.
+fn game_download() -> String {
+    if cfg!(windows) { GAME_EXE.to_string() } else { format!("shitshooter-{}", platform()) }
+}
+
+/// The launcher's file in the release, e.g. `ShitShooterLauncher-linux-x64`.
+fn launcher_download() -> String {
+    if cfg!(windows) {
+        "ShitShooterLauncher.exe".to_string()
+    } else {
+        format!("ShitShooterLauncher-{}", platform())
+    }
+}
+
+/// `path` with `suffix` added to the end of its file name.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Downloads are written without the executable bit; Windows needs none.
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("could not make {} executable: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn download_url(file: &str) -> String {
@@ -199,13 +262,14 @@ fn print_progress(done: u64, total: Option<u64>) {
 fn install_game(agent: &ureq::Agent, dir: &Path, version: &str) -> Result<()> {
     sync_assets(agent, dir)?;
     let partial = dir.join(format!("{GAME_EXE}.download"));
-    let result = download(agent, &download_url(GAME_EXE), &partial);
+    let result = download(agent, &download_url(&game_download()), &partial)
+        .and_then(|()| make_executable(&partial));
     if let Err(e) = result {
         let _ = fs::remove_file(&partial);
         return Err(e);
     }
     let game = dir.join(GAME_EXE);
-    // Fails while the game is running, since Windows locks a running exe.
+    // Fails on Windows while the game is running, since it locks a running exe.
     while let Err(e) = fs::rename(&partial, &game) {
         println!("\nCould not replace the game ({e}).");
         println!("If ShitShooter is still running, close it, then press Enter to try again.");
@@ -363,6 +427,19 @@ fn launch_game(game: &Path, dir: &Path, args: &[String]) -> Result<()> {
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         command.creation_flags(CREATE_NEW_CONSOLE);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        // The launcher runs in a terminal, which closes once it exits. Its own
+        // process group and no hold on the terminal keep the game from being
+        // closed with it. The game writes its own log file.
+        command
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+    }
     command
         .spawn()
         .map(|_| ())
@@ -382,13 +459,16 @@ fn update_launcher(agent: &ureq::Agent, args: &[String]) -> Result<()> {
     }
     println!("Updating the launcher to {latest}...");
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
-    let new = me.with_extension("exe.new");
-    let old = me.with_extension("exe.old");
-    if let Err(e) = download(agent, &download_url(LAUNCHER_EXE), &new) {
+    let new = with_suffix(&me, ".new");
+    let old = with_suffix(&me, ".old");
+    let result = download(agent, &download_url(&launcher_download()), &new)
+        .and_then(|()| make_executable(&new));
+    if let Err(e) = result {
         let _ = fs::remove_file(&new);
         return Err(e);
     }
-    // A running exe cannot be overwritten, but it can be renamed out of the way.
+    // A running exe cannot be overwritten on Windows, but it can be renamed out
+    // of the way.
     let _ = fs::remove_file(&old);
     fs::rename(&me, &old).map_err(|e| e.to_string())?;
     if let Err(e) = fs::rename(&new, &me) {
@@ -408,7 +488,7 @@ fn update_launcher(agent: &ureq::Agent, args: &[String]) -> Result<()> {
 /// running for a moment, in which case this is retried on the next start.
 fn remove_old_launcher() {
     if let Ok(me) = std::env::current_exe() {
-        let _ = fs::remove_file(me.with_extension("exe.old"));
+        let _ = fs::remove_file(with_suffix(&me, ".old"));
     }
 }
 
@@ -434,6 +514,22 @@ mod tests {
     use super::*;
 
     const M4: &str = "5fe4098259c581a5aa5f7dbf6aa0d8c5a4be9cb384480b88e303e87c4cf97b30";
+
+    /// These must match the file names release.yml uploads.
+    #[test]
+    fn names_release_files() {
+        let (game, launcher) = (game_download(), launcher_download());
+        if cfg!(windows) {
+            assert_eq!((game.as_str(), launcher.as_str()), ("shitshooter.exe", "ShitShooterLauncher.exe"));
+        } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(game, "shitshooter-macos-arm64");
+            assert_eq!(launcher, "ShitShooterLauncher-macos-arm64");
+        } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            assert_eq!(game, "shitshooter-linux-x64");
+            assert_eq!(launcher, "ShitShooterLauncher-linux-x64");
+        }
+        assert_eq!(with_suffix(Path::new("a/ShitShooterLauncher.exe"), ".old"), Path::new("a/ShitShooterLauncher.exe.old"));
+    }
 
     #[test]
     fn parses_manifest_lines() {

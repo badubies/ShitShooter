@@ -4,11 +4,13 @@ A fast free-for-all arena shooter with self-hosted lobbies.
 
 ## Playing
 
-1. Download **ShitShooterLauncher.exe** from the [latest release](https://github.com/badubies/ShitShooter/releases/latest).
-2. Right-click it → **Properties** → tick **Unblock** → **OK**. (Windows blocks downloaded exes that aren't signed. Without this, double-clicking it does nothing.)
-3. Run it. It downloads the game, and on every start after that it checks for a new build and installs it before starting the game.
+Download the launcher for your computer from the [latest release](https://github.com/badubies/ShitShooter/releases/latest). It downloads the game, and on every start after that it checks for a new build and installs it before starting the game.
 
-The game is installed to `%LOCALAPPDATA%\ShitShooter`, so the launcher can live anywhere (desktop, downloads...). Without internet it starts the version already installed. Any arguments given to the launcher are passed on to the game, e.g. `ShitShooterLauncher.exe --join 1.2.3.4`.
+- **Windows:** download **ShitShooterLauncher.exe**, right-click it → **Properties** → tick **Unblock** → **OK**, then run it. (Windows blocks downloaded exes that aren't signed. Without this, double-clicking it does nothing.)
+- **Mac (Apple Silicon):** download **ShitShooterLauncher-macos-arm64.zip**, unzip it and double-click **ShitShooterLauncher**; it runs in a Terminal window. The first time, macOS refuses to open it because it isn't notarized: click **Done**, go to System Settings → **Privacy & Security**, click **Open Anyway** next to ShitShooterLauncher, then double-click it again.
+- **Linux (x86-64):** download **ShitShooterLauncher-linux-x64.tar.gz**, then in a terminal: `tar xzf ShitShooterLauncher-linux-x64.tar.gz && ./ShitShooterLauncher`. The game needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22 or newer).
+
+The game is installed to `%LOCALAPPDATA%\ShitShooter` on Windows, `~/Library/Application Support/ShitShooter` on a Mac and `~/.local/share/ShitShooter` on Linux, so the launcher can live anywhere (desktop, downloads...). Without internet it starts the version already installed. Any arguments given to the launcher are passed on to the game, e.g. `ShitShooterLauncher.exe --join 1.2.3.4`.
 
 ## Running a lobby server (Raspberry Pi)
 
@@ -31,7 +33,7 @@ The server is the same program as the game, built without the game: `shitshooter
 
 ## Releases
 
-Every push to `main` is built by GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) and published as a release named `build-<number>`. The last 10 are kept.
+Every push to `main` is built by GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) for Windows, macOS (Apple Silicon) and Linux (x86-64), and published as a release named `build-<number>`. The last 10 are kept. If any platform fails to build, nothing is published. Each platform has its own files in the release: `shitshooter.exe` and `ShitShooterLauncher.exe` for Windows, `shitshooter-macos-arm64` and `ShitShooterLauncher-macos-arm64` for the Mac, `shitshooter-linux-x64` and `ShitShooterLauncher-linux-x64` for Linux. The launchers download these. New players download the `.zip` and `.tar.gz`, which keep the launcher executable.
 
 Models, textures and sounds go in [assets/](assets/), and the game loads them with paths relative to that folder (e.g. `models/weapons/M4A1.gltf`). Each build lists its asset files with their hashes in `assets.txt`. The files themselves are uploaded once to a release tagged `assets`, named by hash, so an asset that doesn't change is never uploaded or downloaded again. The launcher downloads only the files that are new or changed. Don't delete the `assets` release.
 
