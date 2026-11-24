@@ -1233,32 +1233,24 @@ fn update_choice_texts(
     }
 }
 
-/// For the lobby: what you spawn with, as pictures and a line, and a button
+/// For the lobby's bottom bar: what you spawn with, in a line, on a button
 /// that opens the loadout screen.
 pub fn loadout_summary() -> impl Bundle {
     let kind = ui::ButtonKind::Tile;
-    let picture = |slot: Slot, width: f32| {
-        (
-            SlotImage(slot),
-            ImageNode::default().with_color(Color::NONE),
-            Node {
-                width: px(width),
-                aspect_ratio: Some(ASPECT),
-                ..default()
-            },
-            Pickable::IGNORE,
-        )
-    };
     (
         Button,
         kind,
         Hovered::default(),
         Node {
             flex_direction: FlexDirection::Column,
-            row_gap: px(10),
-            padding: UiRect::axes(px(18), px(16)),
+            row_gap: px(3),
+            // Gives way before the other buttons on the bar do.
+            min_width: px(0),
+            flex_shrink: 1.0,
+            overflow: Overflow::clip(),
+            padding: UiRect::axes(px(16), px(8)),
             border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(20)),
+            border_radius: BorderRadius::all(px(12)),
             ..default()
         },
         BackgroundColor(Color::NONE),
@@ -1267,26 +1259,16 @@ pub fn loadout_summary() -> impl Bundle {
         children![
             (
                 Node {
-                    justify_content: JustifyContent::SpaceBetween,
+                    column_gap: px(10),
                     ..default()
                 },
                 Pickable::IGNORE,
                 children![
-                    (section("You spawn with"), Pickable::IGNORE),
-                    (ui::weighted("Change", 13.0, 700, ui::ACCENT), Pickable::IGNORE),
+                    (ui::weighted("YOU SPAWN WITH", 10.0, 700, DIM), Pickable::IGNORE),
+                    (ui::weighted("Change", 10.0, 800, ui::ACCENT), Pickable::IGNORE),
                 ],
             ),
-            (
-                Node {
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::SpaceBetween,
-                    column_gap: px(6),
-                    ..default()
-                },
-                Pickable::IGNORE,
-                children![picture(Slot::Gun(0), 130.0), picture(Slot::Gun(1), 100.0), picture(Slot::Grenade, 90.0)],
-            ),
-            (LoadoutLine, label("", 13.0, DIM), Pickable::IGNORE),
+            (LoadoutLine, ui::weighted("", 15.0, 600, ui::TEXT), TextLayout::no_wrap(), Pickable::IGNORE),
         ],
     )
 }

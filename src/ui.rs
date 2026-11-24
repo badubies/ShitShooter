@@ -102,6 +102,7 @@ impl Plugin for UiPlugin {
             .insert(AssetId::default(), Font::from_bytes(include_bytes!("fonts/Archivo.ttf").to_vec()))
             .expect("the default font's slot");
         app.add_plugins(TabNavigationPlugin)
+            .init_resource::<PickerOpen>()
             .add_systems(OnEnter(AppState::Connecting), spawn_connecting)
             .add_systems(OnEnter(AppState::Lobby), spawn_lobby)
             .add_systems(OnEnter(AppState::Playing), spawn_hud)
@@ -114,7 +115,8 @@ impl Plugin for UiPlugin {
                     style_fields,
                     wheel_scroll,
                     update_connecting.run_if(in_state(AppState::Connecting)),
-                    (update_lobby, style_match_choices).run_if(in_state(AppState::Lobby)),
+                    (update_lobby, style_match_choices, update_lobby_teams, style_join_slots)
+                        .run_if(in_state(AppState::Lobby)),
                     update_rosters,
                     update_key_hints,
                     (
@@ -751,15 +753,24 @@ fn update_rosters(
 
 // ---------------------------------------------------------------- lobby
 
+// The players fill the lobby: in the team modes the screen splits into our
+// team's half and the enemy's, a line for every slot, and in free for all
+// everyone is in two columns. What the match will be is on a button in the
+// top left corner, which opens the picker for it.
+
 /// The pieces of text in the lobby that change.
 #[derive(Component, Clone, Copy)]
 enum LobbyText {
     /// Whose lobby it is, and who picks the match.
     Caption,
-    Map,
+    /// On the match button: what a click on it does.
+    MatchHint,
     Mode,
+    /// On the match button, under the mode: the map and air acceleration.
+    MatchLine,
+    /// In the match picker: who can change it.
+    PickerNote,
     Bots,
-    Players,
     /// How the last match ended.
     Result,
     /// Who we are waiting for.
@@ -798,6 +809,27 @@ pub(crate) enum MatchChoice {
 #[derive(Component)]
 struct MapNote(u8);
 
+/// Whether the match picker (the mode, map, air acceleration and bots) is open.
+#[derive(Resource, Default)]
+pub(crate) struct PickerOpen(pub bool);
+
+/// The button in the corner that shows the match and opens the picker.
+#[derive(Component)]
+struct MatchButton;
+
+/// The match picker, under the match button.
+#[derive(Component)]
+struct MatchPicker;
+
+/// Under the open match picker and over the rest of the lobby: a click on it
+/// closes the picker.
+#[derive(Component)]
+struct PickerCatcher;
+
+/// The picture on the match button: the picked map's, out of every map's.
+#[derive(Component)]
+struct MatchThumb(Vec<Option<Handle<Image>>>);
+
 /// How each air acceleration is shown, named after where it is played.
 fn air_accel_name(value: u16) -> String {
     match value {
@@ -807,9 +839,35 @@ fn air_accel_name(value: u16) -> String {
     }
 }
 
+/// A team's half of the screen, faintly in its colour, brightest at the top.
+/// (Colours mix in linear light, so a little alpha goes a long way over the
+/// dark scrim.)
+fn team_tint(color: Color, left: bool) -> impl Bundle {
+    let gradient = LinearGradient::to_bottom(vec![
+        ColorStop::auto(color.with_alpha(0.035)),
+        ColorStop::new(color.with_alpha(0.008), percent(70)),
+    ]);
+    (
+        TeamModeOnly,
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(0),
+            bottom: px(0),
+            left: if left { px(0) } else { Val::Auto },
+            right: if left { Val::Auto } else { px(0) },
+            width: percent(50),
+            ..default()
+        },
+        BackgroundGradient::from(gradient),
+        Pickable::IGNORE,
+    )
+}
+
 fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<AssetServer>) {
+    commands.insert_resource(PickerOpen(false));
     let share = session.share_address.clone();
     let server_label = session.server_label.clone();
+    let pictures: Vec<_> = (0..MAP_NAMES.len() as u8).map(|id| crate::browser::map_picture(&asset_server, id)).collect();
     let modes = (0..MODE_NAMES.len() as u8).map(|mode| {
         (
             MatchChoice::Mode(mode),
@@ -818,7 +876,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
             observe(send_choice),
         )
     });
-    let maps = (0..MAP_NAMES.len() as u8).map(|id| map_card(id, crate::browser::map_picture(&asset_server, id)));
+    let maps: Vec<_> = pictures.iter().enumerate().map(|(id, picture)| map_card(id as u8, picture.clone())).collect();
     let accels = AIR_ACCEL_CHOICES.map(|value| {
         (
             MatchChoice::AirAccel(value),
@@ -841,284 +899,277 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
             DespawnOnExit(AppState::Lobby),
         ))
         .with_children(|screen| {
+            screen.spawn(team_tint(ALLY, true));
+            screen.spawn(team_tint(ENEMY, false));
+            screen.spawn((
+                PickerCatcher,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    height: percent(100),
+                    display: Display::None,
+                    ..default()
+                },
+                GlobalZIndex(4),
+                observe(|_: On<PointerClick>, mut picker: ResMut<PickerOpen>| picker.0 = false),
+            ));
             screen
                 .spawn(Node {
                     width: percent(100),
-                    max_width: px(1240),
+                    max_width: px(1280),
                     height: percent(100),
-                    // Never taller than the window: the player list gives way.
+                    // Never taller than the window: the player lines give way.
                     min_height: px(0),
                     flex_direction: FlexDirection::Column,
-                    padding: UiRect::axes(px(48), px(32)),
+                    padding: UiRect::new(px(40), px(40), px(22), px(28)),
                     row_gap: px(18),
                     ..default()
                 })
                 .with_children(|page| {
                     page.spawn(Node {
                         justify_content: JustifyContent::SpaceBetween,
-                        align_items: AlignItems::Center,
+                        align_items: AlignItems::FlexStart,
+                        column_gap: px(18),
                         ..default()
                     })
                     .with_children(|row| {
-                        row.spawn((danger_button("‹  Leave lobby"), observe(on_leave)));
-                        match share {
-                            // Hosting: how the others get in.
-                            Some(address) => row.spawn(invite_box(address)),
-                            None => row.spawn((
-                                Node {
-                                    padding: UiRect::axes(px(16), px(12)),
-                                    border: UiRect::all(px(1)),
-                                    border_radius: BorderRadius::all(px(12)),
-                                    ..default()
-                                },
-                                BackgroundColor(PANEL),
-                                BorderColor::all(PANEL_EDGE),
-                                children![label(format!("Connected to {server_label}"), 13.0, DIM)],
-                            )),
-                        };
-                    });
-                    page.spawn((
-                        ResultBanner,
-                        Node {
-                            display: Display::None,
-                            align_self: AlignSelf::FlexStart,
-                            padding: UiRect::axes(px(16), px(10)),
-                            border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(12)),
-                            ..default()
-                        },
-                        BackgroundColor(ALLY.with_alpha(0.12)),
-                        BorderColor::all(ALLY.with_alpha(0.4)),
-                        children![(weighted("", 15.0, 700, TEXT), LobbyText::Result)],
-                    ));
-                    page.spawn((
-                        Node {
-                            flex_direction: FlexDirection::Column,
-                            row_gap: px(6),
-                            ..default()
-                        },
-                        children![
-                            (weighted("", 12.0, 700, DIM), LobbyText::Caption),
-                            (
-                                Node {
-                                    column_gap: px(18),
-                                    ..default()
-                                },
-                                children![
-                                    (heading("", 44.0, TEXT), LobbyText::Map),
-                                    (heading("", 44.0, ACCENT), LobbyText::Mode),
-                                ],
-                            ),
-                        ],
-                    ));
-                    // The room between the title and the buttons, whatever is in it.
-                    page.spawn(Node {
-                        flex_grow: 1.0,
-                        flex_basis: px(0),
-                        column_gap: px(24),
-                        min_height: px(0),
-                        ..default()
-                    })
-                    .with_children(|content| {
-                        content
-                            .spawn((
-                                Node {
-                                    flex_grow: 1.0,
-                                    flex_basis: px(0),
-                                    // As wide as there is room for, not as its map pictures.
-                                    min_width: px(0),
-                                    flex_direction: FlexDirection::Column,
-                                    row_gap: px(16),
-                                    padding: UiRect::axes(px(22), px(20)),
-                                    border: UiRect::all(px(1)),
-                                    border_radius: BorderRadius::all(px(20)),
-                                    ..default()
-                                },
-                                BackgroundColor(PANEL),
-                                BorderColor::all(PANEL_EDGE),
-                                soft_shadow(),
-                            ))
-                            .with_children(|choices| {
-                                let group = || Node {
-                                    flex_direction: FlexDirection::Column,
-                                    row_gap: px(8),
-                                    min_width: px(0),
-                                    ..default()
-                                };
-                                let row = |gap: i32| Node {
-                                    column_gap: px(gap),
-                                    align_items: AlignItems::Center,
-                                    min_width: px(0),
-                                    ..default()
-                                };
-                                choices.spawn(group()).with_children(|group| {
-                                    group.spawn(section("Mode"));
-                                    group.spawn(row(8)).with_children(|row| {
-                                        for chip in modes {
-                                            row.spawn(chip);
-                                        }
-                                    });
-                                });
-                                choices.spawn(group()).with_children(|group| {
-                                    group.spawn(section("Map"));
-                                    // A column per map, so the cards keep their size
-                                    // when the maps the mode isn't played on are hidden.
-                                    let grid = Node {
-                                        display: Display::Grid,
-                                        grid_template_columns: RepeatedGridTrack::flex(MAP_NAMES.len() as u16, 1.0),
-                                        column_gap: px(12),
+                        row.spawn(Node::default()).with_children(|corner| {
+                            corner.spawn(match_button(pictures.clone()));
+                            corner
+                                .spawn((
+                                    MatchPicker,
+                                    Node {
+                                        display: Display::None,
+                                        position_type: PositionType::Absolute,
+                                        top: percent(100),
+                                        left: px(0),
+                                        width: px(560),
+                                        margin: UiRect::top(px(10)),
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: px(14),
+                                        padding: UiRect::all(px(18)),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: BorderRadius::all(px(18)),
+                                        ..default()
+                                    },
+                                    GlobalZIndex(5),
+                                    BackgroundColor(Color::srgb(0.102, 0.086, 0.075)),
+                                    BorderColor::all(BUTTON_EDGE),
+                                    soft_shadow(),
+                                ))
+                                .with_children(|picker| {
+                                    picker.spawn((
+                                        Node {
+                                            justify_content: JustifyContent::SpaceBetween,
+                                            align_items: AlignItems::Baseline,
+                                            ..default()
+                                        },
+                                        children![
+                                            heading("Match", 18.0, TEXT),
+                                            (label("", 12.0, DIM), LobbyText::PickerNote),
+                                        ],
+                                    ));
+                                    let group = || Node {
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: px(8),
                                         min_width: px(0),
                                         ..default()
                                     };
-                                    group.spawn(grid).with_children(|row| {
-                                        for card in maps {
-                                            row.spawn(card);
-                                        }
-                                    });
-                                });
-                                choices.spawn(row(32)).with_children(|row| {
-                                    row.spawn(group()).with_children(|group| {
-                                        group.spawn(section("Air accel"));
-                                        group.spawn(Node { column_gap: px(6), ..default() }).with_children(|chips| {
-                                            for chip in accels {
-                                                chips.spawn(chip);
+                                    picker.spawn(group()).with_children(|group| {
+                                        group.spawn(section("Mode"));
+                                        group.spawn(Node { column_gap: px(6), ..default() }).with_children(|row| {
+                                            for chip in modes {
+                                                row.spawn(chip);
                                             }
                                         });
                                     });
-                                    row.spawn(group()).with_children(|group| {
-                                        group.spawn(section("Bots"));
-                                        group.spawn((
-                                            Node {
-                                                align_items: AlignItems::Center,
-                                                column_gap: px(4),
-                                                padding: UiRect::all(px(3)),
-                                                border: UiRect::all(px(1)),
-                                                border_radius: BorderRadius::all(px(12)),
-                                                ..default()
-                                            },
-                                            BackgroundColor(FIELD),
-                                            BorderColor::all(PANEL_EDGE),
-                                            children![
-                                                leader_button("−", ClientMsg::RemoveBot),
-                                                (
-                                                    weighted("", 16.0, 700, TEXT),
-                                                    LobbyText::Bots,
-                                                    TextLayout::justify(Justify::Center),
-                                                    Node { min_width: px(34), ..default() },
-                                                ),
-                                                leader_button("+", ClientMsg::AddBot),
-                                            ],
-                                        ));
+                                    picker.spawn(group()).with_children(|group| {
+                                        group.spawn(section("Map"));
+                                        // A column per map, so the cards keep their size
+                                        // when the maps the mode isn't played on are hidden.
+                                        let grid = Node {
+                                            display: Display::Grid,
+                                            grid_template_columns: RepeatedGridTrack::flex(MAP_NAMES.len() as u16, 1.0),
+                                            column_gap: px(10),
+                                            min_width: px(0),
+                                            ..default()
+                                        };
+                                        group.spawn(grid).with_children(|row| {
+                                            for card in maps {
+                                                row.spawn(card);
+                                            }
+                                        });
+                                    });
+                                    picker.spawn(Node { column_gap: px(28), ..default() }).with_children(|row| {
+                                        row.spawn(group()).with_children(|group| {
+                                            group.spawn(section("Air accel"));
+                                            group.spawn(Node { column_gap: px(6), ..default() }).with_children(|chips| {
+                                                for chip in accels {
+                                                    chips.spawn(chip);
+                                                }
+                                            });
+                                        });
+                                        row.spawn(group()).with_children(|group| {
+                                            group.spawn(section("Bots"));
+                                            group.spawn((
+                                                Node {
+                                                    align_self: AlignSelf::FlexStart,
+                                                    align_items: AlignItems::Center,
+                                                    column_gap: px(4),
+                                                    padding: UiRect::all(px(3)),
+                                                    border: UiRect::all(px(1)),
+                                                    border_radius: BorderRadius::all(px(12)),
+                                                    ..default()
+                                                },
+                                                BackgroundColor(FIELD),
+                                                BorderColor::all(PANEL_EDGE),
+                                                children![
+                                                    leader_button("−", ClientMsg::RemoveBot),
+                                                    (
+                                                        weighted("", 16.0, 700, TEXT),
+                                                        LobbyText::Bots,
+                                                        TextLayout::justify(Justify::Center),
+                                                        Node { min_width: px(34), ..default() },
+                                                    ),
+                                                    leader_button("+", ClientMsg::AddBot),
+                                                ],
+                                            ));
+                                        });
                                     });
                                 });
-                            });
-                        content.spawn((
+                        });
+                        row.spawn((
+                            ResultBanner,
                             Node {
-                                width: px(360),
-                                flex_shrink: 0.0,
-                                // The player list gives way, not the buttons under it.
-                                min_height: px(0),
-                                flex_direction: FlexDirection::Column,
-                                row_gap: px(12),
+                                display: Display::None,
+                                padding: UiRect::axes(px(16), px(10)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(12)),
                                 ..default()
                             },
-                            children![
-                                (
+                            BackgroundColor(ALLY.with_alpha(0.12)),
+                            BorderColor::all(ALLY.with_alpha(0.4)),
+                            children![(weighted("", 15.0, 700, TEXT), LobbyText::Result)],
+                        ));
+                        row.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::FlexEnd,
+                            row_gap: px(8),
+                            ..default()
+                        })
+                        .with_children(|side| {
+                            side.spawn((weighted("", 12.0, 700, DIM), LobbyText::Caption));
+                            match share {
+                                // Hosting: how the others get in.
+                                Some(address) => side.spawn(invite_box(address)),
+                                None => side.spawn((
                                     Node {
-                                        // Whatever room the loadout under it leaves.
-                                        flex_grow: 1.0,
-                                        flex_basis: px(0),
-                                        min_height: px(0),
-                                        flex_direction: FlexDirection::Column,
-                                        row_gap: px(10),
-                                        padding: UiRect::all(px(16)),
+                                        padding: UiRect::axes(px(16), px(10)),
                                         border: UiRect::all(px(1)),
-                                        border_radius: BorderRadius::all(px(20)),
-                                        overflow: Overflow::clip(),
+                                        border_radius: BorderRadius::all(px(12)),
                                         ..default()
                                     },
                                     BackgroundColor(PANEL),
                                     BorderColor::all(PANEL_EDGE),
-                                    children![
-                                        (
-                                            Node {
-                                                justify_content: JustifyContent::SpaceBetween,
-                                                align_items: AlignItems::Center,
-                                                min_height: px(30),
-                                                ..default()
-                                            },
-                                            children![
-                                                (weighted("", 12.0, 700, DIM), LobbyText::Players),
-                                                (
-                                                    Node::default(),
-                                                    TeamModeOnly,
-                                                    children![(
-                                                        small_button("Switch team"),
-                                                        observe(send_on_click(ClientMsg::SwitchTeam)),
-                                                    )],
-                                                ),
-                                            ],
-                                        ),
-                                        (
-                                            WheelScroll,
-                                            Hovered::default(),
-                                            ScrollPosition::default(),
-                                            Node {
-                                                flex_grow: 1.0,
-                                                min_height: px(0),
-                                                flex_direction: FlexDirection::Column,
-                                                overflow: Overflow::scroll_y(),
-                                                ..default()
-                                            },
-                                            children![roster_list(0.0)],
-                                        ),
-                                    ],
-                                ),
-                                loadout_summary(),
-                            ],
-                        ));
+                                    children![label(format!("Connected to {server_label}"), 13.0, DIM)],
+                                )),
+                            };
+                        });
                     });
+                    // The players, in whatever room the corner and the bar leave.
+                    page.spawn((
+                        LobbyTeams::default(),
+                        Node {
+                            flex_grow: 1.0,
+                            flex_basis: px(0),
+                            min_height: px(0),
+                            flex_direction: FlexDirection::Column,
+                            ..default()
+                        },
+                    ));
                     page.spawn((
                         Node {
-                            justify_content: JustifyContent::SpaceBetween,
                             align_items: AlignItems::Center,
+                            column_gap: px(10),
                             ..default()
                         },
                         children![
+                            (danger_button("‹  Leave lobby"), observe(on_leave)),
+                            loadout_summary(),
+                            (button("Paint yourself"), observe(on_open_paint)),
+                            (button("Settings"), observe(on_open_settings)),
+                            Node { flex_grow: 1.0, ..default() },
                             (
-                                button_row(),
-                                children![
-                                    (button("Loadout"), observe(on_open_loadout)),
-                                    (button("Paint yourself"), observe(on_open_paint)),
-                                    (button("Settings"), observe(on_open_settings)),
-                                ],
+                                primary_button("Start match"),
+                                LeaderOnly,
+                                observe(send_on_click(ClientMsg::StartMatch)),
                             ),
                             (
-                                Node::default(),
-                                children![
-                                    (
-                                        primary_button("Start match"),
-                                        LeaderOnly,
-                                        observe(send_on_click(ClientMsg::StartMatch)),
-                                    ),
-                                    (
-                                        Node {
-                                            padding: UiRect::axes(px(22), px(16)),
-                                            border: UiRect::all(px(1)),
-                                            border_radius: BorderRadius::all(px(14)),
-                                            ..default()
-                                        },
-                                        BackgroundColor(PANEL),
-                                        BorderColor::all(PANEL_EDGE),
-                                        GuestOnly,
-                                        children![(weighted("", 16.0, 600, DIM), LobbyText::Waiting)],
-                                    ),
-                                ],
+                                Node {
+                                    flex_shrink: 0.0,
+                                    padding: UiRect::axes(px(22), px(16)),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(14)),
+                                    ..default()
+                                },
+                                BackgroundColor(PANEL),
+                                BorderColor::all(PANEL_EDGE),
+                                GuestOnly,
+                                children![(weighted("", 16.0, 600, DIM), LobbyText::Waiting, TextLayout::no_wrap())],
                             ),
                         ],
                     ));
                 });
         });
+}
+
+/// The button in the corner: the map's picture, the mode, the map. It opens
+/// the match picker, for the leader to change it and the others to look.
+fn match_button(pictures: Vec<Option<Handle<Image>>>) -> impl Bundle {
+    let kind = ButtonKind::Tile;
+    (
+        MatchButton,
+        Button,
+        kind,
+        Hovered::default(),
+        Node {
+            align_items: AlignItems::Center,
+            column_gap: px(14),
+            padding: UiRect::new(px(6), px(20), px(6), px(6)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(14)),
+            ..default()
+        },
+        BackgroundColor(kind.colors()[0]),
+        BorderColor::all(kind.edge()),
+        observe(|_: On<Activate>, mut picker: ResMut<PickerOpen>| picker.0 = !picker.0),
+        children![
+            (
+                MatchThumb(pictures),
+                ImageNode::default(),
+                Node {
+                    width: px(112),
+                    height: px(63),
+                    border_radius: BorderRadius::all(px(10)),
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ),
+            (
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(3),
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (weighted("", 10.0, 700, DIM), LobbyText::MatchHint, Pickable::IGNORE),
+                    (heading("", 20.0, ACCENT), LobbyText::Mode, Pickable::IGNORE),
+                    (weighted("", 14.0, 600, TEXT), LobbyText::MatchLine, Pickable::IGNORE),
+                ],
+            ),
+        ],
+    )
 }
 
 /// The address friends join with, and a button that copies it.
@@ -1165,7 +1216,7 @@ fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
             min_width: px(0),
             flex_direction: FlexDirection::Column,
             border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(14)),
+            border_radius: BorderRadius::all(px(12)),
             overflow: Overflow::clip(),
             ..default()
         },
@@ -1181,7 +1232,7 @@ fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
                     aspect_ratio: Some(16.0 / 9.0),
                     // The card clips square, so the picture rounds its own top
                     // corners to the card's, inside its 1px edge.
-                    border_radius: BorderRadius::top(px(13)),
+                    border_radius: BorderRadius::top(px(11)),
                     ..default()
                 },
                 Pickable::IGNORE,
@@ -1190,12 +1241,12 @@ fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
                 Node {
                     flex_direction: FlexDirection::Column,
                     row_gap: px(2),
-                    padding: UiRect::axes(px(12), px(8)),
+                    padding: UiRect::axes(px(10), px(7)),
                     ..default()
                 },
                 Pickable::IGNORE,
                 children![
-                    (weighted(MAP_NAMES.get(id as usize).copied().unwrap_or("?"), 15.0, 700, TEXT), Pickable::IGNORE),
+                    (weighted(MAP_NAMES.get(id as usize).copied().unwrap_or("?"), 14.0, 700, TEXT), Pickable::IGNORE),
                     (MapNote(id), label("", 11.0, DIM), Pickable::IGNORE),
                 ],
             ),
@@ -1239,27 +1290,52 @@ fn send_on_click(msg: ClientMsg) -> impl Fn(On<Activate>, Option<ResMut<Connecti
 fn update_lobby(
     session: Res<Session>,
     map: Res<GameMap>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut picker: ResMut<PickerOpen>,
     mut texts: Query<(&LobbyText, &mut Text)>,
+    mut thumbs: Query<(&MatchThumb, &mut ImageNode)>,
+    mut match_button: Query<&mut BorderColor, With<MatchButton>>,
     mut shown: ParamSet<(
         Query<&mut Node, With<LeaderOnly>>,
         Query<&mut Node, With<GuestOnly>>,
         Query<&mut Node, With<TeamModeOnly>>,
         Query<&mut Node, With<ResultBanner>>,
+        Query<&mut Node, Or<(With<MatchPicker>, With<PickerCatcher>)>>,
     )>,
 ) {
+    if picker.0 && keys.just_pressed(KeyCode::Escape) {
+        picker.0 = false;
+    }
     let leader = session.name_of(session.leader).to_string();
+    let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
     for (kind, mut text) in &mut texts {
         let value = match kind {
             LobbyText::Caption if session.is_leader() => "YOUR LOBBY  ·  YOU PICK THE MATCH".to_string(),
             LobbyText::Caption => format!("{leader}'S LOBBY  ·  {leader} PICKS THE MATCH").to_uppercase(),
-            LobbyText::Map => MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?").to_uppercase(),
+            LobbyText::MatchHint if session.is_leader() => "MATCH  ·  CLICK TO CHANGE".to_string(),
+            LobbyText::MatchHint => "MATCH  ·  CLICK TO SEE THE CHOICES".to_string(),
             LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_uppercase(),
+            LobbyText::MatchLine => format!("{map_name}  ·  air accel {}", session.air_accel() as u16),
+            LobbyText::PickerNote if session.is_leader() => "Everyone sees your changes".to_string(),
+            LobbyText::PickerNote => format!("Only {leader} can change these"),
             LobbyText::Bots => session.roster.iter().filter(|player| player.is_bot).count().to_string(),
-            LobbyText::Players => format!("PLAYERS  ·  {} OF {MAX_PLAYERS}", session.roster.len()),
             LobbyText::Result => session.last_result.clone().unwrap_or_default(),
             LobbyText::Waiting => format!("Waiting for {leader} to start the match"),
         };
         set_text(&mut text, value);
+    }
+    for (thumb, mut image) in &mut thumbs {
+        if let Some(Some(picture)) = thumb.0.get(map.0.id as usize)
+            && image.image != *picture
+        {
+            image.image = picture.clone();
+        }
+    }
+    let edge = if picker.0 { ACCENT } else { ButtonKind::Tile.edge() };
+    for mut border in &mut match_button {
+        if border.top != edge {
+            *border = BorderColor::all(edge);
+        }
     }
     for mut node in &mut shown.p0() {
         set_shown(&mut node, session.is_leader());
@@ -1272,6 +1348,9 @@ fn update_lobby(
     }
     for mut node in &mut shown.p3() {
         set_shown(&mut node, session.last_result.is_some());
+    }
+    for mut node in &mut shown.p4() {
+        set_shown(&mut node, picker.0);
     }
 }
 
@@ -1306,6 +1385,310 @@ fn style_match_choices(
     for (note, mut text) in &mut notes {
         let line = if map.0.id == note.0 { "Picked" } else { "" };
         set_text(&mut text, line.to_string());
+    }
+}
+
+// ---------------------------------------------------------------- lobby players
+
+/// The lobby's players, with a line for every slot, rebuilt by
+/// `update_lobby_teams` when anything on them changes.
+#[derive(Component, Default)]
+struct LobbyTeams {
+    /// What the lines were last built from.
+    shown: Option<LobbyKey>,
+}
+
+/// Everything the lobby's player lines show.
+#[derive(Clone, PartialEq)]
+struct LobbyKey {
+    /// In the order the server lists them.
+    roster: Vec<PlayerInfo>,
+    /// Each player's main paint colour, in roster order.
+    colors: Vec<u8>,
+    my_id: PlayerId,
+    leader: PlayerId,
+    team_mode: bool,
+    my_team: u8,
+}
+
+/// An open slot on the other team, in its colour: a click puts us there.
+#[derive(Component)]
+struct JoinSlot(Color);
+
+/// How high a player's line is at most.
+const LINE_HEIGHT: f32 = 52.0;
+
+fn update_lobby_teams(
+    mut commands: Commands,
+    session: Res<Session>,
+    skins: Res<Skins>,
+    my_paint: Option<Res<crate::paint::MyPaint>>,
+    mut lists: Query<(Entity, &mut LobbyTeams)>,
+) {
+    let Ok((entity, mut list)) = lists.single_mut() else {
+        return;
+    };
+    let colors = session
+        .roster
+        .iter()
+        .map(|player| match &my_paint {
+            Some(mine) if player.id == session.my_id => mine.canvas.main_color(),
+            _ => skins.main_color(player.id).unwrap_or(player.color),
+        })
+        .collect();
+    let key = LobbyKey {
+        roster: session.roster.clone(),
+        colors,
+        my_id: session.my_id,
+        leader: session.leader,
+        team_mode: session.team_mode(),
+        my_team: session.team_of(session.my_id),
+    };
+    if list.shown.as_ref() == Some(&key) {
+        return;
+    }
+    list.shown = Some(key.clone());
+    let players = |team: Option<u8>| -> Vec<usize> {
+        (0..key.roster.len()).filter(|&i| team.is_none_or(|team| key.roster[i].team & 1 == team)).collect()
+    };
+    commands.entity(entity).despawn_children().with_children(|content| {
+        if !key.team_mode {
+            let everyone = players(None);
+            content.spawn(team_heading("Free for all", everyone.len(), MAX_PLAYERS, TEXT, false));
+            content
+                .spawn(Node {
+                    flex_grow: 1.0,
+                    min_height: px(0),
+                    display: Display::Grid,
+                    grid_template_columns: RepeatedGridTrack::flex(2, 1.0),
+                    grid_template_rows: RepeatedGridTrack::flex((MAX_PLAYERS / 2) as u16, 1.0),
+                    grid_auto_flow: GridAutoFlow::Column,
+                    column_gap: px(96),
+                    ..default()
+                })
+                .with_children(|grid| {
+                    for slot in 0..MAX_PLAYERS.max(everyone.len()) {
+                        spawn_slot(grid, &key, everyone.get(slot).copied(), slot, None, false);
+                    }
+                });
+            return;
+        }
+        content
+            .spawn(Node {
+                flex_grow: 1.0,
+                min_height: px(0),
+                ..default()
+            })
+            .with_children(|row| {
+                // Our team on the left, the enemy facing it on the right.
+                for (team, title, color) in [(key.my_team, "Your team", ALLY), (key.my_team ^ 1, "Enemy team", ENEMY)] {
+                    let right = team != key.my_team;
+                    if right {
+                        row.spawn(team_seam());
+                    }
+                    let on_team = players(Some(team));
+                    let join = (right && on_team.len() < TEAM_SIZE).then_some(color);
+                    row.spawn(Node {
+                        flex_grow: 1.0,
+                        flex_basis: px(0),
+                        min_width: px(0),
+                        flex_direction: FlexDirection::Column,
+                        ..default()
+                    })
+                    .with_children(|column| {
+                        column.spawn(team_heading(title, on_team.len(), TEAM_SIZE, color, right));
+                        for slot in 0..TEAM_SIZE.max(on_team.len()) {
+                            spawn_slot(column, &key, on_team.get(slot).copied(), slot, join, right);
+                        }
+                    });
+                }
+            });
+    });
+}
+
+/// A team's name, big, and how many of its slots are taken.
+fn team_heading(title: &str, count: usize, slots: usize, color: Color, right: bool) -> impl Bundle + use<> {
+    let count = (weighted(format!("{count} / {slots}"), 15.0, 700, DIM), TextLayout::no_wrap());
+    (
+        Node {
+            align_items: AlignItems::Baseline,
+            justify_content: if right { JustifyContent::FlexEnd } else { JustifyContent::FlexStart },
+            flex_direction: if right { FlexDirection::RowReverse } else { FlexDirection::Row },
+            column_gap: px(14),
+            margin: UiRect::bottom(px(8)),
+            ..default()
+        },
+        children![(heading(title, 40.0, color), TextLayout::no_wrap()), count],
+    )
+}
+
+/// Between the two teams: a thin line with VS in the middle.
+fn team_seam() -> impl Bundle {
+    let line = || {
+        (
+            Node {
+                width: px(1),
+                flex_grow: 1.0,
+                ..default()
+            },
+            BackgroundColor(PANEL_EDGE),
+        )
+    };
+    (
+        Node {
+            width: px(96),
+            flex_shrink: 0.0,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: px(10),
+            padding: UiRect::vertical(px(12)),
+            ..default()
+        },
+        children![
+            line(),
+            (
+                Node {
+                    width: px(58),
+                    height: px(58),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(29)),
+                    ..default()
+                },
+                BackgroundColor(PANEL),
+                BorderColor::all(BUTTON_EDGE),
+                children![heading("vs", 17.0, DIM)],
+            ),
+            line(),
+        ],
+    )
+}
+
+/// One line of a team, or of free for all: slot `slot`, with the player at
+/// `index` in the roster, or open. An open slot on the other team, `join`,
+/// takes a click. The right-hand team's lines run from the right.
+fn spawn_slot(
+    parent: &mut ChildSpawnerCommands,
+    key: &LobbyKey,
+    index: Option<usize>,
+    slot: usize,
+    join: Option<Color>,
+    right: bool,
+) {
+    let line = Node {
+        flex_grow: 1.0,
+        flex_basis: px(0),
+        min_height: px(0),
+        max_height: px(LINE_HEIGHT),
+        align_items: AlignItems::Center,
+        flex_direction: if right { FlexDirection::RowReverse } else { FlexDirection::Row },
+        column_gap: px(14),
+        padding: UiRect::axes(px(6), px(0)),
+        border: UiRect::bottom(px(1)),
+        ..default()
+    };
+    let number = (
+        label((slot + 1).to_string(), 13.0, FAINT),
+        TextLayout::justify(if right { Justify::Right } else { Justify::Left }),
+        Node { width: px(20), ..default() },
+        Pickable::IGNORE,
+    );
+    let dot = |color: Color, edge: Color| {
+        (
+            Node {
+                width: px(20),
+                height: px(20),
+                flex_shrink: 0.0,
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(10)),
+                ..default()
+            },
+            BackgroundColor(color),
+            BorderColor::all(edge),
+            Pickable::IGNORE,
+        )
+    };
+    let Some(index) = index else {
+        let (text, ink) = match join {
+            Some(color) => ("Open  ·  join this team  ›", color),
+            None => ("Open", FAINT),
+        };
+        let mut open = parent.spawn((
+            line,
+            BorderColor::all(PANEL_EDGE),
+            BackgroundColor(Color::NONE),
+            children![
+                number,
+                dot(Color::NONE, FAINT.with_alpha(0.6)),
+                (weighted(text, 16.0, if join.is_some() { 700 } else { 500 }, ink), TextLayout::no_wrap(), Pickable::IGNORE),
+            ],
+        ));
+        if let Some(color) = join {
+            open.insert((JoinSlot(color), Hovered::default(), observe(on_join_click)));
+        }
+        return;
+    };
+    let player = &key.roster[index];
+    let me = player.id == key.my_id;
+    let (name, tag) = match player.name.strip_prefix("[bot] ") {
+        Some(name) if player.is_bot => (name, "BOT"),
+        _ if player.id == key.leader => (player.name.as_str(), "LEADER"),
+        _ => (player.name.as_str(), ""),
+    };
+    let (tag_ink, tag_fill, tag_edge) = if tag == "LEADER" {
+        (ACCENT, ACCENT.with_alpha(0.08), ACCENT.with_alpha(0.4))
+    } else {
+        (DIM, CARD, PANEL_EDGE)
+    };
+    parent.spawn((
+        line,
+        BorderColor::all(PANEL_EDGE),
+        children![
+            number,
+            dot(palette_color(key.colors[index]), Color::NONE),
+            (
+                weighted(name.to_string(), 23.0, if me { 800 } else { 600 }, if me { ACCENT } else { TEXT }),
+                TextLayout::no_wrap(),
+            ),
+            tag_chip(if me { "YOU" } else { "" }, ON_PRIMARY, ACCENT, Color::NONE),
+            tag_chip(tag, tag_ink, tag_fill, tag_edge),
+        ],
+    ));
+}
+
+/// A small label beside a name; nothing at all if `text` is empty.
+fn tag_chip(text: &str, ink: Color, fill: Color, edge: Color) -> impl Bundle + use<> {
+    (
+        Node {
+            display: if text.is_empty() { Display::None } else { Display::Flex },
+            padding: UiRect::axes(px(7), px(3)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(6)),
+            ..default()
+        },
+        BackgroundColor(fill),
+        BorderColor::all(edge),
+        children![weighted(text.to_string(), 10.0, 800, ink)],
+    )
+}
+
+/// A click on an open slot of the other team moves us onto it.
+fn on_join_click(click: On<PointerClick>, connection: Option<ResMut<Connection>>) {
+    if click.button == PointerButton::Primary
+        && let Some(mut connection) = connection
+    {
+        connection.send(&ClientMsg::SwitchTeam);
+    }
+}
+
+/// An open slot we can join lights up in its team's colour under the mouse.
+fn style_join_slots(mut slots: Query<(&JoinSlot, &Hovered, &mut BackgroundColor)>) {
+    for (slot, hovered, mut background) in &mut slots {
+        let wanted = if hovered.get() { slot.0.with_alpha(0.08) } else { Color::NONE };
+        if background.0 != wanted {
+            background.0 = wanted;
+        }
     }
 }
 

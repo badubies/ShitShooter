@@ -810,8 +810,15 @@ impl Server {
                 self.roster_dirty = true;
             }
             ClientMsg::SwitchTeam if self.phase == Phase::Lobby => {
+                // Not onto a team that is already full.
+                let Some(to) = self.players.get(&id).map(|player| player.team ^ 1) else {
+                    return;
+                };
+                if self.players.values().filter(|player| player.team == to).count() >= TEAM_SIZE {
+                    return;
+                }
                 if let Some(player) = self.players.get_mut(&id) {
-                    player.team ^= 1;
+                    player.team = to;
                     self.roster_dirty = true;
                 }
             }
@@ -2064,6 +2071,32 @@ mod tests {
             panic!("not a roster");
         };
         assert_eq!(air_accel, DEFAULT_AIR_ACCEL);
+    }
+
+    /// A team never holds more than half the lobby: switching onto a full
+    /// team is refused.
+    #[test]
+    fn nobody_switches_onto_a_full_team() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        for id in 1..=MAX_PLAYERS as PlayerId {
+            server.join_counter += 1;
+            let player = server.new_player(format!("P{id}"), None);
+            server.players.insert(id, player);
+        }
+        let on = |server: &Server, team: u8| server.players.values().filter(|p| p.team == team).count();
+        assert_eq!((on(&server, 0), on(&server, 1)), (TEAM_SIZE, TEAM_SIZE), "joins fill the smaller team");
+        let team = server.players[&1].team;
+        server.handle_message(1, ClientMsg::SwitchTeam);
+        assert_eq!(server.players[&1].team, team, "the other team is full");
+        // Once somebody leaves it, there is room.
+        let gone = *server.players.iter().find(|(_, p)| p.team != team).unwrap().0;
+        server.players.remove(&gone);
+        server.handle_message(1, ClientMsg::SwitchTeam);
+        assert_eq!(server.players[&1].team, team ^ 1);
     }
 
     /// Hamlet (map 3) is for free for all and team deathmatch only: changing

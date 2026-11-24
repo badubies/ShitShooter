@@ -6,6 +6,9 @@ use crate::weapons::{SightId, WeaponId};
 
 pub const DEFAULT_PORT: u16 = 7777;
 pub const MAX_PLAYERS: usize = 16;
+/// Most players on one team: half the lobby, so both teams fit the lobby's
+/// side-by-side slots.
+pub const TEAM_SIZE: usize = MAX_PLAYERS / 2;
 pub const PLAYER_COLOR_COUNT: u8 = 8;
 
 /// renet channel ids (see `renet::DefaultChannel`).

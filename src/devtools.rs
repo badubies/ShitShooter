@@ -24,7 +24,7 @@ use crate::{
     loadout::{Choice, LoadoutScreen},
     remote::{Corpse, RemotePlayer},
     weapons::{GUN_COUNT, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
-    ui::MatchChoice,
+    ui::{MatchChoice, PickerOpen},
     world::GameMap,
     settings::{Settings, SettingsMenu, SettingsTab},
 };
@@ -170,7 +170,7 @@ fn selftest_lobby(
     mut editor: ResMut<PaintEditor>,
     model: Res<PlayerModel>,
     sliders: Query<Entity, With<Slider>>,
-    (settings, map): (Res<Settings>, Res<GameMap>),
+    (settings, map, mut picker): (Res<Settings>, Res<GameMap>, ResMut<PickerOpen>),
     mut loadout: ResMut<LoadoutScreen>,
     choices: Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
     match_choices: Query<(&MatchChoice, &UiGlobalTransform)>,
@@ -195,10 +195,14 @@ fn selftest_lobby(
         connection.send(&ClientMsg::AddBot);
         // Play on the second map, which also exercises switching maps.
         connection.send(&ClientMsg::NextMap);
+        // The lobby's picture shows the two teams.
+        connection.send(&ClientMsg::SetMode(1));
     }
     if test.reached(1, 1.5) {
         test.capture(&mut commands, "lobby.png");
     }
+    // The mode and map are picked in the match picker, open while they are clicked.
+    picker.0 = (1.6..3.0).contains(&test.clock);
     // The lobby's chips and cards, clicked: team deathmatch on Arena, then
     // back to free for all on Depot. Each click is checked once the server
     // has answered.
@@ -226,6 +230,7 @@ fn selftest_lobby(
     if test.reached(10, 2.9) {
         println!("[selftest] after clicking the chips and cards: mode {} map {}", session.mode, map.0.id);
         point(window.0, &mut pointer, None, false);
+        test.capture(&mut commands, "lobby_picker.png");
     }
     // Stripes on the paint job, and a look at them on the paint screen.
     if test.reached(11, 3.2) {
