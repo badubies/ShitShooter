@@ -4,6 +4,7 @@
 
 use bevy::{
     clipboard::Clipboard,
+    input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
     input_focus::{
         InputFocus,
         tab_navigation::{TabIndex, TabNavigationPlugin},
@@ -25,7 +26,7 @@ use crate::{
     menu::{Field, MenuPage},
     net::{self, Connection, Session},
     paint::{Skins, palette_color},
-    loadout::{LoadoutCard, loadout_card},
+    loadout::{LoadoutCard, loadout_card, loadout_summary, on_open_loadout},
     paint_editor::on_open_paint,
     player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, ask_respawn},
     protocol::*,
@@ -109,8 +110,9 @@ impl Plugin for UiPlugin {
                 (
                     style_buttons,
                     style_fields,
+                    wheel_scroll,
                     update_connecting.run_if(in_state(AppState::Connecting)),
-                    update_lobby.run_if(in_state(AppState::Lobby)),
+                    (update_lobby, style_match_choices).run_if(in_state(AppState::Lobby)),
                     update_rosters,
                     update_key_hints,
                     (
@@ -439,6 +441,31 @@ fn style_fields(focus: Res<InputFocus>, mut fields: Query<(Entity, &mut BorderCo
     }
 }
 
+/// A box whose contents scroll with the mouse wheel while the pointer is on it.
+#[derive(Component)]
+pub struct WheelScroll;
+
+fn wheel_scroll(
+    wheel: Res<AccumulatedMouseScroll>,
+    mut boxes: Query<(&Hovered, &ComputedNode, &mut ScrollPosition), With<WheelScroll>>,
+) {
+    if wheel.delta.y == 0.0 {
+        return;
+    }
+    let step = match wheel.unit {
+        MouseScrollUnit::Line => wheel.delta.y * 40.0,
+        MouseScrollUnit::Pixel => wheel.delta.y,
+    };
+    for (hovered, node, mut scroll) in &mut boxes {
+        if !hovered.get() {
+            continue;
+        }
+        // Kept within what there is to see, so scrolling back starts at once.
+        let room = ((node.content_size().y - node.size().y) * node.inverse_scale_factor).max(0.0);
+        scroll.0.y = (scroll.0.y - step).clamp(0.0, room);
+    }
+}
+
 pub fn set_text(text: &mut Mut<Text>, value: String) {
     if text.0 != value {
         text.0 = value;
@@ -538,16 +565,17 @@ struct RosterKey {
     colors: Vec<u8>,
 }
 
+/// How wide the scoreboard's player list is at least.
 const ROSTER_WIDTH: f32 = 430.0;
-const STAT_WIDTH: f32 = 64.0;
+const STAT_WIDTH: f32 = 56.0;
 
-fn roster_list() -> impl Bundle {
+fn roster_list(min_width: f32) -> impl Bundle {
     (
         RosterList::default(),
         Node {
             flex_direction: FlexDirection::Column,
             row_gap: px(12),
-            min_width: px(ROSTER_WIDTH),
+            min_width: px(min_width),
             ..default()
         },
     )
@@ -569,9 +597,9 @@ fn roster_row_node() -> Node {
     Node {
         align_items: AlignItems::Center,
         column_gap: px(10),
-        padding: UiRect::axes(px(10), px(4)),
+        padding: UiRect::axes(px(10), px(7)),
         border: UiRect::all(px(1)),
-        border_radius: BorderRadius::all(px(5)),
+        border_radius: BorderRadius::all(px(10)),
         ..default()
     }
 }
@@ -581,9 +609,9 @@ fn roster_heading(title: String, color: Color) -> impl Bundle {
     (
         roster_row_node(),
         children![
-            (label(title, 13.0, color), Node { flex_grow: 1.0, ..default() }),
-            roster_stat("KILLS".into(), 13.0, DIM),
-            roster_stat("DEATHS".into(), 13.0, DIM),
+            (weighted(title, 11.0, 700, color), Node { flex_grow: 1.0, ..default() }),
+            roster_stat("KILLS".into(), 11.0, DIM),
+            roster_stat("DEATHS".into(), 11.0, DIM),
         ],
     )
 }
@@ -592,31 +620,31 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey) -> impl Bundl
     let me = player.id == key.my_id;
     let (name, tag) = match player.name.strip_prefix("[bot] ") {
         Some(name) if player.is_bot => (name, "BOT"),
-        _ if player.id == key.leader => (player.name.as_str(), "HOST"),
+        _ if player.id == key.leader => (player.name.as_str(), "LEADER"),
         _ => (player.name.as_str(), ""),
     };
     (
         roster_row_node(),
         // Your own line stands out.
-        BackgroundColor(if me { Color::srgba(1.0, 1.0, 1.0, 0.07) } else { Color::NONE }),
-        BorderColor::all(if me { ACCENT.with_alpha(0.55) } else { Color::NONE }),
+        BackgroundColor(if me { ACCENT.with_alpha(0.10) } else { CARD }),
+        BorderColor::all(if me { ACCENT.with_alpha(0.5) } else { Color::NONE }),
         children![
             (
                 Node {
-                    width: px(10),
-                    height: px(10),
-                    border_radius: BorderRadius::all(px(5)),
+                    width: px(14),
+                    height: px(14),
+                    border_radius: BorderRadius::all(px(4)),
                     ..default()
                 },
                 BackgroundColor(swatch),
             ),
-            (label(name, 18.0, TEXT), TextLayout::no_wrap()),
+            (weighted(name, 16.0, 600, TEXT), TextLayout::no_wrap()),
             (
-                label(tag, 12.0, if tag == "HOST" { ACCENT } else { DIM }),
+                weighted(tag, 10.0, 700, if tag == "LEADER" { ACCENT } else { DIM }),
                 Node { flex_grow: 1.0, ..default() },
             ),
-            roster_stat(player.kills.to_string(), 18.0, TEXT),
-            roster_stat(player.deaths.to_string(), 18.0, DIM),
+            roster_stat(player.kills.to_string(), 16.0, TEXT),
+            roster_stat(player.deaths.to_string(), 16.0, DIM),
         ],
     )
 }
@@ -690,170 +718,471 @@ fn update_rosters(
 /// The pieces of text in the lobby that change.
 #[derive(Component, Clone, Copy)]
 enum LobbyText {
-    Mode,
+    /// Whose lobby it is, and who picks the match.
+    Caption,
     Map,
+    Mode,
     Bots,
-    AirAccel,
-    /// How the last match ended, and who we are waiting for.
-    Info,
+    Players,
+    /// How the last match ended.
+    Result,
+    /// Who we are waiting for.
+    Waiting,
 }
 
 /// Shown only to the lobby leader.
 #[derive(Component)]
 struct LeaderOnly;
 
+/// Shown to everyone but the lobby leader.
+#[derive(Component)]
+struct GuestOnly;
+
 /// Shown only in the team modes.
 #[derive(Component)]
 struct TeamModeOnly;
+
+/// The box with how the last match ended; hidden before the first.
+#[derive(Component)]
+struct ResultBanner;
 
 /// The text of the button that copies the lobby's address.
 #[derive(Component)]
 struct CopyLabel;
 
-/// One line of the match settings: what it is, its value, and the buttons
-/// with which the leader changes it.
-fn match_row(caption: &str, value: LobbyText, buttons: impl Bundle) -> impl Bundle {
+/// A chip or card with which the leader picks the match.
+#[derive(Component, Clone, Copy, PartialEq)]
+enum MatchChoice {
+    Mode(u8),
+    Map(u8),
+    AirAccel(u16),
+}
+
+/// A map card's picture, dimmed when the mode isn't played on the map.
+#[derive(Component)]
+struct MapPicture(u8);
+
+/// Under a map's name: picked, or not played in this mode.
+#[derive(Component)]
+struct MapNote(u8);
+
+/// How each air acceleration is shown, named after where it is played.
+fn air_accel_name(value: u16) -> String {
+    match value {
+        10 => "10 · CS".to_string(),
+        100 => "100 · bhop".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<AssetServer>) {
+    let share = session.share_address.clone();
+    let server_label = session.server_label.clone();
+    let modes = (0..MODE_NAMES.len() as u8).map(|mode| {
+        (
+            MatchChoice::Mode(mode),
+            small_button(MODE_NAMES[mode as usize]),
+            Pickable::default(),
+            observe(send_choice),
+        )
+    });
+    let maps = (0..MAP_NAMES.len() as u8).map(|id| map_card(id, crate::browser::map_picture(&asset_server, id)));
+    let accels = AIR_ACCEL_CHOICES.map(|value| {
+        (
+            MatchChoice::AirAccel(value),
+            small_button(&air_accel_name(value)),
+            Pickable::default(),
+            observe(send_choice),
+        )
+    });
+
+    commands
+        .spawn((
+            Node {
+                width: percent(100),
+                height: percent(100),
+                min_height: px(0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(SCRIM.with_alpha(0.84)),
+            DespawnOnExit(AppState::Lobby),
+        ))
+        .with_children(|screen| {
+            screen
+                .spawn(Node {
+                    width: percent(100),
+                    max_width: px(1240),
+                    height: percent(100),
+                    // Never taller than the window: the player list gives way.
+                    min_height: px(0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::axes(px(48), px(32)),
+                    row_gap: px(18),
+                    ..default()
+                })
+                .with_children(|page| {
+                    page.spawn(Node {
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn((danger_button("‹  Leave lobby"), observe(on_leave)));
+                        match share {
+                            // Hosting: how the others get in.
+                            Some(address) => row.spawn(invite_box(address)),
+                            None => row.spawn((
+                                Node {
+                                    padding: UiRect::axes(px(16), px(12)),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(12)),
+                                    ..default()
+                                },
+                                BackgroundColor(PANEL),
+                                BorderColor::all(PANEL_EDGE),
+                                children![label(format!("Connected to {server_label}"), 13.0, DIM)],
+                            )),
+                        };
+                    });
+                    page.spawn((
+                        ResultBanner,
+                        Node {
+                            display: Display::None,
+                            align_self: AlignSelf::FlexStart,
+                            padding: UiRect::axes(px(16), px(10)),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(12)),
+                            ..default()
+                        },
+                        BackgroundColor(ALLY.with_alpha(0.12)),
+                        BorderColor::all(ALLY.with_alpha(0.4)),
+                        children![(weighted("", 15.0, 700, TEXT), LobbyText::Result)],
+                    ));
+                    page.spawn((
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(6),
+                            ..default()
+                        },
+                        children![
+                            (weighted("", 12.0, 700, DIM), LobbyText::Caption),
+                            (
+                                Node {
+                                    column_gap: px(18),
+                                    ..default()
+                                },
+                                children![
+                                    (heading("", 44.0, TEXT), LobbyText::Map),
+                                    (heading("", 44.0, ACCENT), LobbyText::Mode),
+                                ],
+                            ),
+                        ],
+                    ));
+                    // The room between the title and the buttons, whatever is in it.
+                    page.spawn(Node {
+                        flex_grow: 1.0,
+                        flex_basis: px(0),
+                        column_gap: px(24),
+                        min_height: px(0),
+                        ..default()
+                    })
+                    .with_children(|content| {
+                        content
+                            .spawn((
+                                Node {
+                                    flex_grow: 1.0,
+                                    flex_basis: px(0),
+                                    // As wide as there is room for, not as its map pictures.
+                                    min_width: px(0),
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: px(16),
+                                    padding: UiRect::axes(px(22), px(20)),
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(20)),
+                                    ..default()
+                                },
+                                BackgroundColor(PANEL),
+                                BorderColor::all(PANEL_EDGE),
+                                soft_shadow(),
+                            ))
+                            .with_children(|choices| {
+                                let group = || Node {
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: px(8),
+                                    min_width: px(0),
+                                    ..default()
+                                };
+                                let row = |gap: i32| Node {
+                                    column_gap: px(gap),
+                                    align_items: AlignItems::Center,
+                                    min_width: px(0),
+                                    ..default()
+                                };
+                                choices.spawn(group()).with_children(|group| {
+                                    group.spawn(section("Mode"));
+                                    group.spawn(row(8)).with_children(|row| {
+                                        for chip in modes {
+                                            row.spawn(chip);
+                                        }
+                                    });
+                                });
+                                choices.spawn(group()).with_children(|group| {
+                                    group.spawn(section("Map"));
+                                    group.spawn(row(12)).with_children(|row| {
+                                        for card in maps {
+                                            row.spawn(card);
+                                        }
+                                    });
+                                });
+                                choices.spawn(row(32)).with_children(|row| {
+                                    row.spawn(group()).with_children(|group| {
+                                        group.spawn(section("Air accel"));
+                                        group.spawn(Node { column_gap: px(6), ..default() }).with_children(|chips| {
+                                            for chip in accels {
+                                                chips.spawn(chip);
+                                            }
+                                        });
+                                    });
+                                    row.spawn(group()).with_children(|group| {
+                                        group.spawn(section("Bots"));
+                                        group.spawn((
+                                            Node {
+                                                align_items: AlignItems::Center,
+                                                column_gap: px(4),
+                                                padding: UiRect::all(px(3)),
+                                                border: UiRect::all(px(1)),
+                                                border_radius: BorderRadius::all(px(12)),
+                                                ..default()
+                                            },
+                                            BackgroundColor(FIELD),
+                                            BorderColor::all(PANEL_EDGE),
+                                            children![
+                                                leader_button("−", ClientMsg::RemoveBot),
+                                                (
+                                                    weighted("", 16.0, 700, TEXT),
+                                                    LobbyText::Bots,
+                                                    TextLayout::justify(Justify::Center),
+                                                    Node { min_width: px(34), ..default() },
+                                                ),
+                                                leader_button("+", ClientMsg::AddBot),
+                                            ],
+                                        ));
+                                    });
+                                });
+                            });
+                        content.spawn((
+                            Node {
+                                width: px(360),
+                                flex_shrink: 0.0,
+                                // The player list gives way, not the buttons under it.
+                                min_height: px(0),
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(12),
+                                ..default()
+                            },
+                            children![
+                                (
+                                    Node {
+                                        // Whatever room the loadout under it leaves.
+                                        flex_grow: 1.0,
+                                        flex_basis: px(0),
+                                        min_height: px(0),
+                                        flex_direction: FlexDirection::Column,
+                                        row_gap: px(10),
+                                        padding: UiRect::all(px(16)),
+                                        border: UiRect::all(px(1)),
+                                        border_radius: BorderRadius::all(px(20)),
+                                        overflow: Overflow::clip(),
+                                        ..default()
+                                    },
+                                    BackgroundColor(PANEL),
+                                    BorderColor::all(PANEL_EDGE),
+                                    children![
+                                        (
+                                            Node {
+                                                justify_content: JustifyContent::SpaceBetween,
+                                                align_items: AlignItems::Center,
+                                                min_height: px(30),
+                                                ..default()
+                                            },
+                                            children![
+                                                (weighted("", 12.0, 700, DIM), LobbyText::Players),
+                                                (
+                                                    Node::default(),
+                                                    TeamModeOnly,
+                                                    children![(
+                                                        small_button("Switch team"),
+                                                        observe(send_on_click(ClientMsg::SwitchTeam)),
+                                                    )],
+                                                ),
+                                            ],
+                                        ),
+                                        (
+                                            WheelScroll,
+                                            Hovered::default(),
+                                            ScrollPosition::default(),
+                                            Node {
+                                                flex_grow: 1.0,
+                                                min_height: px(0),
+                                                flex_direction: FlexDirection::Column,
+                                                overflow: Overflow::scroll_y(),
+                                                ..default()
+                                            },
+                                            children![roster_list(0.0)],
+                                        ),
+                                    ],
+                                ),
+                                loadout_summary(),
+                            ],
+                        ));
+                    });
+                    page.spawn((
+                        Node {
+                            justify_content: JustifyContent::SpaceBetween,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        children![
+                            (
+                                button_row(),
+                                children![
+                                    (button("Loadout"), observe(on_open_loadout)),
+                                    (button("Paint yourself"), observe(on_open_paint)),
+                                    (button("Settings"), observe(on_open_settings)),
+                                ],
+                            ),
+                            (
+                                Node::default(),
+                                children![
+                                    (
+                                        primary_button("Start match"),
+                                        LeaderOnly,
+                                        observe(send_on_click(ClientMsg::StartMatch)),
+                                    ),
+                                    (
+                                        Node {
+                                            padding: UiRect::axes(px(22), px(16)),
+                                            border: UiRect::all(px(1)),
+                                            border_radius: BorderRadius::all(px(14)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(PANEL),
+                                        BorderColor::all(PANEL_EDGE),
+                                        GuestOnly,
+                                        children![(weighted("", 16.0, 600, DIM), LobbyText::Waiting)],
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ));
+                });
+        });
+}
+
+/// The address friends join with, and a button that copies it.
+fn invite_box(address: String) -> impl Bundle {
     (
         Node {
-            min_height: px(30),
-            ..spread_row()
+            align_items: AlignItems::Center,
+            column_gap: px(10),
+            padding: UiRect::new(px(16), px(5), px(5), px(5)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(12)),
+            ..default()
         },
+        BackgroundColor(PANEL),
+        BorderColor::all(PANEL_EDGE),
         children![
-            label(caption, 16.0, DIM),
+            label("Friends join with", 13.0, DIM),
+            weighted(address.clone(), 16.0, 700, TEXT),
             (
-                Node {
-                    align_items: AlignItems::Center,
-                    column_gap: px(8),
-                    ..default()
-                },
-                children![(label("", 16.0, TEXT), value), buttons],
+                button_box(ButtonKind::Normal, true),
+                children![(weighted("Copy", 14.0, 600, TEXT), Pickable::IGNORE, CopyLabel)],
+                observe(
+                    move |_: On<Activate>, mut clipboard: ResMut<Clipboard>, mut text: Single<&mut Text, With<CopyLabel>>| {
+                        let done = clipboard.set_text(address.as_str()).is_ok();
+                        text.0 = if done { "Copied" } else { "Failed" }.to_string();
+                    },
+                ),
             ),
         ],
     )
 }
 
-fn leader_button(text: &str, msg: ClientMsg) -> impl Bundle {
+/// A map to pick: its picture, its name, and a note under it.
+fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
+    let choice = MatchChoice::Map(id);
+    (
+        choice,
+        Button,
+        ButtonKind::Tile,
+        Hovered::default(),
+        Pickable::default(),
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            // Not held as wide as its picture.
+            min_width: px(0),
+            flex_direction: FlexDirection::Column,
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(14)),
+            overflow: Overflow::clip(),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor::all(ButtonKind::Tile.edge()),
+        observe(send_choice),
+        children![
+            (
+                MapPicture(id),
+                picture.map(ImageNode::new).unwrap_or_default(),
+                Node {
+                    width: percent(100),
+                    min_width: px(0),
+                    aspect_ratio: Some(16.0 / 9.0),
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ),
+            (
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(2),
+                    padding: UiRect::axes(px(12), px(8)),
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (weighted(MAP_NAMES.get(id as usize).copied().unwrap_or("?"), 15.0, 700, TEXT), Pickable::IGNORE),
+                    (MapNote(id), label("", 11.0, DIM), Pickable::IGNORE),
+                ],
+            ),
+        ],
+    )
+}
+
+fn leader_button(text: &str, msg: ClientMsg) -> impl Bundle + use<> {
     (small_button(text), LeaderOnly, observe(send_on_click(msg)))
 }
 
-fn spawn_lobby(mut commands: Commands, session: Res<Session>) {
-    let share = session.share_address.clone();
-    let connected = format!("Connected to {}", session.server_label);
-    commands.spawn(screen(AppState::Lobby)).with_children(|screen| {
-        screen.spawn(panel()).with_children(|panel| {
-            panel.spawn(heading("Lobby", 36.0, TEXT));
-
-            match share {
-                // Hosting: how the others get in.
-                Some(address) => {
-                    panel.spawn((
-                        Node {
-                            flex_direction: FlexDirection::Column,
-                            align_items: AlignItems::Center,
-                            row_gap: px(6),
-                            ..default()
-                        },
-                        children![
-                            (
-                                Node {
-                                    align_items: AlignItems::Center,
-                                    column_gap: px(10),
-                                    ..default()
-                                },
-                                children![
-                                    label("Friends on your network join with", 16.0, DIM),
-                                    label(address.clone(), 20.0, TEXT),
-                                    (
-                                        button_box(ButtonKind::Normal, true),
-                                        children![(label("Copy", 15.0, TEXT), Pickable::IGNORE, CopyLabel)],
-                                        observe(
-                                            move |_: On<Activate>,
-                                                  mut clipboard: ResMut<Clipboard>,
-                                                  mut text: Single<&mut Text, With<CopyLabel>>| {
-                                                let done = clipboard.set_text(address.as_str()).is_ok();
-                                                text.0 = if done { "Copied" } else { "Failed" }.to_string();
-                                            },
-                                        ),
-                                    ),
-                                ],
-                            ),
-                            label(
-                                "Over the internet: forward this UDP port on your router and share your public IP.",
-                                14.0,
-                                DIM,
-                            ),
-                        ],
-                    ));
-                }
-                None => {
-                    panel.spawn(label(connected, 16.0, DIM));
-                }
-            }
-
-            panel.spawn((
-                Node {
-                    column_gap: px(14),
-                    ..default()
-                },
-                children![
-                    (card(), children![section("Players"), roster_list()]),
-                    (
-                        Node {
-                            flex_direction: FlexDirection::Column,
-                            row_gap: px(14),
-                            width: px(330),
-                            ..default()
-                        },
-                        children![
-                            (
-                                card(),
-                                children![
-                                    section("Match"),
-                                    match_row("Mode", LobbyText::Mode, leader_button("Change", ClientMsg::NextMode)),
-                                    match_row("Map", LobbyText::Map, leader_button("Change", ClientMsg::NextMap)),
-                                    match_row(
-                                        "Air accel",
-                                        LobbyText::AirAccel,
-                                        leader_button("Change", ClientMsg::NextAirAccel),
-                                    ),
-                                    match_row(
-                                        "Bots",
-                                        LobbyText::Bots,
-                                        (
-                                            Node {
-                                                column_gap: px(6),
-                                                ..default()
-                                            },
-                                            children![
-                                                leader_button("Add", ClientMsg::AddBot),
-                                                leader_button("Clear", ClientMsg::RemoveBots),
-                                            ],
-                                        ),
-                                    ),
-                                ],
-                            ),
-                            (button("Switch team"), TeamModeOnly, observe(send_on_click(ClientMsg::SwitchTeam))),
-                        ],
-                    ),
-                    loadout_card(320.0, CARD, label("Handed out when you spawn.", 14.0, DIM)),
-                ],
-            ));
-
-            panel.spawn((
-                label("", 17.0, ACCENT),
-                LobbyText::Info,
-                TextLayout::justify(Justify::Center),
-            ));
-            panel.spawn((
-                button_row(),
-                children![
-                    (primary_button("Start match"), LeaderOnly, observe(send_on_click(ClientMsg::StartMatch))),
-                    (button("Paint yourself"), observe(on_open_paint)),
-                    (button("Settings"), observe(on_open_settings)),
-                    (danger_button("Leave"), observe(on_leave)),
-                ],
-            ));
-        });
+/// Sends the leader's pick of a mode, map or air acceleration.
+fn send_choice(
+    activate: On<Activate>,
+    choices: Query<&MatchChoice>,
+    session: Res<Session>,
+    connection: Option<ResMut<Connection>>,
+) {
+    let (Ok(choice), Some(mut connection)) = (choices.get(activate.entity), connection) else {
+        return;
+    };
+    if !session.is_leader() {
+        return;
+    }
+    connection.send(&match *choice {
+        MatchChoice::Mode(mode) => ClientMsg::SetMode(mode),
+        MatchChoice::Map(id) => ClientMsg::SetMap(id),
+        MatchChoice::AirAccel(value) => ClientMsg::SetAirAccel(value),
     });
 }
 
@@ -869,41 +1198,83 @@ fn send_on_click(msg: ClientMsg) -> impl Fn(On<Activate>, Option<ResMut<Connecti
 fn update_lobby(
     session: Res<Session>,
     map: Res<GameMap>,
-    mut texts: Query<(&LobbyText, &mut Text, &mut Node), (Without<LeaderOnly>, Without<TeamModeOnly>)>,
-    mut leader_only: Query<&mut Node, (With<LeaderOnly>, Without<TeamModeOnly>)>,
-    mut team_only: Query<&mut Node, (With<TeamModeOnly>, Without<LeaderOnly>)>,
+    mut texts: Query<(&LobbyText, &mut Text)>,
+    mut shown: ParamSet<(
+        Query<&mut Node, With<LeaderOnly>>,
+        Query<&mut Node, With<GuestOnly>>,
+        Query<&mut Node, With<TeamModeOnly>>,
+        Query<&mut Node, With<ResultBanner>>,
+    )>,
 ) {
-    for (kind, mut text, mut node) in &mut texts {
+    let leader = session.name_of(session.leader).to_string();
+    for (kind, mut text) in &mut texts {
         let value = match kind {
-            LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_string(),
-            LobbyText::Map => MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?").to_string(),
+            LobbyText::Caption if session.is_leader() => "YOUR LOBBY  ·  YOU PICK THE MATCH".to_string(),
+            LobbyText::Caption => format!("{leader}'S LOBBY  ·  {leader} PICKS THE MATCH").to_uppercase(),
+            LobbyText::Map => MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?").to_uppercase(),
+            LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_uppercase(),
             LobbyText::Bots => session.roster.iter().filter(|player| player.is_bot).count().to_string(),
-            // Named after where each value is played.
-            LobbyText::AirAccel => match session.air_accel() as u16 {
-                10 => "10 (CS)".to_string(),
-                100 => "100 (bhop)".to_string(),
-                other => other.to_string(),
-            },
-            LobbyText::Info => {
-                let mut lines = Vec::new();
-                if let Some(result) = &session.last_result {
-                    lines.push(result.clone());
-                }
-                if !session.is_leader() {
-                    lines.push(format!("Waiting for {} to start the match...", session.name_of(session.leader)));
-                }
-                // Takes up no room when there is nothing to say.
-                set_shown(&mut node, !lines.is_empty());
-                lines.join("\n")
-            }
+            LobbyText::Players => format!("PLAYERS  ·  {} OF {MAX_PLAYERS}", session.roster.len()),
+            LobbyText::Result => session.last_result.clone().unwrap_or_default(),
+            LobbyText::Waiting => format!("Waiting for {leader} to start the match"),
         };
         set_text(&mut text, value);
     }
-    for mut node in &mut team_only {
+    for mut node in &mut shown.p0() {
+        set_shown(&mut node, session.is_leader());
+    }
+    for mut node in &mut shown.p1() {
+        set_shown(&mut node, !session.is_leader());
+    }
+    for mut node in &mut shown.p2() {
         set_shown(&mut node, session.team_mode());
     }
-    for mut node in &mut leader_only {
-        set_shown(&mut node, session.is_leader());
+    for mut node in &mut shown.p3() {
+        set_shown(&mut node, session.last_result.is_some());
+    }
+}
+
+/// Marks the mode, map and air acceleration picked, dims the maps the mode
+/// isn't played on, and lets only the leader click any of them.
+fn style_match_choices(
+    session: Res<Session>,
+    map: Res<GameMap>,
+    mut choices: Query<(&MatchChoice, &mut ButtonKind, &mut BorderColor, &mut Pickable)>,
+    mut pictures: Query<(&MapPicture, &mut ImageNode)>,
+    mut notes: Query<(&MapNote, &mut Text)>,
+) {
+    let air_accel = session.air_accel() as u16;
+    for (choice, mut kind, mut border, mut pickable) in &mut choices {
+        let (picked, playable, rest) = match *choice {
+            MatchChoice::Mode(mode) => (session.mode == mode, true, ButtonKind::Normal),
+            MatchChoice::Map(id) => (map.0.id == id, crate::map::plays(id, session.mode), ButtonKind::Tile),
+            MatchChoice::AirAccel(value) => (air_accel == value, true, ButtonKind::Normal),
+        };
+        let wanted = if picked { ButtonKind::Picked } else { rest };
+        if *kind != wanted {
+            *kind = wanted;
+            *border = BorderColor::all(wanted.edge());
+        }
+        let clickable = session.is_leader() && playable;
+        if pickable.is_hoverable != clickable {
+            pickable.is_hoverable = clickable;
+        }
+    }
+    for (picture, mut image) in &mut pictures {
+        let alpha = if crate::map::plays(picture.0, session.mode) { 1.0 } else { 0.3 };
+        if image.color.alpha() != alpha {
+            image.color = Color::WHITE.with_alpha(alpha);
+        }
+    }
+    for (note, mut text) in &mut notes {
+        let line = if map.0.id == note.0 {
+            "Picked"
+        } else if !crate::map::plays(note.0, session.mode) {
+            "Not for this mode"
+        } else {
+            ""
+        };
+        set_text(&mut text, line.to_string());
     }
 }
 
@@ -1456,7 +1827,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ScoreboardPanel,
         children![(
             panel(),
-            children![(label("", 16.0, DIM), ScoreboardText), roster_list()],
+            children![(label("", 16.0, DIM), ScoreboardText), roster_list(ROSTER_WIDTH)],
         )],
     ));
 
@@ -2132,3 +2503,5 @@ fn update_overlays(
         set_text(&mut scoreboard_title, format!("{mode}  -  {map_name}"));
     }
 }
+
+

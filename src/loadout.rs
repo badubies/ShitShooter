@@ -30,6 +30,7 @@ use bevy::{
 };
 
 use crate::{
+    AppState,
     gun_model::{FittedModels, GunHolder},
     protocol::{GRENADE_KINDS, GrenadeKind, grenade},
     settings::{Action, Settings},
@@ -64,8 +65,24 @@ impl Plugin for LoadoutPlugin {
                 PropagateSet::<RenderLayers>::default().before(VisibilitySystems::CheckVisibility),
             )
             .init_resource::<LoadoutFocus>()
+            .init_resource::<LoadoutScreen>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (frame_thumbnails, update_cards, show_stage).chain());
+            .add_systems(
+                Update,
+                (
+                    close_on_state_change.run_if(state_changed::<AppState>),
+                    escape_key.run_if(not(in_state(AppState::Playing))),
+                    sync_screen,
+                    fill_choices,
+                    style_choices,
+                    point_choices,
+                    frame_thumbnails,
+                    update_cards,
+                    update_choice_texts,
+                    show_stage,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -133,6 +150,8 @@ struct Chevron(Handle<Image>);
 struct LoadoutFocus {
     slot: Slot,
     clicked: Option<Entity>,
+    /// What the card of the loadout screen under the pointer would give.
+    hover: Option<Preview>,
 }
 
 impl Default for LoadoutFocus {
@@ -140,6 +159,7 @@ impl Default for LoadoutFocus {
         LoadoutFocus {
             slot: Slot::Gun(0),
             clicked: None,
+            hover: None,
         }
     }
 }
@@ -775,7 +795,7 @@ fn update_cards(
     mut texts: ParamSet<(Query<(&SlotName, &mut Text)>, Query<(&SightName, &mut Text)>)>,
     mut images: ParamSet<(Query<(&SlotImage, &mut ImageNode)>, Query<&mut ImageNode, Added<ChevronIcon>>)>,
     mut rows: ParamSet<(Query<(&SightRow, &mut Node)>, Query<(&NoMount, &mut Node)>)>,
-    added: Query<(), Added<LoadoutCard>>,
+    added: Query<(), Or<(Added<LoadoutCard>, Added<SlotName>)>>,
 ) {
     for mut icon in &mut images.p1() {
         icon.image = chevron.0.clone();
@@ -862,7 +882,7 @@ fn show_stage(
         .find(|(entity, _, hovered)| hovered.get() && focus.clicked != Some(*entity))
         .map(|(_, arrow, _)| arrow.preview(&settings));
     let boxed = boxes.iter().find(|(_, hovered)| hovered.get()).map(|(slot, _)| slot.0.preview(&settings));
-    let preview = pointed.or(boxed).unwrap_or_else(|| focus.slot.preview(&settings));
+    let preview = pointed.or(boxed).or(focus.hover).unwrap_or_else(|| focus.slot.preview(&settings));
 
     for mut caption in &mut captions {
         set_text(&mut caption, preview.caption());
@@ -902,4 +922,616 @@ fn show_stage(
     let distance = (across * 0.54 / (half * ASPECT)).max(size.y * 0.6 / half) + size.x / 2.0;
     let from = Vec3::new(1.0, 0.16, -0.22).normalize();
     *camera_at = Transform::from_translation(center + from * distance).looking_at(center, Vec3::Y);
+}
+
+// ---------------------------------------------------------------- the loadout screen
+
+/// The loadout screen: the three slots across the top, every choice for the
+/// slot picked as a card with its picture, and the stage beside them showing
+/// what the pointer is on. It opens over whatever is on screen.
+#[derive(Resource)]
+pub struct LoadoutScreen {
+    pub open: bool,
+    /// The slot whose choices show.
+    slot: Slot,
+}
+
+impl Default for LoadoutScreen {
+    fn default() -> Self {
+        LoadoutScreen {
+            open: false,
+            slot: Slot::Gun(0),
+        }
+    }
+}
+
+/// Observer for any button that opens the loadout screen.
+pub fn on_open_loadout(_: On<Activate>, mut screen: ResMut<LoadoutScreen>) {
+    screen.open = true;
+}
+
+/// Something to click on the loadout screen.
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub enum Choice {
+    /// Shows a slot's choices.
+    Slot(Slot),
+    /// A gun for slot 0 or 1.
+    Gun(usize, WeaponId),
+    /// A sight for the gun in slot 0 or 1.
+    Sight(usize, SightId),
+    Grenade(GrenadeKind),
+}
+
+impl Choice {
+    /// What its picture shows.
+    fn preview(self, settings: &Settings) -> Preview {
+        match self {
+            Choice::Slot(slot) => slot.preview(settings),
+            Choice::Gun(_, gun) => Preview::gun(gun, settings.sight_for(gun)),
+            Choice::Sight(slot, sight) => Preview::gun(settings.gun(slot), sight),
+            Choice::Grenade(kind) => Preview::Grenade(kind),
+        }
+    }
+
+    fn picked(self, settings: &Settings, showing: Slot) -> bool {
+        match self {
+            Choice::Slot(slot) => slot == showing,
+            Choice::Gun(slot, gun) => settings.gun(slot) == gun,
+            Choice::Sight(slot, sight) => settings.sight_for(settings.gun(slot)) == sight,
+            Choice::Grenade(kind) => settings.grenade == kind,
+        }
+    }
+
+    /// A gun can't be in both slots.
+    fn blocked(self, settings: &Settings) -> bool {
+        matches!(self, Choice::Gun(slot, gun) if settings.gun(1 - slot) == gun)
+    }
+
+    /// How it looks when not picked.
+    fn rest_kind(self) -> ui::ButtonKind {
+        match self {
+            Choice::Sight(..) => ui::ButtonKind::Normal,
+            _ => ui::ButtonKind::Tile,
+        }
+    }
+}
+
+#[derive(Component)]
+struct ScreenRoot;
+/// Where the cards for the slot picked go; rebuilt when the slot, or the gun
+/// in it (whose sights show), changes.
+#[derive(Component, Default)]
+struct ChoicesPanel {
+    shown: Option<(Slot, WeaponId)>,
+}
+/// The picture on a card.
+#[derive(Component)]
+struct ChoiceImage(Choice);
+/// The line under a slot's name: the sight on its gun.
+#[derive(Component)]
+struct SlotSight(Slot);
+/// One line on the whole loadout, for the lobby's summary.
+#[derive(Component)]
+struct LoadoutLine;
+
+fn close_on_state_change(mut screen: ResMut<LoadoutScreen>) {
+    screen.open = false;
+}
+
+/// In a match, Escape closes it from `player::toggle_pause` instead.
+fn escape_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    settings_menu: Res<crate::settings::SettingsMenu>,
+    mut screen: ResMut<LoadoutScreen>,
+) {
+    if screen.open && !settings_menu.open && keys.just_pressed(KeyCode::Escape) {
+        screen.open = false;
+    }
+}
+
+/// Puts the screen up when it is opened, and takes it down when it is closed.
+fn sync_screen(
+    mut commands: Commands,
+    screen: Res<LoadoutScreen>,
+    mut focus: ResMut<LoadoutFocus>,
+    mut input_focus: ResMut<bevy::input_focus::InputFocus>,
+    roots: Query<Entity, With<ScreenRoot>>,
+) {
+    match (screen.open, roots.iter().next()) {
+        (true, None) => {
+            // Otherwise a menu text field behind it keeps taking the typing.
+            input_focus.clear();
+            focus.slot = screen.slot;
+            commands.spawn(screen_bundle());
+        }
+        (false, Some(root)) => {
+            commands.entity(root).despawn();
+            focus.hover = None;
+        }
+        _ => {}
+    }
+}
+
+fn close(_: On<Activate>, mut screen: ResMut<LoadoutScreen>) {
+    screen.open = false;
+}
+
+fn screen_bundle() -> impl Bundle {
+    (
+        ScreenRoot,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            height: percent(100),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        // Over the lobby and the pause menu; under the settings panel.
+        GlobalZIndex(15),
+        BackgroundColor(ui::SCRIM.with_alpha(0.98)),
+        children![(
+            Node {
+                width: percent(100),
+                max_width: px(1240),
+                height: percent(100),
+                min_height: px(0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::axes(px(48), px(36)),
+                row_gap: px(20),
+                ..default()
+            },
+            children![
+                (
+                    Node {
+                        align_items: AlignItems::Center,
+                        column_gap: px(20),
+                        ..default()
+                    },
+                    children![
+                        (ui::button("‹  Back"), observe(close)),
+                        ui::heading("Loadout", 40.0, TEXT),
+                        (
+                            Node {
+                                flex_grow: 1.0,
+                                justify_content: JustifyContent::FlexEnd,
+                                ..default()
+                            },
+                            children![label("In a match, changes apply the next time you spawn.", 14.0, DIM)],
+                        ),
+                    ],
+                ),
+                (
+                    Node {
+                        column_gap: px(16),
+                        ..default()
+                    },
+                    children![slot_card(Slot::Gun(0)), slot_card(Slot::Gun(1)), slot_card(Slot::Grenade)],
+                ),
+                (
+                    Node {
+                        flex_grow: 1.0,
+                        column_gap: px(20),
+                        min_height: px(0),
+                        ..default()
+                    },
+                    children![
+                        (
+                            ChoicesPanel::default(),
+                            Node {
+                                flex_grow: 1.0,
+                                flex_basis: px(0),
+                                min_width: px(0),
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(12),
+                                padding: UiRect::axes(px(22), px(20)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(20)),
+                                ..default()
+                            },
+                            BackgroundColor(ui::PANEL),
+                            BorderColor::all(ui::PANEL_EDGE),
+                            ui::soft_shadow(),
+                        ),
+                        (
+                            Node {
+                                width: px(380),
+                                flex_shrink: 0.0,
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(10),
+                                padding: UiRect::all(px(16)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(20)),
+                                ..default()
+                            },
+                            BackgroundColor(ui::PANEL),
+                            BorderColor::all(ui::PANEL_EDGE),
+                            ui::soft_shadow(),
+                            children![section("Preview"), stage_view()],
+                        ),
+                    ],
+                ),
+                (
+                    Node {
+                        justify_content: JustifyContent::FlexEnd,
+                        ..default()
+                    },
+                    children![(ui::primary_button("Done"), observe(close))],
+                ),
+            ],
+        )],
+    )
+}
+
+/// A slot across the top: its key and caption, what is in it, and its picture.
+fn slot_card(slot: Slot) -> impl Bundle {
+    let choice = Choice::Slot(slot);
+    (
+        choice,
+        Button,
+        choice.rest_kind(),
+        Hovered::default(),
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            min_width: px(0),
+            height: px(108),
+            align_items: AlignItems::Center,
+            column_gap: px(12),
+            padding: UiRect::axes(px(18), px(0)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(18)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor::all(choice.rest_kind().edge()),
+        observe(on_choice),
+        children![
+            (
+                Node {
+                    width: px(120),
+                    flex_shrink: 0.0,
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(5),
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (
+                        Node {
+                            align_items: AlignItems::Center,
+                            column_gap: px(8),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                        children![key_chip(slot.action()), (ui::weighted(slot.caption(), 11.0, 700, DIM), Pickable::IGNORE)],
+                    ),
+                    (SlotName(slot), ui::weighted("", 18.0, 700, TEXT), Pickable::IGNORE),
+                    (SlotSight(slot), label("", 13.0, DIM), Pickable::IGNORE),
+                ],
+            ),
+            (
+                SlotImage(slot),
+                ImageNode::default().with_color(Color::NONE),
+                Node {
+                    flex_grow: 1.0,
+                    flex_basis: px(0),
+                    min_width: px(0),
+                    max_width: px(200),
+                    aspect_ratio: Some(ASPECT),
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ),
+        ],
+    )
+}
+
+/// A card with a gun's or grenade's picture and name.
+fn picture_card(choice: Choice, name: &str, note: &str, blocked: bool) -> impl Bundle + use<> {
+    (
+        choice,
+        Button,
+        choice.rest_kind(),
+        Hovered::default(),
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            min_width: px(0),
+            height: px(128),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::new(px(12), px(12), px(10), px(12)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(16)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor::all(choice.rest_kind().edge()),
+        // A gun that is in the other slot can't be picked.
+        if blocked { Pickable::IGNORE } else { Pickable::default() },
+        observe(on_choice),
+        children![
+            (
+                Node {
+                    flex_grow: 1.0,
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    min_height: px(0),
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![(
+                    ChoiceImage(choice),
+                    ImageNode::default().with_color(Color::NONE),
+                    Node {
+                        width: percent(100),
+                        max_width: px(180),
+                        aspect_ratio: Some(ASPECT),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                )],
+            ),
+            (
+                Node {
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Baseline,
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (ui::weighted(name.to_string(), 15.0, 700, if blocked { ui::FAINT } else { TEXT }), Pickable::IGNORE),
+                    (label(note.to_string(), 12.0, DIM), Pickable::IGNORE),
+                ],
+            ),
+        ],
+    )
+}
+
+fn on_choice(
+    activate: On<Activate>,
+    choices: Query<&Choice>,
+    mut settings: ResMut<Settings>,
+    mut screen: ResMut<LoadoutScreen>,
+    mut focus: ResMut<LoadoutFocus>,
+) {
+    let Ok(&choice) = choices.get(activate.entity) else {
+        return;
+    };
+    let slot = match choice {
+        Choice::Slot(slot) => {
+            screen.slot = slot;
+            focus.slot = slot;
+            return;
+        }
+        Choice::Gun(slot, gun) => {
+            settings.set_gun(slot, gun);
+            Slot::Gun(slot)
+        }
+        Choice::Sight(slot, sight) => {
+            settings.set_sight(slot, sight);
+            Slot::Gun(slot)
+        }
+        Choice::Grenade(kind) => {
+            settings.set_grenade(kind);
+            Slot::Grenade
+        }
+    };
+    settings.save();
+    focus.slot = slot;
+    focus.clicked = Some(activate.entity);
+}
+
+/// Fills the panel with the cards for the slot picked: the guns and the
+/// sights the one in it takes, or the grenades.
+fn fill_choices(
+    mut commands: Commands,
+    screen: Res<LoadoutScreen>,
+    settings: Res<Settings>,
+    mut panels: Query<(Entity, &mut ChoicesPanel)>,
+) {
+    let gun = match screen.slot {
+        Slot::Gun(slot) => settings.gun(slot),
+        Slot::Grenade => WeaponId::MAX,
+    };
+    for (entity, mut panel) in &mut panels {
+        if panel.shown == Some((screen.slot, gun)) {
+            continue;
+        }
+        panel.shown = Some((screen.slot, gun));
+        commands.entity(entity).despawn_children().with_children(|panel| {
+            let row = || Node {
+                column_gap: px(10),
+                ..default()
+            };
+            match screen.slot {
+                Slot::Gun(slot) => {
+                    panel.spawn(section(&format!("Gun in slot {}", slot + 1)));
+                    panel.spawn(row()).with_children(|cards| {
+                        for choice in (0..GUN_COUNT).map(|gun| Choice::Gun(slot, gun)) {
+                            let blocked = choice.blocked(&settings);
+                            let Choice::Gun(_, id) = choice else { continue };
+                            let note = if blocked { format!("In slot {}", 2 - slot) } else { String::new() };
+                            cards.spawn(picture_card(choice, weapon(id).name, &note, blocked));
+                        }
+                    });
+                    panel.spawn((
+                        Node {
+                            margin: UiRect::top(px(8)),
+                            ..default()
+                        },
+                        children![section(&format!("Sight on the {}", weapon(gun).name))],
+                    ));
+                    panel.spawn(row()).with_children(|chips| {
+                        let sights = std::iter::once(IRON_SIGHTS).chain(sights_for(gun).iter().copied());
+                        for id in sights {
+                            let choice = Choice::Sight(slot, id);
+                            chips.spawn((choice, ui::button(sight(id).name), observe(on_choice)));
+                        }
+                    });
+                    let missing = sights_not_for(gun);
+                    if !missing.is_empty() {
+                        panel.spawn(label(missing, 13.0, ui::FAINT));
+                    }
+                }
+                Slot::Grenade => {
+                    panel.spawn(section("Grenade"));
+                    panel.spawn(row()).with_children(|cards| {
+                        for kind in 0..GRENADE_KINDS as GrenadeKind {
+                            cards.spawn(picture_card(Choice::Grenade(kind), grenade(kind).name, "", false));
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
+/// The sights a gun doesn't take, said so that nobody looks for them.
+fn sights_not_for(gun: WeaponId) -> String {
+    let missing: Vec<&str> = crate::weapons::SIGHTS
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| *id as SightId != IRON_SIGHTS && !sights_for(gun).contains(&(*id as SightId)))
+        .map(|(_, s)| s.name)
+        .collect();
+    match missing.as_slice() {
+        [] => String::new(),
+        [one] => format!("The {one} doesn't fit the {}.", weapon(gun).name),
+        [rest @ .., last] => format!("The {} and {last} don't fit the {}.", rest.join(", "), weapon(gun).name),
+    }
+}
+
+/// Marks what is picked, and fills in the cards' pictures.
+fn style_choices(
+    settings: Res<Settings>,
+    screen: Res<LoadoutScreen>,
+    thumbnails: Res<Thumbnails>,
+    mut choices: Query<(&Choice, &mut ui::ButtonKind, &mut BorderColor)>,
+    mut images: Query<(&ChoiceImage, &mut ImageNode)>,
+) {
+    for (choice, mut kind, mut border) in &mut choices {
+        let wanted = if choice.picked(&settings, screen.slot) { ui::ButtonKind::Picked } else { choice.rest_kind() };
+        if *kind != wanted {
+            *kind = wanted;
+            *border = BorderColor::all(wanted.edge());
+        }
+    }
+    for (image, mut node) in &mut images {
+        let alpha = if image.0.blocked(&settings) { 0.3 } else { 1.0 };
+        if let Some(handle) = thumbnails.get(image.0.preview(&settings))
+            && (node.image != handle || node.color.alpha() != alpha)
+        {
+            node.image = handle;
+            node.color = Color::WHITE.with_alpha(alpha);
+        }
+    }
+}
+
+/// The stage shows the card the pointer is on.
+fn point_choices(settings: Res<Settings>, mut focus: ResMut<LoadoutFocus>, choices: Query<(Entity, &Choice, &Hovered)>) {
+    // Once the pointer has left the card just clicked, it previews again.
+    if let Some(clicked) = focus.clicked
+        && choices.get(clicked).is_ok_and(|(_, _, hovered)| !hovered.get())
+    {
+        focus.clicked = None;
+    }
+    let hover = choices
+        .iter()
+        .find(|(entity, choice, hovered)| hovered.get() && focus.clicked != Some(*entity) && !choice.blocked(&settings))
+        .map(|(_, choice, _)| choice.preview(&settings));
+    if focus.hover != hover {
+        focus.hover = hover;
+    }
+}
+
+/// The sight line under each slot's name, and the lobby's one-line summary.
+fn update_choice_texts(
+    settings: Res<Settings>,
+    mut sights: Query<(&SlotSight, &mut Text), Without<LoadoutLine>>,
+    mut lines: Query<&mut Text, With<LoadoutLine>>,
+    added: Query<(), Or<(Added<SlotSight>, Added<LoadoutLine>)>>,
+) {
+    if !settings.is_changed() && added.is_empty() {
+        return;
+    }
+    let sight_of = |slot: usize| {
+        let gun = settings.gun(slot);
+        takes_sights(gun).then(|| sight(settings.sight_for(gun)).name)
+    };
+    for (slot, mut text) in &mut sights {
+        let line = match slot.0 {
+            Slot::Gun(slot) => sight_of(slot).unwrap_or("No sight mount").to_string(),
+            Slot::Grenade => String::new(),
+        };
+        set_text(&mut text, line);
+    }
+    let gun_line = |slot: usize| {
+        let name = weapon(settings.gun(slot)).name;
+        match sight_of(slot) {
+            Some(on) if settings.sight_for(settings.gun(slot)) != IRON_SIGHTS => format!("{name} + {on}"),
+            _ => name.to_string(),
+        }
+    };
+    let line = format!("{}  ·  {}  ·  {}", gun_line(0), gun_line(1), grenade(settings.grenade).name);
+    for mut text in &mut lines {
+        set_text(&mut text, line.clone());
+    }
+}
+
+/// For the lobby: what you spawn with, as pictures and a line, and a button
+/// that opens the loadout screen.
+pub fn loadout_summary() -> impl Bundle {
+    let kind = ui::ButtonKind::Tile;
+    let picture = |slot: Slot, width: f32| {
+        (
+            SlotImage(slot),
+            ImageNode::default().with_color(Color::NONE),
+            Node {
+                width: px(width),
+                aspect_ratio: Some(ASPECT),
+                ..default()
+            },
+            Pickable::IGNORE,
+        )
+    };
+    (
+        Button,
+        kind,
+        Hovered::default(),
+        Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: px(10),
+            padding: UiRect::axes(px(18), px(16)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(20)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor::all(kind.edge()),
+        observe(on_open_loadout),
+        children![
+            (
+                Node {
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (section("You spawn with"), Pickable::IGNORE),
+                    (ui::weighted("Change", 13.0, 700, ui::ACCENT), Pickable::IGNORE),
+                ],
+            ),
+            (
+                Node {
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    column_gap: px(6),
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![picture(Slot::Gun(0), 130.0), picture(Slot::Gun(1), 100.0), picture(Slot::Grenade, 90.0)],
+            ),
+            (LoadoutLine, label("", 13.0, DIM), Pickable::IGNORE),
+        ],
+    )
 }

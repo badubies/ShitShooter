@@ -224,14 +224,22 @@ pub enum ClientMsg {
     StartMatch,
     /// Lobby leader only.
     AddBot,
-    /// Lobby leader only.
-    RemoveBots,
+    /// Lobby leader only: takes out the bot that joined last.
+    RemoveBot,
     /// Lobby leader only, in the lobby: switch to the next map.
     NextMap,
     /// Lobby leader only, in the lobby: switch to the next game mode.
     NextMode,
     /// Lobby leader only, in the lobby: switch to the next of `AIR_ACCEL_CHOICES`.
     NextAirAccel,
+    /// Lobby leader only, in the lobby: play this game mode, on the map if it
+    /// is played there, or else on the first map it is.
+    SetMode(u8),
+    /// Lobby leader only, in the lobby: play on this map, if the game mode is
+    /// played there.
+    SetMap(u8),
+    /// Lobby leader only, in the lobby: one of `AIR_ACCEL_CHOICES`.
+    SetAirAccel(u16),
     /// In the lobby: move yourself to the other team.
     SwitchTeam,
     /// Lobby leader only: abort the running match and return to the lobby.

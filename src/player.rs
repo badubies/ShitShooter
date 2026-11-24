@@ -633,11 +633,19 @@ fn while_dead(time: Res<Time>, mut player: ResMut<LocalPlayer>, mut input: Param
     }
 }
 
-/// Escape pauses and resumes; with the settings panel open it backs out of that instead.
-fn toggle_pause(keys: Res<ButtonInput<KeyCode>>, mut controls: ResMut<Controls>, mut menu: ResMut<SettingsMenu>) {
+/// Escape pauses and resumes; with the settings panel or the loadout screen
+/// open it backs out of that instead.
+fn toggle_pause(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut controls: ResMut<Controls>,
+    mut menu: ResMut<SettingsMenu>,
+    mut loadout: ResMut<crate::loadout::LoadoutScreen>,
+) {
     if keys.just_pressed(KeyCode::Escape) {
         if menu.open {
             menu.back();
+        } else if loadout.open {
+            loadout.open = false;
         } else {
             controls.captured = !controls.captured;
         }

@@ -21,9 +21,9 @@ use crate::{
     player::{Controls, DroppedMagazine, GunSlot, LocalPlayer, PlayerSystems},
     protocol::{ClientMsg, MODE_CONQUEST},
     map::PLAYER_HALF,
-    loadout::{LoadoutArrow, Slot},
+    loadout::{Choice, LoadoutScreen},
     remote::{Corpse, RemotePlayer},
-    weapons::{GUN_COUNT, SHOTGUN, TWO_X, WeaponId, weapon},
+    weapons::{GUN_COUNT, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
     world::GameMap,
     settings::{Settings, SettingsMenu},
 };
@@ -157,7 +157,8 @@ fn selftest_lobby(
     model: Res<PlayerModel>,
     sliders: Query<Entity, With<Slider>>,
     settings: Res<Settings>,
-    arrows: Query<(&LoadoutArrow, &UiGlobalTransform, &ComputedNode)>,
+    mut loadout: ResMut<LoadoutScreen>,
+    choices: Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
     window: Single<Entity, With<PrimaryWindow>>,
     mut pointer: MessageWriter<PointerInput>,
 ) {
@@ -211,31 +212,33 @@ fn selftest_lobby(
     if test.reached(5, 3.3) {
         editor.open = false;
     }
-    // The loadout card, with the pointer: on the primary's next arrow (the
-    // stage shows what it would give), a click, and back with the other arrow.
-    if test.reached(6, 3.8) {
-        point(&arrows, *window, &mut pointer, Some(1), false);
+    // The loadout screen, with the pointer: on the shotgun's card (the stage
+    // shows it), a click on it, and back to the rifle.
+    if test.reached(6, 3.6) {
+        loadout.open = true;
     }
     if test.reached(7, 4.2) {
-        test.capture(&mut commands, "lobby_hover.png");
+        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, SHOTGUN)), false);
     }
-    if test.reached(8, 4.4) {
-        point(&arrows, *window, &mut pointer, Some(1), true);
-    }
-    if test.reached(9, 4.7) {
-        println!("[selftest] after a click on the primary's next arrow: {}", weapon(settings.primary).name);
-        test.capture(&mut commands, "lobby_clicked.png");
+    if test.reached(8, 4.6) {
+        test.capture(&mut commands, "loadout_hover.png");
     }
     // Picking sees where the pointer is a frame after it moves there.
-    if test.reached(10, 4.8) {
-        point(&arrows, *window, &mut pointer, Some(-1), false);
+    if test.reached(9, 4.8) {
+        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, SHOTGUN)), true);
     }
-    if test.reached(11, 4.9) {
-        point(&arrows, *window, &mut pointer, Some(-1), true);
+    if test.reached(10, 5.1) {
+        println!("[selftest] after a click on the shotgun's card: {}", weapon(settings.primary).name);
+        test.capture(&mut commands, "loadout_clicked.png");
+        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, RIFLE)), false);
     }
-    if test.reached(12, 5.2) {
-        println!("[selftest] and on its back arrow: {}", weapon(settings.primary).name);
-        point(&arrows, *window, &mut pointer, None, false);
+    if test.reached(11, 5.2) {
+        point(&choices, *window, &mut pointer, Some(Choice::Gun(0, RIFLE)), true);
+    }
+    if test.reached(12, 5.5) {
+        println!("[selftest] and on the rifle's: {}", weapon(settings.primary).name);
+        point(&choices, *window, &mut pointer, None, false);
+        loadout.open = false;
     }
     if test.reached(13, 5.6) {
         println!("[selftest] roster: {:?}", session.roster.iter().map(|p| &p.name).collect::<Vec<_>>());
@@ -243,20 +246,18 @@ fn selftest_lobby(
     }
 }
 
-/// Moves the pointer onto the primary gun's arrow that steps by `step` (or
-/// off to a corner, for `None`), and clicks there if `click`. A click only
-/// lands on what was under the pointer the frame before.
+/// Moves the pointer onto the loadout screen's card for `target` (or off to
+/// a corner, for `None`), and clicks there if `click`. A click only lands on
+/// what was under the pointer the frame before.
 fn point(
-    arrows: &Query<(&LoadoutArrow, &UiGlobalTransform, &ComputedNode)>,
+    choices: &Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
     window: Entity,
     pointer: &mut MessageWriter<PointerInput>,
-    step: Option<i32>,
+    target: Option<Choice>,
     click: bool,
 ) {
-    let arrow = arrows
-        .iter()
-        .find(|(arrow, ..)| arrow.slot == Slot::Gun(0) && !arrow.sight && Some(arrow.step) == step);
-    let position = arrow.map_or(Vec2::splat(5.0), |(_, at, node)| at.translation * node.inverse_scale_factor);
+    let card = choices.iter().find(|(choice, ..)| Some(**choice) == target);
+    let position = card.map_or(Vec2::splat(5.0), |(_, at, node)| at.translation * node.inverse_scale_factor);
     let location = Location {
         target: NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(window)).expect("a window")),
         position,

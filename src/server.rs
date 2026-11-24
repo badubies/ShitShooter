@@ -792,19 +792,21 @@ impl Server {
             ClientMsg::NextMode if is_leader && self.phase == Phase::Lobby => {
                 // The next mode the map is played in.
                 let modes = MODE_NAMES.len() as u8;
-                self.settings.mode = (1..=modes)
+                let next = (1..=modes)
                     .map(|step| (self.settings.mode + step) % modes)
                     .find(|mode| map::plays(self.settings.map, *mode))
                     .unwrap_or(self.settings.mode);
-                // Into or out of conquest: the flagpoles go up or come down.
-                if self.map.has_flagpoles() != (self.settings.mode == MODE_CONQUEST) {
-                    self.map = Map::for_game(self.settings.map, self.settings.mode);
-                    self.nav = NavGrid::new(&self.map);
-                }
-                self.roster_dirty = true;
+                self.set_mode(next);
             }
+            ClientMsg::SetMode(mode) if is_leader && self.phase == Phase::Lobby => self.set_mode(mode),
             ClientMsg::NextAirAccel if is_leader && self.phase == Phase::Lobby => {
                 self.settings.air_accel = next_air_accel(self.settings.air_accel);
+                self.roster_dirty = true;
+            }
+            ClientMsg::SetAirAccel(air_accel)
+                if is_leader && self.phase == Phase::Lobby && AIR_ACCEL_CHOICES.contains(&air_accel) =>
+            {
+                self.settings.air_accel = air_accel;
                 self.roster_dirty = true;
             }
             ClientMsg::SwitchTeam if self.phase == Phase::Lobby => {
@@ -814,21 +816,24 @@ impl Server {
                 }
             }
             ClientMsg::AddBot if is_leader => self.add_bot(),
-            ClientMsg::RemoveBots if is_leader => {
-                self.players.retain(|_, p| p.bot.is_none());
-                self.roster_dirty = true;
+            ClientMsg::RemoveBot if is_leader => {
+                // Bots' ids count up as they join.
+                let last = self.players.iter().filter(|(_, p)| p.bot.is_some()).map(|(id, _)| *id).max();
+                if let Some(last) = last {
+                    self.players.remove(&last);
+                    self.roster_dirty = true;
+                }
             }
             ClientMsg::NextMap if is_leader && self.phase == Phase::Lobby => {
                 // The next map played in this mode.
                 let maps = map::MAP_NAMES.len() as u8;
-                self.settings.map = (1..=maps)
+                let next = (1..=maps)
                     .map(|step| (self.settings.map + step) % maps)
                     .find(|id| map::plays(*id, self.settings.mode))
                     .unwrap_or(self.settings.map);
-                self.map = Map::for_game(self.settings.map, self.settings.mode);
-                self.nav = NavGrid::new(&self.map);
-                self.roster_dirty = true;
+                self.set_map(next);
             }
+            ClientMsg::SetMap(id) if is_leader && self.phase == Phase::Lobby => self.set_map(id),
             ClientMsg::Fire { weapon, origin, dirs } => self.handle_fire(id, weapon, origin, dirs),
             ClientMsg::Hit {
                 victim,
@@ -1420,6 +1425,41 @@ impl Server {
         }
         let front = |i: &usize| to_take.iter().map(|p| p.distance(flags[*i].pos)).fold(f32::INFINITY, f32::min);
         ours.iter().copied().min_by(|a, b| front(a).total_cmp(&front(b)))
+    }
+
+    /// Plays `mode` from the next match on: on the map picked if it is played
+    /// there, or else on the first map that it is.
+    fn set_mode(&mut self, mode: u8) {
+        if mode as usize >= MODE_NAMES.len() {
+            return;
+        }
+        self.settings.mode = mode;
+        if !map::plays(self.settings.map, mode) {
+            let maps = map::MAP_NAMES.len() as u8;
+            if let Some(id) = (0..maps).find(|id| map::plays(*id, mode)) {
+                self.settings.map = id;
+            }
+            self.rebuild_map();
+        } else if self.map.has_flagpoles() != (mode == MODE_CONQUEST) {
+            // Into or out of conquest: the flagpoles go up or come down.
+            self.rebuild_map();
+        }
+        self.roster_dirty = true;
+    }
+
+    /// Plays on map `id` from the next match on, if the mode is played there.
+    fn set_map(&mut self, id: u8) {
+        if id as usize >= map::MAP_NAMES.len() || !map::plays(id, self.settings.mode) || id == self.settings.map {
+            return;
+        }
+        self.settings.map = id;
+        self.rebuild_map();
+        self.roster_dirty = true;
+    }
+
+    fn rebuild_map(&mut self) {
+        self.map = Map::for_game(self.settings.map, self.settings.mode);
+        self.nav = NavGrid::new(&self.map);
     }
 
     fn add_bot(&mut self) {
@@ -2066,6 +2106,68 @@ mod tests {
         server.handle_message(1, ClientMsg::NextMap);
         assert_eq!(server.settings.map, 0, "Hamlet skipped");
         assert!(server.map.has_flagpoles());
+    }
+
+    /// The lobby's chips: the leader picks a mode, map or air acceleration
+    /// straight away. A mode Hamlet isn't played in moves the match off it,
+    /// and Hamlet can't be picked then.
+    #[test]
+    fn the_leader_picks_mode_map_and_air_acceleration_directly() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            map: 3,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        for id in [1, 2] {
+            server.join_counter += 1;
+            let player = server.new_player(format!("P{id}"), None);
+            server.players.insert(id, player);
+        }
+        let leader = server.leader().unwrap();
+        let other = if leader == 1 { 2 } else { 1 };
+        server.handle_message(other, ClientMsg::SetMode(MODE_CONQUEST));
+        assert_eq!(server.settings.mode, MODE_FFA, "only the leader may");
+
+        server.handle_message(leader, ClientMsg::SetMode(MODE_CONQUEST));
+        assert_eq!(server.settings.mode, MODE_CONQUEST);
+        assert_eq!(server.settings.map, 0, "off Hamlet, onto the first map conquest is played on");
+        assert!(server.map.has_flagpoles());
+        server.handle_message(leader, ClientMsg::SetMap(3));
+        assert_eq!(server.settings.map, 0, "Hamlet has no conquest");
+        server.handle_message(leader, ClientMsg::SetMap(2));
+        assert_eq!(server.map.id, 2);
+
+        server.handle_message(leader, ClientMsg::SetAirAccel(100));
+        assert_eq!(server.settings.air_accel, 100);
+        server.handle_message(leader, ClientMsg::SetAirAccel(55));
+        assert_eq!(server.settings.air_accel, 100, "not one of the choices");
+    }
+
+    #[test]
+    fn removing_a_bot_takes_the_last_one_in() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        server.join_counter += 1;
+        let player = server.new_player("P".into(), None);
+        // Clear of the bots' ids, which count up from 1.
+        let me = 1000;
+        server.players.insert(me, player);
+        server.handle_message(me, ClientMsg::AddBot);
+        server.handle_message(me, ClientMsg::AddBot);
+        let bots = |server: &Server| {
+            let mut ids: Vec<_> = server.players.iter().filter(|(_, p)| p.bot.is_some()).map(|(id, _)| *id).collect();
+            ids.sort();
+            ids
+        };
+        let before = bots(&server);
+        assert_eq!(before.len(), 2);
+        server.handle_message(me, ClientMsg::RemoveBot);
+        assert_eq!(bots(&server), [before[0]], "the first bot stays");
+        assert!(server.players.contains_key(&me), "people are never taken out");
     }
 
     #[test]

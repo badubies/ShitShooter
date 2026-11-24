@@ -18,6 +18,7 @@ use bevy::{
 use crate::{
     AppState, LaunchArgs,
     browser::{Browser, online_page},
+    loadout::on_open_loadout,
     net::{self, MenuStatus},
     paint_editor::on_open_paint,
     protocol::DEFAULT_PORT,
@@ -179,6 +180,8 @@ pub(crate) fn page_column() -> Node {
         width: percent(100),
         max_width: px(1240),
         height: percent(100),
+        // Never taller than the window.
+        min_height: px(0),
         flex_direction: FlexDirection::Column,
         padding: UiRect::axes(px(48), px(40)),
         row_gap: px(24),
@@ -361,6 +364,7 @@ fn home_page(prefs: &MenuPrefs, browser: &Browser) -> impl Bundle {
                             ..default()
                         },
                         children![
+                            (button("Loadout"), observe(on_open_loadout)),
                             (button("Paint yourself"), observe(on_open_paint)),
                             (button("Settings"), observe(on_open_settings)),
                             (danger_button("Quit"), observe(on_quit)),

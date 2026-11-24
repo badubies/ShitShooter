@@ -449,6 +449,35 @@ impl Settings {
         }
     }
 
+    /// Puts `gun` in a slot, unless it is the gun in the other one.
+    pub fn set_gun(&mut self, slot: usize, gun: WeaponId) {
+        if gun >= GUN_COUNT || gun == self.gun(1 - slot.min(1)) {
+            return;
+        }
+        if slot == 0 {
+            self.primary = gun;
+        } else {
+            self.secondary = gun;
+        }
+    }
+
+    /// Puts `sight` on the gun in a slot, if it takes it.
+    pub fn set_sight(&mut self, slot: usize, sight: SightId) {
+        let gun = self.gun(slot);
+        if sight != IRON_SIGHTS && !sights_for(gun).contains(&sight) {
+            return;
+        }
+        if let Some(on) = self.sights.get_mut(gun as usize) {
+            *on = sight;
+        }
+    }
+
+    pub fn set_grenade(&mut self, kind: GrenadeKind) {
+        if (kind as usize) < GRENADE_KINDS {
+            self.grenade = kind;
+        }
+    }
+
     /// The gun in a slot (0 = primary, 1 = secondary).
     pub fn gun(&self, slot: usize) -> WeaponId {
         if slot == 0 { self.primary } else { self.secondary }
