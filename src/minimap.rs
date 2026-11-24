@@ -323,8 +323,10 @@ fn dot(size: f32) -> Node {
 }
 
 /// The minimap key shows or hides the minimap, and remembers it.
-fn toggle_minimap(input: ActionInput, mut settings: ResMut<Settings>) {
-    if input.just_pressed(Action::Minimap) {
+/// `ActionInput` reads the settings too, so the two take turns.
+fn toggle_minimap(mut input: ParamSet<(ActionInput, ResMut<Settings>)>) {
+    if input.p0().just_pressed(Action::Minimap) {
+        let mut settings = input.p1();
         settings.show_minimap = !settings.show_minimap;
         settings.save();
     }
