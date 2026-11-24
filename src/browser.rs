@@ -23,15 +23,16 @@ use crate::{
     protocol::{DEFAULT_PORT, MAX_PLAYERS, MODE_NAMES, protocol_id},
     settings::Settings,
     ui::{
-        ACCENT, BUTTON, ButtonKind, DIM, GOOD, PANEL, PANEL_EDGE, TEXT, button, field_sized, heading, label,
+        ACCENT, BUTTON, ButtonKind, DIM, GOOD, PANEL, PANEL_EDGE, TEXT, field_sized, heading, label,
         primary_button, section, small_button, soft_shadow, text_box, weighted,
     },
 };
 
 /// Seconds between asking for the lobby list again, while on the main menu.
 const REFRESH: f32 = 5.0;
-/// Lobbies shown at most; the page has room for no more.
-const MAX_ROWS: usize = 5;
+/// Lobbies shown at most; with the row to open your own under them, the
+/// page has room for no more.
+const MAX_ROWS: usize = 4;
 
 pub struct BrowserPlugin;
 
@@ -127,6 +128,12 @@ impl Browser {
             self.picked = picked;
             self.version += 1;
         }
+    }
+
+    /// Whether the panel shows the form to open your own: picked, or there is
+    /// no server to list lobbies from.
+    fn shows_new(&self) -> bool {
+        self.picked == Picked::New || self.server.is_none()
     }
 
     fn picked_lobby(&self) -> Option<&LobbyInfo> {
@@ -234,10 +241,6 @@ pub fn online_page(prefs: &MenuPrefs) -> impl Bundle {
                         section("Server"),
                         text_box(Field::Server, &prefs.server, ADDRESS_CHARS, 4, 14.0),
                         (small_button("Refresh"), observe(on_refresh)),
-                        (
-                            button("+  Open a lobby"),
-                            observe(|_: On<Activate>, mut browser: ResMut<Browser>| browser.pick(Picked::New)),
-                        ),
                     ],
                 ),
             ),
@@ -396,6 +399,58 @@ fn lobby_row(lobby: &LobbyInfo, picked: bool, picture: Option<Handle<Image>>) ->
     )
 }
 
+/// The last row: a lobby of your own, to open. Picking it shows the form
+/// beside the list.
+fn new_lobby_row(picked: bool) -> impl Bundle {
+    let kind = if picked { ButtonKind::Picked } else { ButtonKind::Tile };
+    (
+        Button,
+        kind,
+        Hovered::default(),
+        Node {
+            height: px(84),
+            align_items: AlignItems::Center,
+            column_gap: px(16),
+            padding: UiRect::new(px(10), px(18), px(0), px(0)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(16)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        BorderColor::all(kind.edge()),
+        observe(|_: On<Activate>, mut browser: ResMut<Browser>| browser.pick(Picked::New)),
+        children![
+            (
+                Node {
+                    width: px(112),
+                    height: px(63),
+                    flex_shrink: 0.0,
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    border_radius: BorderRadius::all(px(10)),
+                    ..default()
+                },
+                BackgroundColor(BUTTON),
+                Pickable::IGNORE,
+                children![(weighted("+", 32.0, 700, ACCENT), Pickable::IGNORE)],
+            ),
+            (
+                Node {
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(4),
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (weighted("Open your own", 18.0, 700, TEXT), Pickable::IGNORE),
+                    (label("You lead it: pick the mode, the map and the bots.", 14.0, DIM), Pickable::IGNORE),
+                ],
+            ),
+        ],
+    )
+}
+
 /// A map's picture, or a plain box when there is none. A box's overflow is
 /// clipped square, so a picture at the top of a rounded box rounds its own
 /// corners to match.
@@ -468,14 +523,15 @@ fn update_list(
         }
         rows.shown = Some(browser.version);
         commands.entity(entity).despawn_children();
-        if browser.server.is_some() {
-            commands.entity(entity).with_children(|list| {
+        commands.entity(entity).with_children(|list| {
+            if browser.server.is_some() {
                 for lobby in browser.listed() {
                     let picked = browser.picked == Picked::Lobby(lobby.port);
                     list.spawn(lobby_row(lobby, picked, map_picture(&asset_server, lobby.map)));
                 }
-            });
-        }
+            }
+            list.spawn(new_lobby_row(browser.shows_new()));
+        });
     }
 }
 
@@ -503,7 +559,7 @@ fn update_detail(
             (Some(lobby), Some(server)) => {
                 panel.spawn(lobby_detail(lobby, server, &prefs, map_picture(&asset_server, lobby.map)));
             }
-            _ if browser.picked == Picked::New || browser.server.is_none() => {
+            _ if browser.shows_new() => {
                 panel.spawn(new_lobby_detail(&prefs));
             }
             _ => {}
