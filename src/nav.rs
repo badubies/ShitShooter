@@ -7,7 +7,7 @@ use std::{cmp::Reverse, collections::BinaryHeap};
 
 use bevy::math::{Vec2, Vec3};
 
-use crate::map::Map;
+use crate::map::{Map, PLAYER_HALF, STEP_UP};
 
 const CELL: f32 = 0.5;
 /// The box a bot must fit at a cell: a little narrower than a player, so
@@ -157,20 +157,25 @@ impl NavGrid {
             cells.push((at % self.nx, at / self.nx));
         }
         cells.reverse();
-        // Straighten: from each kept cell, jump to the farthest one in plain view.
+        // Straighten: from each kept cell, jump to the farthest one in plain
+        // view that a whole player can run to in a straight line (the cells
+        // are walkable with a narrower box, so a line through them can still
+        // graze a door frame).
+        let body = |cell: (usize, usize)| self.center(map, cell.0, cell.1) + Vec3::Y * (PLAYER_HALF.y + 0.02);
         let mut kept = vec![cells[0]];
         let mut k = 0;
         while k < cells.len() - 1 {
-            let mut far = k + 1;
-            for (m, cell) in cells.iter().enumerate().skip(k + 2) {
-                if self.clear_line(cells[k], *cell) {
-                    far = m;
-                }
-            }
+            let in_view: Vec<usize> = (k + 2..cells.len()).filter(|m| self.clear_line(cells[k], cells[*m])).collect();
+            let far = in_view
+                .iter()
+                .rev()
+                .find(|m| clear_run(map, body(cells[k]), body(cells[**m])))
+                .copied()
+                .unwrap_or(k + 1);
             kept.push(cells[far]);
             k = far;
         }
-        let mut points: Vec<Vec3> = kept.iter().skip(1).map(|&(i, j)| self.center(map, i, j)).collect();
+        let mut points: Vec<Vec3> = kept.iter().skip(1).map(|&(i, j)| roomy(map, self.center(map, i, j))).collect();
         if let Some(last) = points.last_mut() {
             *last = to;
         } else {
@@ -180,13 +185,71 @@ impl NavGrid {
     }
 }
 
+/// A waypoint at `feet` moved a little, if need be, to where a whole player
+/// fits: cells are walkable with a narrower box, so in a doorway the middle
+/// of a cell can be too near the frame for a runner heading there.
+fn roomy(map: &Map, feet: Vec3) -> Vec3 {
+    let fits = |at: Vec3| {
+        let foot = rest(map, at.x, at.z, feet.y);
+        map.is_free(Vec3::new(at.x, foot + PLAYER_HALF.y + 0.02, at.z), PLAYER_HALF)
+    };
+    if fits(feet) {
+        return feet;
+    }
+    for reach in [0.1, 0.2, 0.3] {
+        for k in 0..8 {
+            let step = Vec2::from_angle(k as f32 * std::f32::consts::FRAC_PI_4) * reach;
+            let at = feet + Vec3::new(step.x, 0.0, step.y);
+            if fits(at) {
+                return at.with_y(map.ground(at.x, at.z).unwrap_or(feet.y));
+            }
+        }
+    }
+    feet
+}
+
+/// The height the feet of somebody walking to (x, z) with their feet at
+/// `foot` come to rest at: the top of whatever is under them there, no
+/// more than a step up (a floor, a stair), or the ground.
+fn rest(map: &Map, x: f32, z: f32, foot: f32) -> f32 {
+    let from = Vec3::new(x, foot + STEP_UP + 0.01, z);
+    from.y - map.raycast(from, Vec3::NEG_Y, 50.0).unwrap_or(50.0)
+}
+
+/// Drops the waypoints at the front of `path` that a runner whose box is
+/// centred at `pos` is done with: the next one once within a metre of it,
+/// if the one after it can be run at in a straight line from here, or once
+/// right on top of it. So a runner rounds a corner without cutting it into
+/// the wall, or the door frame, at its inside.
+pub fn pass_waypoints(map: &Map, path: &mut Vec<Vec3>, pos: Vec3) {
+    while let Some(next) = path.first() {
+        let near = (*next - pos).with_y(0.0).length();
+        let cut = near < 1.0 && path.get(1).is_none_or(|after| clear_run(map, pos, *after));
+        if near < 0.35 || cut {
+            path.remove(0);
+        } else {
+            break;
+        }
+    }
+}
+
+/// True if a player whose box is centred at `from` can run straight to `to`
+/// (seen from above) without bumping into anything they cannot step onto.
+fn clear_run(map: &Map, from: Vec3, to: Vec3) -> bool {
+    let flat = (to - from).with_y(0.0);
+    let steps = (flat.length() / 0.25).ceil().max(1.0) as usize;
+    let mut foot = from.y - PLAYER_HALF.y;
+    (1..=steps).all(|k| {
+        let p = from + flat * (k as f32 / steps as f32);
+        foot = rest(map, p.x, p.z, foot);
+        map.is_free(Vec3::new(p.x, foot + PLAYER_HALF.y + 0.02, p.z), PLAYER_HALF)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        map::{PLAYER_HALF, STEP_UP},
-        valley::valley,
-    };
+    use crate::valley::valley;
 
     /// Follows a path like a bot does, and returns where it ends up.
     fn follow(map: &Map, from: Vec3, path: &[Vec3]) -> Vec3 {

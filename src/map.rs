@@ -5,7 +5,7 @@
 use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
-    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, SMOKE_RADIUS, SMOKE_RISE},
+    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, MODE_FFA, MODE_TEAMS, SMOKE_RADIUS, SMOKE_RISE},
     props::{FLAGPOLE, PROPS},
     terrain::Terrain,
 };
@@ -28,7 +28,13 @@ pub const STEP_UP: f32 = 0.5;
 /// Side of a cell of the grid that finds the blocks near a point quickly.
 const GRID_CELL: f32 = 8.0;
 
-pub const MAP_NAMES: [&str; 3] = ["Arena", "Depot", "Valley"];
+pub const MAP_NAMES: [&str; 4] = ["Arena", "Depot", "Valley", "Hamlet"];
+
+/// True if map `id` can be played in `mode`. Hamlet is built for close
+/// fights only: it has no flags for conquest and no hill.
+pub fn plays(id: u8, mode: u8) -> bool {
+    id != 3 || mode == MODE_FFA || mode == MODE_TEAMS
+}
 
 pub fn player_half(crouching: bool) -> Vec3 {
     if crouching { CROUCH_HALF } else { PLAYER_HALF }
@@ -393,6 +399,7 @@ impl Map {
         match id {
             1 => Map::depot(),
             2 => crate::valley::valley(),
+            3 => crate::hamlet::hamlet(),
             _ => Map::arena(),
         }
     }
@@ -1023,8 +1030,8 @@ mod tests {
     }
 
     #[test]
-    fn every_map_has_flags_and_bases_for_conquest() {
-        for map in maps() {
+    fn every_conquest_map_has_flags_and_bases() {
+        for map in maps().into_iter().filter(|map| plays(map.id, MODE_CONQUEST)) {
             assert!(map.flags.len() >= 3, "map {}", map.id);
             for flag in &map.flags {
                 assert!(flag.spawns.len() >= 3, "map {} flag {} has {} spawns", map.id, flag.name, flag.spawns.len());
@@ -1041,7 +1048,7 @@ mod tests {
 
     #[test]
     fn flagpoles_stand_only_in_conquest() {
-        for id in 0..MAP_NAMES.len() as u8 {
+        for id in (0..MAP_NAMES.len() as u8).filter(|id| plays(*id, MODE_CONQUEST)) {
             let conquest = Map::for_game(id, MODE_CONQUEST);
             let other = Map::for_game(id, 0);
             assert!(conquest.has_flagpoles(), "map {id}");

@@ -14,6 +14,7 @@
 
 // Shared by the game and the servers.
 mod canvas;
+mod hamlet;
 mod hub;
 mod map;
 mod nav;
@@ -151,7 +152,8 @@ LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
     --frags <N>          Kills needed to win (doubled for teams) [default: 20]
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
-    --map <NAME>         Map: arena, depot or valley      [default: arena]
+    --map <NAME>         Map: arena, depot, valley or hamlet [default: arena]
+                         (hamlet: ffa and teams only)
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
 
     --help               Show this text
@@ -200,7 +202,7 @@ fn parse_args() -> Result<LaunchArgs, String> {
                 args.server.map = map::MAP_NAMES
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley)"))? as u8;
+                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley, hamlet)"))? as u8;
             }
             "--airaccel" => {
                 let accel: u16 = number(&flag, value("number")?)?;
@@ -213,6 +215,13 @@ fn parse_args() -> Result<LaunchArgs, String> {
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown option '{other}'")),
         }
+    }
+    if !map::plays(args.server.map, args.server.mode) {
+        return Err(format!(
+            "{} is not played in {}",
+            map::MAP_NAMES[args.server.map as usize],
+            protocol::MODE_NAMES[args.server.mode as usize].to_lowercase()
+        ));
     }
     Ok(args)
 }

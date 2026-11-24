@@ -1,5 +1,35 @@
 # Plan
 
+## Round 3: Hamlet, a close-quarters map
+
+A village about the size of Depot (68 m inside its town wall), for free for
+all and team deathmatch only (`map::plays`; the lobby's mode and map
+buttons skip what does not go together, `--map` refuses it). Built from the
+Valley's models: a warehouse, a barn, two tall houses, a dozen houses and
+two ruins to run through, with walled yards, stalls, containers and
+woodpiles between them, on a low rise with the square on top.
+
+- [x] `src/hamlet.rs`: the layout, levelled plots, the outskirts (decor
+  only), spawns spread over the open ground facing their longest view,
+  armor up on the mezzanine, loft, both upper floors, the square's house
+  and the terrace.
+- [x] Its tests hold it to the brief: every spot outdoors within 5 m of
+  cover, no wide eye-to-eye sightline of 42 m or more (Depot: 90 spots in
+  the open, lines of 64 m), nothing standing in anything else, bots
+  getting from every spawn to every other.
+- [x] Bots no longer cut corners into door frames and walls (it got them
+  stuck for good in Hamlet's narrow lanes): `nav::pass_waypoints` only
+  drops a waypoint early when a player can run straight at the next one,
+  straightened paths are checked with a whole player, and waypoints are
+  moved off door frames.
+- Protocol bumped to 13: older clients would load a map they do not know
+  as Arena.
+
+Worth knowing: `HAMLET_PREVIEW=out.ppm cargo test --no-default-features
+hamlet::tests::preview -- --ignored` draws it from above (cover heights,
+spawns, armor, open spots and the longest sightlines);
+`hamlet::tests::print_survey` prints the sightlines next to Depot's.
+
 ## Round 2: a big map with capture points
 
 A Battlefield-style map, much bigger than Arena and Depot (320 m across,

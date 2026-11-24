@@ -318,7 +318,12 @@ impl Server {
 
     /// Like `bind`, for a lobby whose password is known only as the
     /// `protocol_id` it makes (`settings.password` is then ignored).
-    pub fn bind_with_key(settings: ServerSettings, protocol_key: u64) -> io::Result<Server> {
+    pub fn bind_with_key(mut settings: ServerSettings, protocol_key: u64) -> io::Result<Server> {
+        // A map that is not played in the mode asked for (`--map` checks
+        // this): its first mode instead.
+        if !map::plays(settings.map, settings.mode) {
+            settings.mode = (0..MODE_NAMES.len() as u8).find(|mode| map::plays(settings.map, *mode)).unwrap_or(MODE_FFA);
+        }
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, settings.port))?;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -785,7 +790,12 @@ impl Server {
             ClientMsg::StartMatch if is_leader && self.phase == Phase::Lobby => self.start_match(),
             ClientMsg::EndMatch if is_leader && self.phase == Phase::Playing => self.end_match(Winner::Nobody),
             ClientMsg::NextMode if is_leader && self.phase == Phase::Lobby => {
-                self.settings.mode = (self.settings.mode + 1) % MODE_NAMES.len() as u8;
+                // The next mode the map is played in.
+                let modes = MODE_NAMES.len() as u8;
+                self.settings.mode = (1..=modes)
+                    .map(|step| (self.settings.mode + step) % modes)
+                    .find(|mode| map::plays(self.settings.map, *mode))
+                    .unwrap_or(self.settings.mode);
                 // Into or out of conquest: the flagpoles go up or come down.
                 if self.map.has_flagpoles() != (self.settings.mode == MODE_CONQUEST) {
                     self.map = Map::for_game(self.settings.map, self.settings.mode);
@@ -809,7 +819,12 @@ impl Server {
                 self.roster_dirty = true;
             }
             ClientMsg::NextMap if is_leader && self.phase == Phase::Lobby => {
-                self.settings.map = (self.settings.map + 1) % map::MAP_NAMES.len() as u8;
+                // The next map played in this mode.
+                let maps = map::MAP_NAMES.len() as u8;
+                self.settings.map = (1..=maps)
+                    .map(|step| (self.settings.map + step) % maps)
+                    .find(|id| map::plays(*id, self.settings.mode))
+                    .unwrap_or(self.settings.map);
                 self.map = Map::for_game(self.settings.map, self.settings.mode);
                 self.nav = NavGrid::new(&self.map);
                 self.roster_dirty = true;
@@ -1801,9 +1816,7 @@ fn bot_move(
             bot.path = nav.path(map, feet, goal).unwrap_or_default();
             bot.path_to = Some(goal);
         }
-        while bot.path.first().is_some_and(|next| (*next - player.pos).with_y(0.0).length() < 1.0) {
-            bot.path.remove(0);
-        }
+        crate::nav::pass_waypoints(map, &mut bot.path, player.pos);
         if let Some(next) = bot.path.first() {
             steer = *next;
         }
@@ -2011,6 +2024,48 @@ mod tests {
             panic!("not a roster");
         };
         assert_eq!(air_accel, DEFAULT_AIR_ACCEL);
+    }
+
+    /// Hamlet (map 3) is for free for all and team deathmatch only: changing
+    /// the mode there skips the others, and changing the map in those other
+    /// modes skips Hamlet.
+    #[test]
+    fn hamlet_is_only_offered_in_the_modes_it_is_played_in() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            map: 3,
+            mode: MODE_CONQUEST,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        assert_eq!(server.settings.mode, MODE_FFA, "started in a mode Hamlet has");
+        server.join_counter += 1;
+        let player = server.new_player("P".into(), None);
+        server.players.insert(1, player);
+        let mut modes = Vec::new();
+        for _ in 0..3 {
+            server.handle_message(1, ClientMsg::NextMode);
+            modes.push(server.settings.mode);
+        }
+        assert_eq!(modes, [MODE_TEAMS, MODE_FFA, MODE_TEAMS]);
+        let mut maps = Vec::new();
+        for _ in 0..4 {
+            server.handle_message(1, ClientMsg::NextMap);
+            maps.push(server.settings.map);
+        }
+        assert_eq!(maps, [0, 1, 2, 3]);
+        assert_eq!(server.map.id, 3);
+        // In conquest, from Valley on to Arena.
+        server.handle_message(1, ClientMsg::NextMap);
+        server.handle_message(1, ClientMsg::NextMode);
+        server.handle_message(1, ClientMsg::NextMode);
+        assert_eq!(server.settings.mode, MODE_CONQUEST);
+        server.handle_message(1, ClientMsg::NextMap);
+        server.handle_message(1, ClientMsg::NextMap);
+        assert_eq!(server.settings.map, 2);
+        server.handle_message(1, ClientMsg::NextMap);
+        assert_eq!(server.settings.map, 0, "Hamlet skipped");
+        assert!(server.map.has_flagpoles());
     }
 
     #[test]
