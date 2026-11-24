@@ -38,7 +38,7 @@ impl Plugin for MinimapPlugin {
             .add_systems(OnEnter(AppState::Playing), (spawn_minimap, reset_choice))
             .add_systems(
                 Update,
-                (update_minimap, update_deploy_map, send_choice).run_if(in_state(AppState::Playing)),
+                (update_minimap, update_deploy_map, update_deploy_mates, send_choice).run_if(in_state(AppState::Playing)),
             );
     }
 }
@@ -95,6 +95,9 @@ struct DeployPoint(u8);
 
 #[derive(Component)]
 struct DeployCaption;
+
+#[derive(Component)]
+struct DeployMate;
 
 fn make_arrow(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     // A triangle pointing up.
@@ -324,15 +327,17 @@ fn update_minimap(
     map: Res<GameMap>,
     player: Res<LocalPlayer>,
     picture: Option<Res<MapPicture>>,
-    minimap: Query<Entity, With<Minimap>>,
+    mut minimap: Query<(Entity, &mut Visibility), (With<Minimap>, Without<MinimapFlag>)>,
     remotes: Query<(&RemotePlayer, &Transform)>,
     mut flags: Query<(&MinimapFlag, &mut Node, &mut BorderColor, &mut Visibility), Without<MinimapSelf>>,
     mut me: Query<(&mut Node, &mut UiTransform), (With<MinimapSelf>, Without<MinimapFlag>)>,
     mates: Query<Entity, With<MinimapMate>>,
 ) {
-    let (Some(picture), Ok(minimap)) = (picture, minimap.single()) else {
+    let (Some(picture), Ok((minimap, mut shown))) = (picture, minimap.single_mut()) else {
         return;
     };
+    // Out of the way of the death screen (and, in conquest, its own map).
+    shown.set_if_neq(if player.on_death_screen() { Visibility::Hidden } else { Visibility::Inherited });
     let conquest = session.mode == MODE_CONQUEST;
     let inner = MINIMAP - 4.0;
     let place = |at: Vec3, size: f32| {
@@ -521,6 +526,53 @@ fn update_deploy_map(
     };
     for mut text in &mut caption {
         set_text(&mut text, words.clone());
+    }
+}
+
+/// Our living teammates on the death screen's map, as on the minimap:
+/// rebuilt every frame, over the flags but letting clicks through to them.
+fn update_deploy_mates(
+    mut commands: Commands,
+    session: Res<Session>,
+    player: Res<LocalPlayer>,
+    picture: Option<Res<MapPicture>>,
+    holder: Query<Entity, With<DeployPicture>>,
+    remotes: Query<(&RemotePlayer, &Transform)>,
+    mates: Query<Entity, With<DeployMate>>,
+) {
+    for entity in &mates {
+        commands.entity(entity).despawn();
+    }
+    let (Some(picture), Ok(holder)) = (picture, holder.single()) else {
+        return;
+    };
+    if session.mode != MODE_CONQUEST || !player.on_death_screen() {
+        return;
+    }
+    let inner = DEPLOY - 4.0;
+    let size = 11.0;
+    for (remote, transform) in &remotes {
+        if !remote.alive || session.enemies(session.my_id, remote.id) {
+            continue;
+        }
+        let p = picture.place(transform.translation, inner).clamp(Vec2::ZERO, Vec2::splat(inner));
+        commands.spawn((
+            DeployMate,
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(p.x - size / 2.0),
+                top: px(p.y - size / 2.0),
+                width: px(size),
+                height: px(size),
+                border: UiRect::all(px(1.5)),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(ALLY),
+            BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+            Pickable::IGNORE,
+            ChildOf(holder),
+        ));
     }
 }
 
