@@ -1,12 +1,22 @@
 //! Sound. There are no audio files: every effect is synthesised at startup
-//! and handed to Bevy as an in-memory WAV. Other players' sounds are spatial,
-//! so you can hear where shots and footsteps come from.
+//! and handed to Bevy as in-memory samples. Other players' sounds are placed
+//! around us, so you can hear where shots and footsteps come from: louder in
+//! the ear facing them, and duller when they are behind.
 
-use std::{collections::HashMap, f32::consts::TAU};
+use std::{
+    collections::HashMap,
+    f32::consts::{FRAC_PI_4, TAU},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use bevy::{
-    audio::{SpatialListener, SpatialScale, Volume},
+    audio::{AddAudioSource, ChannelCount, Decodable, Sample, SampleRate, Source, Volume},
     prelude::*,
+    transform::TransformSystems,
 };
 
 use crate::{
@@ -19,7 +29,7 @@ use crate::{
     protocol::PlayerId,
     weapons::{DMR, GUN_COUNT, PISTOL, RIFLE, SHOTGUN, SMG, SNIPER, WeaponId, weapon},
     remote::{RemotePlayer, RemoteSystems},
-    world::GameMap,
+    world::{GameMap, MainCamera},
 };
 
 const SAMPLE_RATE: u32 = 44_100;
@@ -45,7 +55,8 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<SoundCue>()
+        app.add_audio_source::<Clip>()
+            .add_message::<SoundCue>()
             .insert_resource(GlobalVolume::new(Volume::Linear(0.64)))
             .add_systems(Startup, setup)
             .add_systems(
@@ -58,7 +69,9 @@ impl Plugin for AudioPlugin {
                     play_cues,
                 )
                     .chain(),
-            );
+            )
+            // Once the camera has moved this frame.
+            .add_systems(PostUpdate, place_sounds.after(TransformSystems::Propagate));
     }
 }
 
@@ -139,44 +152,44 @@ pub struct SoundCue {
 #[derive(Resource)]
 struct Sounds {
     /// Indexed by weapon: close by, and far off (see `NEAR_SHOT`).
-    gunshots: Vec<Vec<Handle<AudioSource>>>,
-    distant_gunshots: Vec<Vec<Handle<AudioSource>>>,
-    bolt_back: Handle<AudioSource>,
-    bolt_home: Handle<AudioSource>,
+    gunshots: Vec<Vec<Handle<Clip>>>,
+    distant_gunshots: Vec<Vec<Handle<Clip>>>,
+    bolt_back: Handle<Clip>,
+    bolt_home: Handle<Clip>,
     /// Indexed by `Surface`: a few takes of each, so no two steps in a row
     /// sound the same.
-    footsteps: [Vec<Handle<AudioSource>>; Surface::COUNT],
-    landings: [Vec<Handle<AudioSource>>; Surface::COUNT],
+    footsteps: [Vec<Handle<Clip>>; Surface::COUNT],
+    landings: [Vec<Handle<Clip>>; Surface::COUNT],
     /// The take of a footstep played last, not to be played again next.
     last_footstep: usize,
-    pin: Handle<AudioSource>,
-    throw: Handle<AudioSource>,
+    pin: Handle<Clip>,
+    throw: Handle<Clip>,
     /// Indexed by `Surface`.
-    bounces: [Vec<Handle<AudioSource>>; Surface::COUNT],
-    rolls: [Vec<Handle<AudioSource>>; Surface::COUNT],
+    bounces: [Vec<Handle<Clip>>; Surface::COUNT],
+    rolls: [Vec<Handle<Clip>>; Surface::COUNT],
     /// Close by, and far off (see `NEAR_BLAST`).
-    explosions: [Vec<Handle<AudioSource>>; 2],
-    flashbangs: [Vec<Handle<AudioSource>>; 2],
-    tick: Handle<AudioSource>,
-    chime: Handle<AudioSource>,
-    shatter: Handle<AudioSource>,
-    charge: Handle<AudioSource>,
-    smoke: Handle<AudioSource>,
-    ring: Handle<AudioSource>,
-    beep: Handle<AudioSource>,
-    blip: Handle<AudioSource>,
-    click: Handle<AudioSource>,
-    draw: Handle<AudioSource>,
-    rustle: Handle<AudioSource>,
+    explosions: [Vec<Handle<Clip>>; 2],
+    flashbangs: [Vec<Handle<Clip>>; 2],
+    tick: Handle<Clip>,
+    chime: Handle<Clip>,
+    shatter: Handle<Clip>,
+    charge: Handle<Clip>,
+    smoke: Handle<Clip>,
+    ring: Handle<Clip>,
+    beep: Handle<Clip>,
+    blip: Handle<Clip>,
+    click: Handle<Clip>,
+    draw: Handle<Clip>,
+    rustle: Handle<Clip>,
     /// These three indexed by weapon.
-    mag_out: Vec<Handle<AudioSource>>,
-    mag_in: Vec<Handle<AudioSource>>,
-    bolt_pull: Vec<Handle<AudioSource>>,
-    bolt: Vec<Handle<AudioSource>>,
+    mag_out: Vec<Handle<Clip>>,
+    mag_in: Vec<Handle<Clip>>,
+    bolt_pull: Vec<Handle<Clip>>,
+    bolt: Vec<Handle<Clip>>,
     /// Indexed by `Surface`.
-    mag_drops: [Vec<Handle<AudioSource>>; Surface::COUNT],
-    shell_in: Handle<AudioSource>,
-    pump: Handle<AudioSource>,
+    mag_drops: [Vec<Handle<Clip>>; Surface::COUNT],
+    shell_in: Handle<Clip>,
+    pump: Handle<Clip>,
     /// Seconds since our ears started ringing: the world sounds muffled
     /// and far away for a while after.
     deafened: f32,
@@ -184,10 +197,11 @@ struct Sounds {
     rng: u32,
 }
 
-fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
+fn setup(mut commands: Commands, mut clips: ResMut<Assets<Clip>>) {
     let mut add = |samples: Vec<f32>| {
-        sources.add(AudioSource {
-            bytes: wav_bytes(&samples).into(),
+        clips.add(Clip {
+            samples: samples.iter().map(|sample| sample.clamp(-1.0, 1.0)).collect(),
+            panner: None,
         })
     };
     commands.insert_resource(Sounds {
@@ -239,7 +253,8 @@ fn play_cues(
     mut commands: Commands,
     mut cues: MessageReader<SoundCue>,
     mut sounds: ResMut<Sounds>,
-    listener: Query<&GlobalTransform, With<SpatialListener>>,
+    mut clips: ResMut<Assets<Clip>>,
+    listener: Query<&GlobalTransform, With<MainCamera>>,
     time: Res<Time>,
 ) {
     sounds.deafened += time.delta_secs();
@@ -372,16 +387,19 @@ fn play_cues(
                 .with_speed(speed);
             match cue.at {
                 None => {
-                    commands.spawn((AudioPlayer::new(source), settings));
+                    commands.spawn((AudioPlayer(source), settings));
                 }
-                Some(position) => {
-                    commands.spawn((
-                        AudioPlayer::new(source),
-                        settings
-                            .with_spatial(true)
-                            .with_spatial_scale(SpatialScale::new(1.0 / range)),
-                        Transform::from_translation(position),
-                    ));
+                Some(at) => {
+                    let Some(samples) = clips.get(&source).map(|clip| clip.samples.clone()) else {
+                        continue;
+                    };
+                    let heard_as = listener.single().map_or(Placement::CENTRE, |ears| placement(ears, at, range));
+                    let panner = Arc::new(Panner::new(heard_as));
+                    let clip = clips.add(Clip {
+                        samples,
+                        panner: Some(panner.clone()),
+                    });
+                    commands.spawn((AudioPlayer(clip), settings, Emitter { at, range, panner }));
                 }
             }
         }
@@ -389,7 +407,7 @@ fn play_cues(
 }
 
 /// One of a sound's takes, chosen by `random` (0..1).
-fn pick(takes: &[Handle<AudioSource>], random: f32) -> Handle<AudioSource> {
+fn pick(takes: &[Handle<Clip>], random: f32) -> Handle<Clip> {
     takes[(random * 997.0) as usize % takes.len()].clone()
 }
 
@@ -401,8 +419,213 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
 
 /// The sound for `weapon_id` from a list of one per gun (the rifle's for
 /// anything else).
-fn by_weapon(sounds: &[Handle<AudioSource>], weapon_id: WeaponId) -> Handle<AudioSource> {
+fn by_weapon(sounds: &[Handle<Clip>], weapon_id: WeaponId) -> Handle<Clip> {
     sounds.get(weapon_id as usize).unwrap_or(&sounds[RIFLE as usize]).clone()
+}
+
+// ---------------------------------------------------------------- placing
+
+/// How far a sound right to one side is turned towards that ear: 0 plays it
+/// the same in both, 1 only in the near one. Hard to one side, the far ear
+/// gets about a quarter of the near one (12 dB less).
+const PAN_WIDTH: f32 = 0.7;
+/// How much of a sound's treble is taken off when it is right behind us
+/// (0 none, 1 all of it above `BEHIND_CUTOFF`), as the head shades it.
+const BEHIND_MUFFLE: f32 = 0.65;
+const BEHIND_CUTOFF: f32 = 2_000.0;
+/// Closer than this (metres) a sound is in our face: it has no side.
+const SIDELESS_RANGE: f32 = 0.5;
+/// Seconds a playing sound takes to follow us turning, so the change is
+/// smooth rather than a click.
+const PAN_EASE_TIME: f32 = 0.01;
+/// Samples between looks at where a playing sound should now be heard.
+const PAN_UPDATE_SAMPLES: usize = 64;
+
+/// One of our synthesised sounds: mono samples at `SAMPLE_RATE`. Ours are
+/// played as they are; somebody else's are played in stereo, steered by a
+/// `Panner`.
+#[derive(Asset, TypePath)]
+pub struct Clip {
+    samples: Arc<[f32]>,
+    panner: Option<Arc<Panner>>,
+}
+
+/// How loud a sound is in each ear, and how muffled (0..1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Placement {
+    left: f32,
+    right: f32,
+    muffle: f32,
+}
+
+impl Placement {
+    /// Straight ahead and close.
+    const CENTRE: Placement = Placement {
+        left: std::f32::consts::FRAC_1_SQRT_2,
+        right: std::f32::consts::FRAC_1_SQRT_2,
+        muffle: 0.0,
+    };
+
+    fn towards(self, target: Placement, amount: f32) -> Placement {
+        Placement {
+            left: self.left + (target.left - self.left) * amount,
+            right: self.right + (target.right - self.right) * amount,
+            muffle: self.muffle + (target.muffle - self.muffle) * amount,
+        }
+    }
+}
+
+/// Where a playing sound should be heard, set by `place_sounds` each frame
+/// and read by the audio thread as it plays.
+struct Panner {
+    left: AtomicU32,
+    right: AtomicU32,
+    muffle: AtomicU32,
+}
+
+impl Panner {
+    fn new(placement: Placement) -> Panner {
+        Panner {
+            left: AtomicU32::new(placement.left.to_bits()),
+            right: AtomicU32::new(placement.right.to_bits()),
+            muffle: AtomicU32::new(placement.muffle.to_bits()),
+        }
+    }
+
+    fn set(&self, placement: Placement) {
+        self.left.store(placement.left.to_bits(), Ordering::Relaxed);
+        self.right.store(placement.right.to_bits(), Ordering::Relaxed);
+        self.muffle.store(placement.muffle.to_bits(), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> Placement {
+        Placement {
+            left: f32::from_bits(self.left.load(Ordering::Relaxed)),
+            right: f32::from_bits(self.right.load(Ordering::Relaxed)),
+            muffle: f32::from_bits(self.muffle.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+/// A playing sound of somebody else's: where it came from, and the panner
+/// to keep pointing at it as we move and turn.
+#[derive(Component)]
+struct Emitter {
+    at: Vec3,
+    /// Full volume inside this many metres.
+    range: f32,
+    panner: Arc<Panner>,
+}
+
+/// How a sound at `at` is heard by `ears`: full volume inside `range` metres
+/// and falling off with the square of the distance past it; louder in the
+/// ear facing it (keeping the same power as it moves round), and duller
+/// behind us.
+fn placement(ears: &GlobalTransform, at: Vec3, range: f32) -> Placement {
+    let offset = at - ears.translation();
+    let distance = offset.length();
+    let loudness = (range / distance.max(1e-3)).powi(2).min(1.0);
+    let sided = (distance / SIDELESS_RANGE).min(1.0);
+    let towards = offset.normalize_or_zero();
+    let side = towards.dot(*ears.right()) * sided;
+    let behind = (-towards.dot(*ears.forward())).max(0.0) * sided;
+    let angle = FRAC_PI_4 * (1.0 + PAN_WIDTH * side);
+    Placement {
+        left: angle.cos() * loudness,
+        right: angle.sin() * loudness,
+        muffle: BEHIND_MUFFLE * behind,
+    }
+}
+
+/// Points every playing sound of somebody else's at where it came from, as
+/// we are now.
+fn place_sounds(ears: Query<&GlobalTransform, With<MainCamera>>, emitters: Query<&Emitter>) {
+    let Ok(ears) = ears.single() else {
+        return;
+    };
+    for emitter in &emitters {
+        emitter.panner.set(placement(ears, emitter.at, emitter.range));
+    }
+}
+
+impl Decodable for Clip {
+    type Decoder = ClipPlayer;
+
+    fn decoder(&self) -> ClipPlayer {
+        let now = self.panner.as_ref().map_or(Placement::CENTRE, |panner| panner.get());
+        ClipPlayer {
+            samples: self.samples.clone(),
+            panner: self.panner.clone(),
+            next: 0,
+            now,
+            target: now,
+            low: 0.0,
+            right: None,
+        }
+    }
+}
+
+/// Plays a `Clip`: mono as it is, or as stereo (left sample, then right)
+/// when it has a panner.
+pub struct ClipPlayer {
+    samples: Arc<[f32]>,
+    panner: Option<Arc<Panner>>,
+    /// The next mono sample.
+    next: usize,
+    /// How it is heard now, easing towards `target`.
+    now: Placement,
+    target: Placement,
+    /// The sound through a low pass, blended in as it goes behind us.
+    low: f32,
+    /// The right ear's sample, given after the left's.
+    right: Option<f32>,
+}
+
+impl Iterator for ClipPlayer {
+    type Item = Sample;
+
+    fn next(&mut self) -> Option<Sample> {
+        if let Some(right) = self.right.take() {
+            return Some(right as Sample);
+        }
+        let dry = *self.samples.get(self.next)?;
+        self.next += 1;
+        let Some(panner) = &self.panner else {
+            return Some(dry as Sample);
+        };
+        if self.next % PAN_UPDATE_SAMPLES == 0 {
+            self.target = panner.get();
+        }
+        self.now = self.now.towards(self.target, 1.0 / (PAN_EASE_TIME * SAMPLE_RATE as f32));
+        self.low += (1.0 - (-TAU * BEHIND_CUTOFF / SAMPLE_RATE as f32).exp()) * (dry - self.low);
+        let sample = dry + self.now.muffle * (self.low - dry);
+        self.right = Some(sample * self.now.right);
+        Some((sample * self.now.left) as Sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let channels = self.channels().get() as usize;
+        let left = (self.samples.len() - self.next) * channels + self.right.is_some() as usize;
+        (left, Some(left))
+    }
+}
+
+impl Source for ClipPlayer {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> ChannelCount {
+        ChannelCount::new(if self.panner.is_some() { 2 } else { 1 }).unwrap()
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate::new(SAMPLE_RATE).unwrap()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs_f32(self.samples.len() as f32 / SAMPLE_RATE as f32))
+    }
 }
 
 /// Our own steps: one per stride while running on the ground, plus a thump on landing.
@@ -1967,8 +2190,16 @@ fn samples(seconds: f32, mut wave: impl FnMut(f32) -> f32) -> Vec<f32> {
         .collect()
 }
 
-/// Wraps mono samples in a 16-bit PCM WAV file.
+/// Wraps mono samples in a 16-bit PCM WAV file, for listening to them
+/// outside the game.
+#[cfg(test)]
 fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+    wav_bytes_in(samples, 1)
+}
+
+/// The same for samples of `channels` interleaved channels.
+#[cfg(test)]
+fn wav_bytes_in(samples: &[f32], channels: u16) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
     let mut bytes = Vec::with_capacity(44 + data_len as usize);
     bytes.extend_from_slice(b"RIFF");
@@ -1976,10 +2207,10 @@ fn wav_bytes(samples: &[f32]) -> Vec<u8> {
     bytes.extend_from_slice(b"WAVEfmt ");
     bytes.extend_from_slice(&16u32.to_le_bytes()); // format chunk size
     bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&channels.to_le_bytes());
     bytes.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-    bytes.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes()); // bytes per second
-    bytes.extend_from_slice(&2u16.to_le_bytes()); // bytes per frame
+    bytes.extend_from_slice(&(SAMPLE_RATE * 2 * channels as u32).to_le_bytes()); // bytes per second
+    bytes.extend_from_slice(&(2 * channels).to_le_bytes()); // bytes per frame
     bytes.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data_len.to_le_bytes());
@@ -2001,6 +2232,145 @@ fn next_random(state: &mut u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ears at the origin, turned `yaw` radians left from looking down -Z.
+    fn ears(yaw: f32) -> GlobalTransform {
+        GlobalTransform::from(Transform::from_rotation(Quat::from_rotation_y(yaw)))
+    }
+
+    #[test]
+    fn sounds_are_louder_in_the_ear_facing_them() {
+        let right = placement(&ears(0.0), Vec3::X * 5.0, 10.0);
+        let left = placement(&ears(0.0), Vec3::NEG_X * 5.0, 10.0);
+        assert!(right.right > 3.5 * right.left, "{right:?}");
+        assert!(left.left > 3.5 * left.right, "{left:?}");
+        // Turned to face it, it is ahead.
+        let faced = placement(&ears(-std::f32::consts::FRAC_PI_2), Vec3::X * 5.0, 10.0);
+        assert!((faced.left - faced.right).abs() < 1e-4, "{faced:?}");
+        // The same power wherever it is round us.
+        for heard in [right, left, faced] {
+            assert!((heard.left.powi(2) + heard.right.powi(2) - 1.0).abs() < 1e-4, "{heard:?}");
+        }
+    }
+
+    #[test]
+    fn sounds_behind_are_duller_and_ahead_are_not() {
+        let ahead = placement(&ears(0.0), Vec3::NEG_Z * 5.0, 10.0);
+        let behind = placement(&ears(0.0), Vec3::Z * 5.0, 10.0);
+        let side = placement(&ears(0.0), Vec3::X * 5.0, 10.0);
+        assert_eq!(ahead.muffle, 0.0);
+        assert_eq!(side.muffle, 0.0);
+        assert!((behind.muffle - BEHIND_MUFFLE).abs() < 1e-4);
+        assert!((ahead.left - behind.left).abs() < 1e-4 && (ahead.right - behind.right).abs() < 1e-4);
+        // Treble is what goes.
+        let hiss = |at: Vec3| {
+            let panner = Arc::new(Panner::new(placement(&ears(0.0), at, 10.0)));
+            let clip = Clip {
+                samples: samples(0.2, |t| (TAU * 6_000.0 * t).sin()).into(),
+                panner: Some(panner),
+            };
+            clip.decoder().skip(2_000).fold(0.0_f32, |loudest, s| loudest.max(s.abs() as f32))
+        };
+        assert!(hiss(Vec3::Z * 5.0) < 0.6 * hiss(Vec3::NEG_Z * 5.0));
+    }
+
+    #[test]
+    fn sounds_fade_past_their_range() {
+        let near = placement(&ears(0.0), Vec3::NEG_Z * 10.0, 10.0);
+        let far = placement(&ears(0.0), Vec3::NEG_Z * 20.0, 10.0);
+        assert!((far.left / near.left - 0.25).abs() < 1e-4);
+        // Right on top of us: no side, no muffle, full volume.
+        let close = placement(&ears(0.0), Vec3::new(0.0, -0.01, 0.01), 4.0);
+        assert!((close.left - close.right).abs() < 0.05 && close.muffle < 0.05, "{close:?}");
+    }
+
+    #[test]
+    fn clips_play_left_then_right_and_ours_as_they_are() {
+        let sound: Arc<[f32]> = vec![0.5; 100].into();
+        let ours = Clip {
+            samples: sound.clone(),
+            panner: None,
+        }
+        .decoder();
+        assert_eq!(ours.channels().get(), 1);
+        assert_eq!(ours.collect::<Vec<_>>(), vec![0.5 as Sample; 100]);
+
+        let on_the_right = Arc::new(Panner::new(placement(&ears(0.0), Vec3::X * 5.0, 10.0)));
+        let theirs = Clip {
+            samples: sound,
+            panner: Some(on_the_right.clone()),
+        }
+        .decoder();
+        assert_eq!(theirs.channels().get(), 2);
+        assert_eq!(theirs.size_hint(), (200, Some(200)));
+        let played: Vec<_> = theirs.collect();
+        assert_eq!(played.len(), 200);
+        let (left, right) = (played[0] as f32, played[1] as f32);
+        assert!(right > 3.5 * left && left > 0.0, "left {left} right {right}");
+    }
+
+    /// For headphones: `cargo test write_directions -- --ignored`, then play
+    /// `target/sounds/directions.wav`. A rifle shot 8 m away comes from the
+    /// right, the left, ahead and behind, one second apart, then footsteps
+    /// walk once round us.
+    #[test]
+    #[ignore]
+    fn write_directions() {
+        let dir = std::env::var("SOUND_DIR").unwrap_or_else(|_| "target/sounds".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let rate = SAMPLE_RATE as usize;
+        let heard = |sound: Vec<f32>, at: Vec3, range: f32| -> Vec<f32> {
+            let clip = Clip {
+                samples: sound.into(),
+                panner: Some(Arc::new(Panner::new(placement(&ears(0.0), at, range)))),
+            };
+            clip.decoder().map(|sample| sample as f32).collect()
+        };
+        let mut out = vec![0.0_f32; 2 * rate * 10];
+        let mut mix = |stereo: &[f32], at_seconds: f32| {
+            let start = 2 * (at_seconds * rate as f32) as usize;
+            for (i, sample) in stereo.iter().enumerate() {
+                if let Some(slot) = out.get_mut(start + i) {
+                    *slot += sample;
+                }
+            }
+        };
+        for (second, at) in [Vec3::X, Vec3::NEG_X, Vec3::NEG_Z, Vec3::Z].into_iter().enumerate() {
+            mix(&heard(synth_gunshot(RIFLE, 0, false), at * 8.0, GUNSHOT_FULL_VOLUME_RANGE), second as f32);
+        }
+        // Round us clockwise from ahead, a step every 0.3 s.
+        for step in 0..16 {
+            let angle = step as f32 / 16.0 * TAU;
+            let at = Vec3::new(angle.sin(), -1.6, -angle.cos()) * 3.0;
+            let sound = synth_footstep(Surface::ALL[0], step % FOOTSTEP_TAKES, false);
+            mix(&heard(sound, at, FOOTSTEP_FULL_VOLUME_RANGE), 4.5 + step as f32 * 0.3);
+        }
+        std::fs::write(format!("{dir}/directions.wav"), wav_bytes_in(&out, 2)).unwrap();
+    }
+
+    #[test]
+    fn a_playing_sound_follows_us_turning() {
+        let panner = Arc::new(Panner::new(placement(&ears(0.0), Vec3::X * 5.0, 10.0)));
+        let mut player = Clip {
+            samples: vec![0.5; SAMPLE_RATE as usize].into(),
+            panner: Some(panner.clone()),
+        }
+        .decoder();
+        let frame = |player: &mut ClipPlayer| (player.next().unwrap() as f32, player.next().unwrap() as f32);
+        let (left, right) = frame(&mut player);
+        assert!(right > left);
+        // We turn round: it is on our left now.
+        panner.set(placement(&ears(std::f32::consts::PI), Vec3::X * 5.0, 10.0));
+        // Not at once, which would click...
+        let (left, right) = frame(&mut player);
+        assert!(right > left);
+        // ...but within a few hundredths of a second.
+        for _ in 0..(0.05 * SAMPLE_RATE as f32) as usize {
+            frame(&mut player);
+        }
+        let (left, right) = frame(&mut player);
+        assert!(left > 3.5 * right, "left {left} right {right}");
+    }
 
     #[test]
     fn sounds_are_audible_and_do_not_clip() {

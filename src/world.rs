@@ -169,8 +169,6 @@ fn setup(
     commands.spawn((
         MainCamera,
         Camera3d::default(),
-        // Ears, for spatial audio.
-        SpatialListener::new(0.3),
         Projection::from(PerspectiveProjection {
             fov: crate::player::BASE_FOV,
             near: 0.01,
