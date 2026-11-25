@@ -230,19 +230,39 @@ b.box("Base", -0.012, 0.012, -0.013, 0.023, 0.0, top)
 b.box("Clamp", -0.0148, -0.012, -0.007, 0.017, 0.0, top * 0.8)
 for y in (-0.003, 0.013):
     b.cylinder_x(f"ClampBolt{int(y > 0)}", 0.0025, -0.018, -0.0148, y, top * 0.45)
-# The turrets: on top, and on the left on a flat pad. Neither may reach into
-# the window, which is widest at the bottom of its front (`flare` times
-# `width`), so the pad starts just outside that and fills the gap to the
-# sloping, flaring wall.
+# The turrets: on top, and on the left. The wall there slopes in towards the
+# top and out towards the front, so the windage turret's end is set at a
+# depth that is inside the wall all over it: past the outside of the wall
+# everywhere, so it sits flush, and short of the window everywhere, so it
+# does not show through it.
 turret_y, turret_radius = 0.004, 0.0048
 roof = AXIS_Z + height / 2 + wall
 b.cylinder_z("ElevationTurret", turret_radius, 0.0, turret_y, roof - 0.001, roof + 0.0045, segments=20)
 b.cylinder_z("ElevationCap", 0.0052, 0.0, turret_y, roof + 0.0045, roof + 0.006, segments=20)
-pad_in = 1.22 * width / 2 + 0.0003
-pad_out = pad_in + 0.002
-b.box("WindagePad", -pad_out, -pad_in, turret_y - 0.0055, turret_y + 0.0055, AXIS_Z - 0.0058, AXIS_Z + 0.0058)
-b.cylinder_x("WindageTurret", turret_radius, -pad_out - 0.0045, -pad_out, turret_y, AXIS_Z)
-b.cylinder_x("WindageCap", 0.0052, -pad_out - 0.006, -pad_out - 0.0045, turret_y, AXIS_Z)
+
+
+def side_x(y, dz, extra):
+    """How far out the side of the 3x's housing is at `y`, `dz` above the
+    axis: its window (`extra` 0) or the outside of its wall (`extra` the
+    wall), on the straight run between the corners, as `outline` makes it."""
+    scale = 1.0 + (1.22 - 1.0) * (y - back) / (front - back)
+    bottom, top = width * scale / 2 - CORNER, width * scale * TOP_NARROWING / 2 - CORNER
+    low, high = -height * scale / 2 + CORNER, height * scale / 2 - CORNER
+    # Along the line through the corners' centres, then out by the radius.
+    along = (dz - low) / (high - low)
+    centre = bottom + (top - bottom) * along
+    slope = math.atan2(top - bottom, high - low)
+    return centre + (CORNER + extra) / math.cos(slope)
+
+
+knob = 0.0042
+disc = [(turret_y + knob * math.cos(a), knob * math.sin(a)) for a in (i * math.tau / 24 for i in range(24))]
+window = max(side_x(y, dz, 0.0) for y, dz in disc)
+outside = min(side_x(y, dz, wall) for y, dz in disc)
+assert window < outside, "the windage turret has no room in the wall"
+seat = (window + outside) / 2
+b.cylinder_x("WindageTurret", knob, -seat - 0.005, -seat, turret_y, AXIS_Z)
+b.cylinder_x("WindageCap", knob + 0.0004, -seat - 0.0065, -seat - 0.005, turret_y, AXIS_Z)
 glass_y = 0.017
 b.glass("Glass", width, height, glass_y, inside(1.22, front, back, glass_y))
 mark_y = glass_y - 0.0004
