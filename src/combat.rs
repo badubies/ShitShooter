@@ -19,7 +19,7 @@ use crate::{
     protocol::*,
     remote::{Gun, RemotePlayer, RemoteSystems},
     settings::{Action, ActionInput},
-    weapons::{Cycle, DRAW_TIME, KNIFE, KNIFE_RANGE, WeaponId, weapon, weapon_name},
+    weapons::{Cycle, DRAW_TIME, KNIFE, KNIFE_RANGE, WeaponId, weapon},
     world::{GameMap, SharedAssets, ViewModel},
 };
 
@@ -74,14 +74,38 @@ impl Plugin for CombatPlugin {
 
 /// Recent kills, newest last, with the seconds each line has left on screen.
 #[derive(Resource, Default)]
-pub struct KillFeed(pub Vec<(String, f32)>);
+pub struct KillFeed(pub Vec<FeedLine>);
+
+/// One line of the kill feed: `name [weapon picture] name tail`. A line with no
+/// weapon is just `name tail`, or a plain `tail` when it has no name either.
+pub struct FeedLine {
+    /// Seconds left on screen.
+    pub left: f32,
+    /// Who did it, with their team (`None` when teams do not count).
+    pub killer: Option<(String, Option<u8>)>,
+    /// What did it; the picture between the names.
+    pub weapon: Option<WeaponId>,
+    pub victim: Option<(String, Option<u8>)>,
+    /// Plain text after the names.
+    pub tail: String,
+}
 
 impl KillFeed {
-    fn push(&mut self, line: String) {
-        self.0.push((line, 6.0));
+    fn push(&mut self, line: FeedLine) {
+        self.0.push(line);
         if self.0.len() > 7 {
             self.0.remove(0);
         }
+    }
+
+    fn say(&mut self, text: String) {
+        self.push(FeedLine {
+            left: 6.0,
+            killer: None,
+            weapon: None,
+            victim: None,
+            tail: text,
+        });
     }
 }
 
@@ -692,9 +716,16 @@ fn handle_net(
             } => {
                 let me = session.my_id;
                 let (killer_name, victim_name) = (session.name_of(*killer), session.name_of(*victim));
+                let team_of = |id: PlayerId| session.team_mode().then(|| session.team_of(id));
                 let ended_streak = notices.streaks.remove(victim).unwrap_or(0) >= STREAKS[0].0;
                 if killer == victim {
-                    feed.push(format!("{victim_name} blew up"));
+                    feed.push(FeedLine {
+                        left: 6.0,
+                        killer: None,
+                        weapon: None,
+                        victim: Some((victim_name.to_string(), team_of(*victim))),
+                        tail: " blew up".to_string(),
+                    });
                     continue;
                 }
 
@@ -706,11 +737,13 @@ fn handle_net(
                 let streak = *streak;
                 let title = STREAKS.iter().find(|(kills, _)| *kills == streak).map(|(_, title)| *title);
 
-                let revenge_tag = if revenge { "  (revenge)" } else { "" };
-                feed.push(format!(
-                    "{killer_name}  [{}]  {victim_name}{revenge_tag}",
-                    weapon_name(*weapon_id)
-                ));
+                feed.push(FeedLine {
+                    left: 6.0,
+                    killer: Some((killer_name.to_string(), team_of(*killer))),
+                    weapon: Some(*weapon_id),
+                    victim: Some((victim_name.to_string(), team_of(*victim))),
+                    tail: if revenge { "  (revenge)".to_string() } else { String::new() },
+                });
 
                 if *killer == me {
                     // Our own kills are announced in the middle of the screen.
@@ -736,10 +769,10 @@ fn handle_net(
                 } else {
                     // Everybody else's go in the feed.
                     if let Some(title) = title {
-                        feed.push(format!("{killer_name} is on a {}!", title.to_lowercase()));
+                        feed.say(format!("{killer_name} is on a {}!", title.to_lowercase()));
                     }
                     if ended_streak {
-                        feed.push(format!("{killer_name} ended {victim_name}'s streak"));
+                        feed.say(format!("{killer_name} ended {victim_name}'s streak"));
                     }
                     if *victim == me && revenge {
                         notices.banner = Some((format!("{killer_name} got revenge"), 3.5));
@@ -755,9 +788,9 @@ fn age_feed(time: Res<Time>, mut feed: ResMut<KillFeed>, mut notices: ResMut<Not
     let dt = time.delta_secs();
     if !feed.0.is_empty() {
         for entry in &mut feed.0 {
-            entry.1 -= dt;
+            entry.left -= dt;
         }
-        feed.0.retain(|entry| entry.1 > 0.0);
+        feed.0.retain(|entry| entry.left > 0.0);
     }
     if notices.kill.is_some() || notices.banner.is_some() {
         let notices = &mut *notices;

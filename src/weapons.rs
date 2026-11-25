@@ -397,11 +397,6 @@ pub fn hit_damage(id: WeaponId, headshot: bool) -> i32 {
     }
 }
 
-/// Name for the kill feed.
-pub fn weapon_name(id: WeaponId) -> &'static str {
-    if id == GRENADE { "Grenade" } else { weapon(id).name }
-}
-
 /// The gun after `current` in the list, skipping the one in the other slot.
 pub fn next_gun(current: WeaponId, other_slot: WeaponId) -> WeaponId {
     step_gun(current, other_slot, 1)

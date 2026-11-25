@@ -26,11 +26,12 @@ use crate::{
     menu::{Field, MenuPage},
     net::{self, Connection, Session},
     paint::{Skins, palette_color},
-    loadout::{DeathLoadout, death_loadout, loadout_summary, on_open_loadout},
+    loadout::{DeathLoadout, Preview, Thumbnails, death_loadout, loadout_summary, on_open_loadout},
     paint_editor::on_open_paint,
     player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, ask_respawn},
     protocol::*,
     settings::{Action, ActionInput, Settings, on_open_settings},
+    weapons::{GRENADE, IRON_SIGHTS},
     world::{GameMap, MainCamera},
 };
 
@@ -1751,8 +1752,8 @@ enum Hud {
     Ping,
     Speed,
     DashLabel,
-    /// One line of the kill feed.
-    Feed(usize),
+    /// One piece of one line of the kill feed.
+    Feed(usize, FeedPart),
     /// "Get ready" before our first spawn.
     Center,
     /// On the death screen: who killed us.
@@ -1801,6 +1802,22 @@ enum Bar {
 /// The box around one line of the kill feed.
 #[derive(Component)]
 struct FeedRow(usize);
+
+/// The pieces of a kill feed line, left to right: killer, weapon picture,
+/// victim, and what follows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FeedPart {
+    Killer,
+    Victim,
+    Tail,
+}
+
+/// The weapon picture of a kill feed line.
+#[derive(Component)]
+struct FeedWeapon(usize);
+
+/// Size of a weapon picture in the kill feed (the pictures are 640 by 240).
+const FEED_PICTURE: Vec2 = Vec2::new(64.0, 24.0);
 
 /// The coloured shapes on the HUD.
 #[derive(Component, Clone, Copy)]
@@ -1964,11 +1981,27 @@ fn feed_row(row: usize) -> impl Bundle {
         Node {
             padding: UiRect::axes(px(10), px(3)),
             border_radius: BorderRadius::all(px(5)),
+            align_items: AlignItems::Center,
             display: Display::None,
             ..default()
         },
         BackgroundColor(HUD_PANEL),
-        children![hud_text(16.0, TEXT, Hud::Feed(row))],
+        children![
+            hud_text(16.0, TEXT, Hud::Feed(row, FeedPart::Killer)),
+            (
+                FeedWeapon(row),
+                Node {
+                    width: px(FEED_PICTURE.x),
+                    height: px(FEED_PICTURE.y),
+                    margin: UiRect::horizontal(px(8)),
+                    display: Display::None,
+                    ..default()
+                },
+                ImageNode::default(),
+            ),
+            hud_text(16.0, TEXT, Hud::Feed(row, FeedPart::Victim)),
+            hud_text(16.0, TEXT, Hud::Feed(row, FeedPart::Tail)),
+        ],
     )
 }
 
@@ -2733,6 +2766,7 @@ fn update_hud(
     fps.tick(time.delta_secs());
     let ping = connection.as_ref().map_or(0.0, |c| c.ping_ms());
     let top = top_bar(&session);
+    let my_team = session.team_of(session.my_id);
     let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
     let mode_name = MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?");
     let me = session.roster.iter().find(|p| p.id == session.my_id);
@@ -2797,8 +2831,23 @@ fn update_hud(
                 "DASH".to_string(),
                 if player.dash_cooldown <= 0.0 { TEXT } else { DIM },
             ),
-            Hud::Feed(row) => match feed.0.get(row) {
-                Some((line, left)) => (line.clone(), TEXT.with_alpha((left / 0.5).min(1.0))),
+            Hud::Feed(row, part) => match feed.0.get(row) {
+                Some(line) => {
+                    let fade = (line.left / 0.5).min(1.0);
+                    let named = match part {
+                        FeedPart::Killer => line.killer.as_ref(),
+                        FeedPart::Victim => line.victim.as_ref(),
+                        FeedPart::Tail => None,
+                    };
+                    match (part, named) {
+                        (FeedPart::Tail, _) => (line.tail.clone(), TEXT.with_alpha(fade)),
+                        (_, Some((name, team))) => {
+                            let color = team.map_or(TEXT, |team| team_color(my_team, team));
+                            (name.clone(), color.with_alpha(fade))
+                        }
+                        _ => (String::new(), TEXT),
+                    }
+                }
                 None => (String::new(), TEXT),
             },
             Hud::Center => {
@@ -2885,6 +2934,8 @@ fn update_hud_shapes(
     mut health_lag: Local<f32>,
     mut bars: Query<(&Bar, &mut Node, &mut BackgroundColor)>,
     mut rows: Query<(&FeedRow, &mut Node, &mut BackgroundColor), Without<Bar>>,
+    mut pictures: Query<(&FeedWeapon, &mut Node, &mut ImageNode), (Without<Bar>, Without<FeedRow>)>,
+    thumbnails: Res<Thumbnails>,
 ) {
     let health = if player.alive { player.health.max(0) } else { 0 };
     let health_part = health as f32 / MAX_HEALTH as f32;
@@ -2919,12 +2970,31 @@ fn update_hud_shapes(
     }
 
     for (row, mut node, mut background) in &mut rows {
-        let left = feed.0.get(row.0).map(|(_, left)| *left);
+        let left = feed.0.get(row.0).map(|line| line.left);
         set_shown(&mut node, left.is_some());
         // Fades out with its text.
         let color = HUD_PANEL.with_alpha(HUD_PANEL.alpha() * (left.unwrap_or(0.0) / 0.5).min(1.0));
         if background.0 != color {
             background.0 = color;
+        }
+    }
+
+    for (picture, mut node, mut image) in &mut pictures {
+        let line = feed.0.get(picture.0);
+        let preview = line.and_then(|line| line.weapon).map(|weapon_id| match weapon_id {
+            GRENADE => Preview::Grenade(FRAG),
+            id => Preview::Gun(id, IRON_SIGHTS),
+        });
+        let handle = preview.and_then(|preview| thumbnails.get(preview));
+        set_shown(&mut node, handle.is_some());
+        if let Some(handle) = handle
+            && image.image != handle
+        {
+            image.image = handle;
+        }
+        let color = Color::WHITE.with_alpha(line.map_or(0.0, |line| (line.left / 0.5).min(1.0)));
+        if image.color != color {
+            image.color = color;
         }
     }
 }
