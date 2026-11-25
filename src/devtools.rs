@@ -4,7 +4,7 @@
 use std::{collections::VecDeque, path::PathBuf, time::SystemTime};
 
 use bevy::{
-    camera::{ImageRenderTarget, NormalizedRenderTarget, RenderTarget, ShadowLodOrigin},
+    camera::{ImageRenderTarget, NormalizedRenderTarget, RenderTarget, ShadowLodOrigin, visibility::RenderLayers},
     render::render_resource::{TextureFormat, TextureUsages},
     picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput},
     prelude::*,
@@ -125,16 +125,25 @@ impl SelfTest {
     }
 }
 
+/// Shows the canvas in the window, to watch the self-test by: a sprite the
+/// size of the window, seen by a camera of its own on a layer of its own.
+#[derive(Component)]
+struct CanvasView;
+
+const CANVAS_VIEW_LAYER: usize = 30;
+
 /// Draws the main camera, and so the HUD and the menus, into an image the
-/// size of the window, which the pictures are taken from. A window that
-/// cannot be seen is not drawn (macOS skips one that is covered, and the
-/// self-test's is hidden), so the pictures come out whatever is on screen.
+/// size of the window, which the pictures are taken from, and shows that
+/// image in the window. A window that cannot be seen is not drawn (macOS
+/// skips one that is covered), so the pictures come out whatever is on
+/// screen.
 fn draw_to_canvas(
     mut commands: Commands,
     mut test: ResMut<SelfTest>,
     mut images: ResMut<Assets<Image>>,
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<Entity, With<MainCamera>>,
+    mut view: Query<&mut Sprite, With<CanvasView>>,
 ) {
     let size = window.physical_size();
     let scale_factor = window.scale_factor();
@@ -156,6 +165,20 @@ fn draw_to_canvas(
         // The UI is drawn by the camera that targets the window unless told
         // otherwise, and so is the detail of point lights' shadows.
         .insert((RenderTarget::Image(canvas.clone()), IsDefaultUiCamera, ShadowLodOrigin));
+    // A 2D camera's units are the window's logical pixels.
+    let sprite = Sprite {
+        image: canvas.handle.clone(),
+        custom_size: Some(Vec2::new(window.width(), window.height())),
+        ..default()
+    };
+    if let Ok(mut view) = view.single_mut() {
+        *view = sprite;
+    } else {
+        let layer = RenderLayers::layer(CANVAS_VIEW_LAYER);
+        commands.spawn((Camera2d, Camera { order: 1, ..default() }, layer.clone()));
+        // The real pointer, on the window, clicks nothing: the menus are on the canvas.
+        commands.spawn((CanvasView, sprite, layer, Pickable::IGNORE));
+    }
     test.canvas = Some(canvas);
 }
 
