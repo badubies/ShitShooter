@@ -50,9 +50,10 @@ BORE_Z = 13.5
 SIGHT_LINE_Z = 32.0
 REAR_SIGHT_Y = (2.0, 10.0)
 FRONT_SIGHT_Y = (SLIDE_FRONT - 9.5, SLIDE_FRONT - 3.5)
-# Wide enough to see the front post with a gap of light either side.
-NOTCH_HALF_WIDTH = 2.4
-POST_HALF_WIDTH = 1.8
+# A wide notch, its edges close to the white dots, so little of the rear
+# blade stands between them and the front post.
+NOTCH_HALF_WIDTH = 3.6
+POST_HALF_WIDTH = 2.2
 # The grip slants back by this much; the magazine follows it.
 GRIP_ANGLE = math.radians(17.0)
 MAGAZINE_TOP = (37.0, -3.0)
@@ -302,7 +303,7 @@ part = Part()
 y0, y1 = FRONT_SIGHT_Y
 part.prism("x", [(y0, SLIDE_TOP - 0.5), (y1, SLIDE_TOP - 0.5), (y1, SIGHT_LINE_Z - 3.0), (y1 - 2.0, SIGHT_LINE_Z),
                  (y0, SIGHT_LINE_Z)], -POST_HALF_WIDTH, POST_HALF_WIDTH, SLIDE)
-part.cylinder("y", 1.05, (0.0, SIGHT_LINE_Z - 1.8), y0 - 0.15, y0 + 0.2, FRONT_DOT, segments=12)
+part.cylinder("y", 1.3, (0.0, SIGHT_LINE_Z - 1.8), y0 - 0.15, y0 + 0.2, FRONT_DOT, segments=12)
 part.to_object("IronSightFront", origin=(0.0, y0, SLIDE_TOP), parent=slide)
 empty("AimPoint", (0.0, REAR_SIGHT_Y[0], SIGHT_LINE_Z), slide)
 empty("SightMount", (0.0, SIGHT_MOUNT_Y, SLIDE_TOP), slide, rotation=(0.0, 0.0, math.pi))
