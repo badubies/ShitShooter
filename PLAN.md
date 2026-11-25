@@ -2,9 +2,10 @@
 
 ## Round 4: original weapons
 
-Handoff for whoever picks this up next. The pistol, the SMG, the rifle and
-the sniper are built; the sniper waits on the user's verdict. What is left
-is tidying up (steps 6 and 7 below).
+Round 4 is done. The pistol, the SMG, the rifle and the sniper are built
+here, and every model (the shotgun and knife too) is now built for the game
+and placed as it is. Step 7 was dropped by the user. Keep this section as
+the guide to the guns.
 
 Replace the downloaded guns (rifle, SMG, sniper) with originals built by
 scripts in `art/`, one gun at a time. The shotgun, the knife and all four
@@ -47,10 +48,17 @@ sights were made here already. Each new gun gets:
   reflex, 2x and scope. The downloaded SCAR is gone.
 - Every magazine reload ends by cocking the gun (slide or bolt drawn back,
   slowly, then let go); see the node names below.
-- `Fit` in `src/weapons.rs`. `Fit::AsBuilt` places a model as it is;
-  `Fit::Scaled` keeps fitting the downloaded guns until they are replaced.
-  `fit_models` (`src/gun_model.rs`) warns when an as-built model's length or
-  centre is off.
+- Every weapon model is placed as it is (`Model` in `src/weapons.rs`):
+  metres, `size[2]` long, barrel along -Z, centred. `fit_models`
+  (`src/gun_model.rs`) warns when a model's length or centre is off. The
+  shotgun and knife (`art/shotgun.blend`, `art/knife.blend`, made by hand)
+  had the fit the game used to do for them (turned half round, scaled,
+  centred) baked into their files, and `Fit` is gone.
+- The sights face forward (+Y in Blender) as the guns do, so a gun's
+  `SightMount` puts them on as they are, with no turn. `art/sights.py`
+  builds the reflex and 2x that way; the red dot and scope
+  (`art/red_dot.blend`, `art/scope.blend`, made by hand) were turned half
+  round in their files. In the game everything looks as it did.
 - Iron sights with an `AimPoint`. A gun's own `AimPoint` node (outside any
   sight) becomes `Fitted::iron_aim`. Aiming down the irons holds it
   `sight_relief` in front of the eye, as for a sight's dot, and hides the
@@ -99,7 +107,7 @@ TRUE_LENGTH = 410.0       # how long the design is at true size
 SCALE = LENGTH / TRUE_LENGTH
 MM = 0.001 * SCALE        # every vertex and position goes through MM
 ...
-empty("SightMount", at, parent, rotation=(0.0, 0.0, math.pi), scale=SCALE)
+empty("SightMount", at, parent, scale=SCALE)
 ```
 
 Lay everything out in true millimetres; the script's closing check (the
@@ -195,12 +203,12 @@ irons alone (a new field) would put it behind the eye.
   - `Pump`, and `Shell` for guns that load round by round.
   - `IronSight...`: everything hidden while a sight is on.
   - `AimPoint`: the iron sights' aim point.
-  - `SightMount`: where a sight's base sits, turned 180 degrees about Z
-    because the sights face -Y, and scaled by `SCALE`.
+  - `SightMount`: where a sight's base sits, scaled by `SCALE`. Not turned:
+    the sights face +Y like the gun.
   Name other parts too (`Trigger`, `SlideStop`, `MagRelease`, a charging
   handle...), with sensible pivots, for animations to come.
-- `src/weapons.rs`: point the gun's `Model` at the new file, set
-  `fit: Fit::AsBuilt` and list its `sights`. The long guns take the red dot,
+- `src/weapons.rs`: point the gun's `Model` at the new file and list its
+  `sights`. The long guns take the red dot,
   reflex and 2x; the sniper takes the scope too. Every gun must take `TWO_X`
   (a test checks it). Then delete the downloaded model and its `.blend`
   (`git rm`): git keeps them.
@@ -272,12 +280,10 @@ players' guns only drop their magazine (`remote.rs`).
 3. [x] SMG (`art/smg.py`).
 4. [x] Rifle (`art/rifle.py`).
 5. [x] Sniper (`art/sniper.py`), with its bolt action.
-6. [ ] Once nothing uses them: turn the sights to face +Y (`art/sights.py`,
-   and the red dot and scope), drop the mounts' turn, and remove
-   `Fit::Scaled`. The shotgun and knife need re-exporting as built for the
-   game first.
-7. [ ] Maybe: a trigger pull per shot; other players' slides and bolts
-   moving.
+6. [x] The shotgun and knife re-exported as built for the game, the sights
+   turned to face +Y, the mounts' turn dropped, and `Fit` removed.
+7. [-] Dropped (the user's call): a trigger pull per shot; other players'
+   slides and bolts moving.
 
 ## Round 3: Hamlet, a close-quarters map
 

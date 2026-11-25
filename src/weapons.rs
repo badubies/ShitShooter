@@ -63,27 +63,15 @@ pub struct Choke {
     pub time: f32,
 }
 
-/// A weapon's glTF model, drawn where the box gun would be.
+/// A weapon's glTF model, drawn where the box gun would be. Built for the
+/// game (see `art/pistol.py`): in metres, the weapon's `size` long, the barrel
+/// along -Z and up +Y, centred on its origin. It is placed as it is.
 pub struct Model {
     /// Under `assets/`.
     pub path: &'static str,
-    pub fit: Fit,
     /// The sights it can carry besides its iron sights, on the file's
     /// `SightMount` node (see `gun_model.rs`). Empty without a mount.
     pub sights: &'static [SightId],
-}
-
-/// How a model's file is put in the hand.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Fit {
-    /// Built for the game (see `art/pistol.py`): in metres, the weapon's
-    /// `size` long, the barrel along -Z and up +Y, centred on its origin. It
-    /// is placed as it is.
-    AsBuilt,
-    /// A model from elsewhere, in its own units and axes: it is measured,
-    /// scaled to the weapon's `size` length, centred, and turned round if
-    /// its barrel points along +Z.
-    Scaled { barrel_plus_z: bool },
 }
 
 pub type SightId = u8;
@@ -96,8 +84,9 @@ pub const TWO_X: SightId = 4;
 
 pub struct Sight {
     pub name: &'static str,
-    /// A glTF model (under `assets/`) in metres, with an empty named `AimPoint`
-    /// at its dot. It goes on the gun's `SightMount` node, the gun's nodes named
+    /// A glTF model (under `assets/`) in metres, its front along -Z as the
+    /// guns' are, with an empty named `AimPoint` at its dot. It goes on the
+    /// gun's `SightMount` node as it is, the gun's nodes named
     /// `IronSight...` are hidden under it, and aiming lines up the dot with the
     /// crosshair. `None` for the iron sights.
     pub path: Option<&'static str>,
@@ -210,7 +199,6 @@ pub const WEAPONS: [Weapon; 6] = [
         headshot: 2.0,
         model: Some(Model {
             path: "models/weapons/rifle.glb",
-            fit: Fit::AsBuilt,
             sights: &[RED_DOT, REFLEX, TWO_X],
         }),
         choke: None,
@@ -237,7 +225,6 @@ pub const WEAPONS: [Weapon; 6] = [
         headshot: 1.6,
         model: Some(Model {
             path: "models/weapons/smg.glb",
-            fit: Fit::AsBuilt,
             sights: &[RED_DOT, REFLEX, TWO_X],
         }),
         choke: None,
@@ -264,7 +251,6 @@ pub const WEAPONS: [Weapon; 6] = [
         headshot: 1.5,
         model: Some(Model {
             path: "models/weapons/Shotgun.glb",
-            fit: Fit::Scaled { barrel_plus_z: true },
             sights: &[TWO_X],
         }),
         choke: Some(Choke {
@@ -294,7 +280,6 @@ pub const WEAPONS: [Weapon; 6] = [
         headshot: 2.5,
         model: Some(Model {
             path: "models/weapons/sniper.glb",
-            fit: Fit::AsBuilt,
             sights: &[RED_DOT, REFLEX, TWO_X, SCOPE],
         }),
         choke: None,
@@ -321,7 +306,6 @@ pub const WEAPONS: [Weapon; 6] = [
         headshot: 2.0,
         model: Some(Model {
             path: "models/weapons/pistol.glb",
-            fit: Fit::AsBuilt,
             // A red dot is too big for its slide.
             sights: &[REFLEX, TWO_X],
         }),
@@ -350,7 +334,6 @@ pub const WEAPONS: [Weapon; 6] = [
         headshot: 1.0,
         model: Some(Model {
             path: "models/weapons/Knife.glb",
-            fit: Fit::Scaled { barrel_plus_z: true },
             sights: &[],
         }),
         choke: None,

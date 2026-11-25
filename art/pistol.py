@@ -21,8 +21,8 @@ The nodes the game looks for (see src/gun_model.rs):
 - IronSightRear, IronSightFront: hidden when a sight is mounted.
 - AimPoint: on the line over the top of the rear blade and the front post,
   which aiming puts on the crosshair.
-- SightMount: where a sight's base goes. The sights are built facing -Y, so
-  the mount turns them round.
+- SightMount: where a sight's base goes. The sights face +Y, as the gun
+  does, so they go on as they are.
 - Magazine: its origin is the top of the magazine, on the grip's slant.
 - Trigger, SlideStop and MagRelease pivot or slide about their origins for
   animations to come.
@@ -316,8 +316,8 @@ part.prism("x", [(y0, SLIDE_TOP - 0.5), (y1, SLIDE_TOP - 0.5), (y1, SIGHT_LINE_Z
 part.cylinder("y", 1.3, (0.0, SIGHT_LINE_Z - 1.8), y0 - 0.15, y0 + 0.2, FRONT_DOT, segments=12)
 part.to_object("IronSightFront", origin=(0.0, y0, SLIDE_TOP), parent=slide)
 empty("AimPoint", (0.0, REAR_SIGHT_Y[0], SIGHT_LINE_Z), slide)
-# Turned round, as the sights face -Y, and shrunk with the gun.
-empty("SightMount", (0.0, SIGHT_MOUNT_Y, SLIDE_TOP), slide, rotation=(0.0, 0.0, math.pi), scale=SCALE)
+# Shrunk with the gun, so a sight on it keeps its true size next to it.
+empty("SightMount", (0.0, SIGHT_MOUNT_Y, SLIDE_TOP), slide, scale=SCALE)
 # A plate over the striker at the back of the slide.
 part = Part()
 part.box(-6.5, 6.5, -0.5, 0.3, 6.0, 20.0, STEEL)

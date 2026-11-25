@@ -2,30 +2,28 @@
 //! weapons that have one (see `Weapon::model`).
 //!
 //! Every gun holder (the first-person gun, and each remote player's gun) gets a
-//! child per model and shows the one for the weapon in hand. A model built for
-//! the game (`Fit::AsBuilt`) is placed as it is. Any other is measured once it
-//! has loaded, turned barrel-forward, centred on the holder and scaled to its
-//! weapon's `size` length.
+//! child per model and shows the one for the weapon in hand. The models are
+//! built for the game (see `art/pistol.py`) and placed as they are: in metres,
+//! their weapon's `size` long, the barrel along -Z and up +Y, centred on their
+//! origin. One that is not is measured once it has loaded, and warned about.
 //!
 //! A gun's own `AimPoint` node, if it has one, is on the line along its iron
 //! sights, and aiming without a sight puts that line through the eye.
 //!
 //! A gun with a `SightMount` node can carry the sights its `Model::sights`
-//! lists, each another glTF file in metres. All of them are mounted on it, and
-//! the holder's `sight` picks the one shown. The mount's position and scale (sight metres
-//! to gun-file units) are set in the gun's file. The gun's `IronSight...` nodes
+//! lists, each another glTF file in metres, facing forward as the guns do. All
+//! of them are mounted on it, and the holder's `sight` picks the one shown. The
+//! mount's position and scale (sight metres to the gun's, which is shrunk from
+//! its true size) are set in the gun's file. The gun's `IronSight...` nodes
 //! are hidden under a sight, and aiming lines up the sight's `AimPoint` node
 //! with the crosshair.
 //!
 //! The nodes that move in a reload (see `PartKind`) are found and marked with
-//! a `GunPart`, which moves them in the holder's space, whatever the units
-//! and axes of the file.
-
-use std::f32::consts::PI;
+//! a `GunPart`, which moves them in the holder's space.
 
 use bevy::{camera::primitives::Aabb, light::NotShadowCaster, prelude::*};
 
-use crate::weapons::{Fit, IRON_SIGHTS, SIGHTS, SightId, WEAPONS, WeaponId, sight_on, weapon};
+use crate::weapons::{IRON_SIGHTS, SIGHTS, SightId, WEAPONS, WeaponId, sight_on, weapon};
 
 pub struct GunModelPlugin;
 
@@ -215,28 +213,27 @@ fn attach_models(
                     ChildOf(holder),
                 ))
                 .id();
-            // Its own entity, so the model is measured in its file's units,
-            // whatever the fit above it does.
+            // The file's scene, under the model that is shown and hidden.
             commands.spawn((WorldAssetRoot(scene.clone()), ChildOf(model)));
         }
     }
 }
 
-/// Measures each newly loaded model, fits it in place of the box gun, and
-/// mounts the sights.
+/// Measures each newly loaded model, which takes the box gun's place, finds
+/// its moving parts, and mounts the sights.
 fn fit_models(
     mut commands: Commands,
     scenes: Res<ModelScenes>,
     mut fitted: ResMut<FittedModels>,
-    mut models: Query<(&mut GunModel, &mut Transform, &Children, &ChildOf)>,
+    mut models: Query<(&mut GunModel, &Children, &ChildOf)>,
     descendants: Query<&Children>,
     globals: Query<&GlobalTransform>,
     meshes: Query<(&GlobalTransform, Option<&Aabb>), With<Mesh3d>>,
     names: Query<&Name>,
     parents: Query<&ChildOf>,
-    locals: Query<&Transform, Without<GunModel>>,
+    locals: Query<&Transform>,
 ) {
-    for (mut model, mut transform, children, parent) in &mut models {
+    for (mut model, children, parent) in &mut models {
         if model.fitted {
             continue;
         }
@@ -283,26 +280,13 @@ fn fit_models(
             continue;
         }
         let middle = (low + high) / 2.0;
-        let scale = match spec.fit {
-            Fit::AsBuilt => {
-                // Placed as it is, so it should be built to the table.
-                if (size.z - stats.size[2]).abs() > 0.001 || middle.length() > 0.001 {
-                    warn!(
-                        "{} is {:.4} m long and centred {middle}; it should be {} m, centred on its origin",
-                        spec.path, size.z, stats.size[2]
-                    );
-                }
-                1.0
-            }
-            Fit::Scaled { barrel_plus_z } => {
-                let scale = stats.size[2] / size.z;
-                let turn = if barrel_plus_z { Quat::from_rotation_y(PI) } else { Quat::IDENTITY };
-                transform.rotation = turn;
-                transform.scale = Vec3::splat(scale);
-                transform.translation = -(turn * (middle * scale));
-                scale
-            }
-        };
+        // Placed as it is, so it should be built to the table.
+        if (size.z - stats.size[2]).abs() > 0.001 || middle.length() > 0.001 {
+            warn!(
+                "{} is {:.4} m long and centred {middle}; it should be {} m, centred on its origin",
+                spec.path, size.z, stats.size[2]
+            );
+        }
         model.fitted = true;
         // The moving parts, and how the holder's space maps to their parents'.
         let holder = parent.parent();
@@ -320,7 +304,7 @@ fn fit_models(
             ) else {
                 continue;
             };
-            let parent_in_holder = transform.compute_affine() * to_scene * parent_global.affine();
+            let parent_in_holder = to_scene * parent_global.affine();
             commands.entity(entity).insert((
                 GunPart {
                     kind,
@@ -338,9 +322,9 @@ fn fit_models(
             .iter_descendants(scene)
             .find(|&e| names.get(e).is_ok_and(|name| name.as_str() == AIM_POINT))
             .and_then(|aim| globals.get(aim).ok())
-            .map(|aim| transform.transform_point(to_scene.transform_point3(aim.translation())));
+            .map(|aim| to_scene.transform_point3(aim.translation()));
         fitted.0[model.weapon as usize] = Some(Fitted {
-            size: size * scale,
+            size,
             iron_aim,
             aim_points: [None; SIGHTS.len()],
         });
@@ -386,13 +370,13 @@ fn fit_models(
 fn measure_sights(
     mut commands: Commands,
     mut fitted: ResMut<FittedModels>,
-    mut models: Query<(&mut GunModel, &Transform, &Children)>,
+    mut models: Query<(&mut GunModel, &Children)>,
     descendants: Query<&Children>,
     globals: Query<&GlobalTransform>,
     meshes: Query<Has<Aabb>, With<Mesh3d>>,
     names: Query<&Name>,
 ) {
-    for (mut model, transform, children) in &mut models {
+    for (mut model, children) in &mut models {
         let (id, shadows) = (model.weapon, model.shadows);
         for (sight_id, slot) in model.sights.iter_mut().enumerate() {
             let Some((sight, measured)) = slot else {
@@ -428,10 +412,10 @@ fn measure_sights(
             let (Ok(aim), Ok(scene)) = (globals.get(aim), globals.get(scene)) else {
                 continue;
             };
-            // From the gun's file space to the holder, through the fit.
+            // In the gun's file, which is placed in the holder as it is.
             let in_scene = scene.affine().inverse().transform_point3(aim.translation());
             if let Some(entry) = &mut fitted.0[id as usize] {
-                entry.aim_points[sight_id] = Some(transform.transform_point(in_scene));
+                entry.aim_points[sight_id] = Some(in_scene);
             }
         }
     }

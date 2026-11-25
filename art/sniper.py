@@ -27,8 +27,8 @@ The nodes the game looks for (see src/gun_model.rs):
 - IronSightRear, IronSightFront: hidden when a sight is mounted.
 - AimPoint: the middle of the rear aperture, on the line over the front
   post, which aiming puts on the crosshair.
-- SightMount: where a sight's base goes, on the rail. The sights are built
-  facing -Y, so the mount turns them round.
+- SightMount: where a sight's base goes, on the rail. The sights face +Y,
+  as the gun does, so they go on as they are.
 - Magazine: its origin is the top of the magazine.
 - Trigger, Safety, BoltRelease, MagRelease and Bipod for animations to come.
 
@@ -488,8 +488,8 @@ for side in (-1.0, 1.0):
                *sorted((side * EARS_X[0], side * EARS_X[1])), RECEIVER)
 part.to_object("IronSightFront", origin=(0.0, f, RAIL_TOP))
 empty("AimPoint", (0.0, REAR_SIGHT_Y, SIGHT_LINE_Z), None)
-# Turned round, as the sights face -Y, and shrunk with the gun.
-empty("SightMount", (0.0, SIGHT_MOUNT_Y, RAIL_TOP), None, rotation=(0.0, 0.0, math.pi), scale=SCALE)
+# Shrunk with the gun, so a sight on it keeps its true size next to it.
+empty("SightMount", (0.0, SIGHT_MOUNT_Y, RAIL_TOP), None, scale=SCALE)
 
 # The grip (lofted round, on its slant, fuller in the palm and flared at the
 # bottom) and the trigger guard.

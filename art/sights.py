@@ -2,8 +2,9 @@
 walls round a big window, a trapezoid with rounded corners that flares a little
 towards the front, on a low clamp. Little of it gets in the way when aiming.
 The reflex is short with a dot in a ring; the 2x is longer, its lens set back
-under a hood, with a chevron in a ring. Metres, Z up, the front towards -Y,
-the base on the origin, like the other sights. Small enough for the pistol.
+under a hood, with a chevron in a ring. Metres, Z up, the front towards +Y
+(as the guns face, so a gun's mount puts them on as they are), the base on
+the origin, like the other sights. Small enough for the pistol.
 Saves art/reflex.blend and art/2x.blend and exports
 assets/models/sights/reflex.glb and 2x.glb. Run with:
 blender --background --factory-startup --python sights.py -- <repo root>
@@ -165,34 +166,34 @@ def inside(flare, y_front, y_back, y):
 
 
 def clamp(b, y0, y1, top):
-    """The low clamp on the rail, a bolt through it on the right."""
+    """The low clamp on the rail, a bolt through it on the left."""
     b.box("Base", -0.0105, 0.0105, y0, y1, 0.0, top)
-    b.box("Clamp", 0.0105, 0.013, y0 + 0.006, y1 - 0.006, 0.0, top * 0.8)
-    b.cylinder_x("ClampBolt", 0.0025, 0.013, 0.016, (y0 + y1) / 2, top * 0.45)
+    b.box("Clamp", -0.013, -0.0105, y0 + 0.006, y1 - 0.006, 0.0, top * 0.8)
+    b.cylinder_x("ClampBolt", 0.0025, -0.016, -0.013, (y0 + y1) / 2, top * 0.45)
 
 
 # The reflex: short, the glass at the front, a dot in a ring.
 b = Builder("Reflex")
 width, height = 0.024, 0.019
-b.housing("Housing", width, height, -0.014, 0.010, flare=1.15)
-clamp(b, -0.014, 0.010, AXIS_Z - height / 2 - WALL + 0.0003)
-glass_y = -0.0125
-b.glass("Glass", width, height, glass_y, inside(1.15, -0.014, 0.010, glass_y))
-mark_y = glass_y + 0.0004
+b.housing("Housing", width, height, 0.014, -0.010, flare=1.15)
+clamp(b, -0.010, 0.014, AXIS_Z - height / 2 - WALL + 0.0003)
+glass_y = 0.0125
+b.glass("Glass", width, height, glass_y, inside(1.15, 0.014, -0.010, glass_y))
+mark_y = glass_y - 0.0004
 b.dot("Dot", 0.0006, mark_y)
 b.ring("Ring", 0.0040, 0.0035, mark_y)
 b.aim_point(mark_y)
 b.save("reflex")
 
 # The 2x: the same housing, a little bigger and longer, the glass set back
-# under a hood, a chevron in a ring, and a low adjuster on the right.
+# under a hood, a chevron in a ring, and a low adjuster on the left.
 b = Builder("TwoX")
 width, height = 0.026, 0.021
-b.housing("Housing", width, height, -0.020, 0.012, flare=1.2)
-clamp(b, -0.017, 0.011, AXIS_Z - height / 2 - WALL + 0.0003)
-glass_y = -0.0135
-b.glass("Glass", width, height, glass_y, inside(1.2, -0.020, 0.012, glass_y))
-mark_y = glass_y + 0.0004
+b.housing("Housing", width, height, 0.020, -0.012, flare=1.2)
+clamp(b, -0.011, 0.017, AXIS_Z - height / 2 - WALL + 0.0003)
+glass_y = 0.0135
+b.glass("Glass", width, height, glass_y, inside(1.2, 0.020, -0.012, glass_y))
+mark_y = glass_y - 0.0004
 # Two arms down from the aim point, a small dot at their tip.
 arm, thick, spread = 0.0032, 0.00045, math.radians(38)
 for side, name in ((-1, "ChevronLeft"), (1, "ChevronRight")):
@@ -201,7 +202,7 @@ for side, name in ((-1, "ChevronLeft"), (1, "ChevronRight")):
     b.flat(name, [(nx, nz), (-nx, -nz), (sx * arm - nx, sz * arm - nz), (sx * arm + nx, sz * arm + nz)], mark_y)
 b.dot("Dot", 0.0005, mark_y)
 b.ring("Ring", 0.0052, 0.0047, mark_y)
-b.box("Adjuster", width / 2 + WALL - 0.0005, width / 2 + WALL + 0.0025, -0.006, 0.003, AXIS_Z - 0.007,
+b.box("Adjuster", -width / 2 - WALL - 0.0025, -width / 2 - WALL + 0.0005, -0.003, 0.006, AXIS_Z - 0.007,
       AXIS_Z - 0.001)
 b.aim_point(mark_y)
 b.save("2x")
