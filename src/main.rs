@@ -319,12 +319,16 @@ fn run_game(args: LaunchArgs) {
     open_log_file();
     install_crash_reporter();
 
+    // The self-test draws off screen (see `devtools`), out of the way.
+    let shown = args.selftest.is_none();
     let exit = App::new()
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "ShitShooter".into(),
+                        visible: shown,
+                        focused: shown,
                         // Wayland's app ID and X11's window class, which tie the
                         // window to the launcher's app menu entry and its icon.
                         // Windows would take it as the window class: not needed.

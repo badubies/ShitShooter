@@ -136,7 +136,9 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
   `src/server.rs` and other modules). Fix every warning the change adds.
 - **Check it in the game.** `cargo run -- --host --bots 3` starts a lobby with
   bots, skipping the menu. `cargo run -- --selftest <dir>` plays a short match
-  against bots by itself and saves screenshots to `<dir>` (`src/devtools.rs`);
+  against bots by itself and saves screenshots to `<dir>` (`src/devtools.rs`;
+  add `--host` for the match, without it only the menus). Its window stays
+  hidden and it draws off screen, so the computer can be used meanwhile;
   extend its script when a step adds something to look at. F12 saves a
   screenshot to `screenshots/`. Feel and tuning (steps 3, 7, 9) need the user
   to play: ask them.

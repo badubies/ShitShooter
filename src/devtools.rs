@@ -1,10 +1,11 @@
 //! Developer helpers: F12 screenshots, and a scripted self-test (`--selftest <dir>`)
 //! that plays a short match against bots by itself and saves screenshots.
 
-use std::{path::PathBuf, time::SystemTime};
+use std::{collections::VecDeque, path::PathBuf, time::SystemTime};
 
 use bevy::{
-    camera::NormalizedRenderTarget,
+    camera::{ImageRenderTarget, NormalizedRenderTarget, RenderTarget, ShadowLodOrigin},
+    render::render_resource::{TextureFormat, TextureUsages},
     picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput},
     prelude::*,
     window::{PrimaryWindow, WindowRef},
@@ -25,7 +26,7 @@ use crate::{
     remote::{Corpse, RemotePlayer},
     weapons::{GUN_COUNT, IRON_SIGHTS, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
     ui::{MatchChoice, PickerOpen},
-    world::GameMap,
+    world::{GameMap, MainCamera},
     settings::{Settings, SettingsMenu, SettingsTab},
 };
 
@@ -44,7 +45,11 @@ impl Plugin for DevToolsPlugin {
                 clock: 0.0,
                 top_speed: 0.0,
                 step: 0,
+                canvas: None,
+                pictures: VecDeque::new(),
             })
+            .add_systems(First, draw_to_canvas)
+            .add_systems(Last, take_picture)
             // Sounds are still created and decoded, just not heard.
             .insert_resource(GlobalVolume::new(bevy::audio::Volume::SILENT))
             .init_resource::<CueCount>()
@@ -87,6 +92,12 @@ struct SelfTest {
     top_speed: f32,
     /// How far through the current state's script we are.
     step: u32,
+    /// What the main camera draws into instead of the window (see
+    /// `draw_to_canvas`), once the window's size is known.
+    canvas: Option<ImageRenderTarget>,
+    /// Pictures asked for and not yet taken: one is taken a frame, as a
+    /// second picture of the same frame would be dropped.
+    pictures: VecDeque<String>,
 }
 
 impl SelfTest {
@@ -100,10 +111,64 @@ impl SelfTest {
         }
     }
 
-    fn capture(&self, commands: &mut Commands, name: &str) {
+    /// Takes a picture, saved as `name`, this frame or soon after.
+    fn capture(&mut self, name: &str) {
+        self.pictures.push_back(name.to_string());
+    }
+
+    /// Where the pointer's clicks go: the canvas, where the menus are drawn.
+    fn pointer_target(&self, window: Entity) -> NormalizedRenderTarget {
+        match &self.canvas {
+            Some(canvas) => NormalizedRenderTarget::Image(canvas.clone()),
+            None => NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(window)).expect("a window")),
+        }
+    }
+}
+
+/// Draws the main camera, and so the HUD and the menus, into an image the
+/// size of the window, which the pictures are taken from. A window that
+/// cannot be seen is not drawn (macOS skips one that is covered, and the
+/// self-test's is hidden), so the pictures come out whatever is on screen.
+fn draw_to_canvas(
+    mut commands: Commands,
+    mut test: ResMut<SelfTest>,
+    mut images: ResMut<Assets<Image>>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera: Single<Entity, With<MainCamera>>,
+) {
+    let size = window.physical_size();
+    let scale_factor = window.scale_factor();
+    let same = test.canvas.as_ref().is_some_and(|canvas| {
+        canvas.scale_factor == scale_factor && images.get(&canvas.handle).is_some_and(|image| image.size() == size)
+    });
+    if same || size.min_element() == 0 {
+        return;
+    }
+    let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8Unorm, Some(TextureFormat::Rgba8UnormSrgb));
+    // So the pictures can be read back from it.
+    image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    let canvas = ImageRenderTarget {
+        handle: images.add(image),
+        scale_factor,
+    };
+    commands
+        .entity(*camera)
+        // The UI is drawn by the camera that targets the window unless told
+        // otherwise, and so is the detail of point lights' shadows.
+        .insert((RenderTarget::Image(canvas.clone()), IsDefaultUiCamera, ShadowLodOrigin));
+    test.canvas = Some(canvas);
+}
+
+fn take_picture(mut commands: Commands, mut test: ResMut<SelfTest>) {
+    let Some(canvas) = test.canvas.clone() else {
+        return;
+    };
+    if let Some(name) = test.pictures.pop_front() {
+        // The camera's target exactly, scale factor and all: the picture is
+        // taken from the camera that draws into it.
         commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(self.dir.join(name)));
+            .spawn(Screenshot(RenderTarget::Image(canvas)))
+            .observe(save_to_disk(test.dir.join(name)));
     }
 }
 
@@ -113,7 +178,6 @@ fn restart_clock(mut test: ResMut<SelfTest>) {
 }
 
 fn selftest_menu(
-    mut commands: Commands,
     time: Res<Time>,
     status: Res<MenuStatus>,
     mut page: ResMut<MenuPage>,
@@ -124,7 +188,7 @@ fn selftest_menu(
     test.clock += time.delta_secs();
     if test.reached(0, 1.5) {
         println!("[selftest] menu status: '{}'", status.0);
-        test.capture(&mut commands, "menu.png");
+        test.capture("menu.png");
     }
     // Each of the other pages, a moment after it is put up.
     let pages = [
@@ -138,7 +202,7 @@ fn selftest_menu(
             *page = to;
         }
         if test.reached(2 + 2 * index as u32, at + 0.6) {
-            test.capture(&mut commands, file);
+            test.capture(file);
         }
     }
     // The settings' controls page (the match takes a picture of the other).
@@ -150,7 +214,7 @@ fn selftest_menu(
         settings_menu.open = true;
     }
     if test.reached(step + 1, end + 0.6) {
-        test.capture(&mut commands, "settings_controls.png");
+        test.capture("settings_controls.png");
     }
     if test.reached(step + 2, end + 1.0) {
         settings_menu.open = false;
@@ -181,7 +245,7 @@ fn selftest_lobby(
     // The second visit to the lobby is after the match was ended: we are done.
     if session.last_result.is_some() {
         if test.reached(0, 1.0) {
-            test.capture(&mut commands, "lobby_after.png");
+            test.capture("lobby_after.png");
         }
         if test.reached(1, 2.0) {
             println!("[selftest] finished: {:?}", session.last_result);
@@ -199,7 +263,7 @@ fn selftest_lobby(
         connection.send(&ClientMsg::SetMode(1));
     }
     if test.reached(1, 1.5) {
-        test.capture(&mut commands, "lobby.png");
+        test.capture("lobby.png");
     }
     // The mode and map are picked in the match picker, open while they are clicked.
     picker.0 = (1.6..3.0).contains(&test.clock);
@@ -221,16 +285,16 @@ fn selftest_lobby(
             if index == 2 {
                 println!("[selftest] after clicking Team deathmatch and Arena: mode {} map {}", session.mode, map.0.id);
             }
-            point(window.0, &mut pointer, chip_at(target), false);
+            point(&test.pointer_target(window.0), &mut pointer, chip_at(target), false);
         }
         if test.reached(3 + 2 * index as u32, at + 0.1) {
-            point(window.0, &mut pointer, chip_at(target), true);
+            point(&test.pointer_target(window.0), &mut pointer, chip_at(target), true);
         }
     }
     if test.reached(10, 2.9) {
         println!("[selftest] after clicking the chips and cards: mode {} map {}", session.mode, map.0.id);
-        point(window.0, &mut pointer, None, false);
-        test.capture(&mut commands, "lobby_picker.png");
+        point(&test.pointer_target(window.0), &mut pointer, None, false);
+        test.capture("lobby_picker.png");
     }
     // Stripes on the paint job, and a look at them on the paint screen.
     if test.reached(11, 3.2) {
@@ -255,7 +319,7 @@ fn selftest_lobby(
         }
     }
     if test.reached(13, 4.2) {
-        test.capture(&mut commands, "paint.png");
+        test.capture("paint.png");
     }
     if test.reached(14, 4.5) {
         editor.open = false;
@@ -266,26 +330,26 @@ fn selftest_lobby(
         loadout.open = true;
     }
     if test.reached(16, 5.4) {
-        point(window.0, &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), false);
+        point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), false);
     }
     if test.reached(17, 5.8) {
-        test.capture(&mut commands, "loadout_hover.png");
+        test.capture("loadout_hover.png");
     }
     // Picking sees where the pointer is a frame after it moves there.
     if test.reached(18, 6.0) {
-        point(window.0, &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), true);
+        point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), true);
     }
     if test.reached(19, 6.3) {
         println!("[selftest] after a click on the shotgun's card: {}", weapon(settings.primary).name);
-        test.capture(&mut commands, "loadout_clicked.png");
-        point(window.0, &mut pointer, card_at(Choice::Gun(0, RIFLE)), false);
+        test.capture("loadout_clicked.png");
+        point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, RIFLE)), false);
     }
     if test.reached(20, 6.4) {
-        point(window.0, &mut pointer, card_at(Choice::Gun(0, RIFLE)), true);
+        point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, RIFLE)), true);
     }
     if test.reached(21, 6.7) {
         println!("[selftest] and on the rifle's: {}", weapon(settings.primary).name);
-        point(window.0, &mut pointer, None, false);
+        point(&test.pointer_target(window.0), &mut pointer, None, false);
         loadout.open = false;
     }
     if test.reached(22, 6.8) {
@@ -297,10 +361,10 @@ fn selftest_lobby(
 /// Moves the pointer to `position` (in the window's pixels; or off to a
 /// corner, for `None`), and clicks there if `click`. A click only lands on
 /// what was under the pointer the frame before.
-fn point(window: Entity, pointer: &mut MessageWriter<PointerInput>, position: Option<Vec2>, click: bool) {
+fn point(target: &NormalizedRenderTarget, pointer: &mut MessageWriter<PointerInput>, position: Option<Vec2>, click: bool) {
     let position = position.unwrap_or(Vec2::splat(5.0));
     let location = Location {
-        target: NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(window)).expect("a window")),
+        target: target.clone(),
         position,
     };
     let mut actions = vec![PointerAction::Move { delta: Vec2::ZERO }];
@@ -315,7 +379,6 @@ fn point(window: Entity, pointer: &mut MessageWriter<PointerInput>, position: Op
 /// Runs around, aims at the nearest bot and holds the trigger, and tries
 /// every other move once along the way.
 fn selftest_play(
-    mut commands: Commands,
     time: Res<Time>,
     session: Res<Session>,
     mut test: ResMut<SelfTest>,
@@ -337,7 +400,7 @@ fn selftest_play(
         if session.countdown < 2.5 && !captured.countdown {
             captured.countdown = true;
             println!("[selftest] countdown {:.1}, alive {}", session.countdown, player.alive);
-            test.capture(&mut commands, "countdown.png");
+            test.capture("countdown.png");
         }
         // Nothing can happen before the match starts: a look at every gun in
         // the first slot with the 2x sight (they all take it), from the hip,
@@ -361,7 +424,7 @@ fn selftest_play(
                 player.reload = if view == "reload" { stats.reload * (1.0 - progress) } else { 0.0 };
                 player.reload_empty = view == "reload";
                 if captured.gallery % FRAMES == FRAMES - 3 {
-                    test.capture(&mut commands, &format!("gun_{}_{view}.png", stats.name.to_lowercase()));
+                    test.capture(&format!("gun_{}_{view}.png", stats.name.to_lowercase()));
                 }
                 captured.gallery += 1;
             } else {
@@ -387,14 +450,14 @@ fn selftest_play(
             if session.countdown < 1.2 && !captured.ally {
                 captured.ally = true;
                 println!("[selftest] nearest teammate {:.1} m away", to.length());
-                test.capture(&mut commands, "teammate.png");
+                test.capture("teammate.png");
             }
         }
         return;
     }
     if player.hit_marker > 0.0 && !captured.marker {
         captured.marker = true;
-        test.capture(&mut commands, "hit.png");
+        test.capture("hit.png");
     }
     // Not while the scoreboard is held (below), which hides the death screen.
     let scores_held = (5.0..6.6).contains(&test.clock);
@@ -406,7 +469,7 @@ fn selftest_play(
         && !captured.dead
     {
         captured.dead = true;
-        test.capture(&mut commands, "dead.png");
+        test.capture("dead.png");
     }
     if let Some(arc) = player.damage_arcs.first()
         && !captured.hurt
@@ -417,7 +480,7 @@ fn selftest_play(
             arc.from,
             player.bearing(arc.at).to_degrees()
         );
-        test.capture(&mut commands, "hurt.png");
+        test.capture("hurt.png");
     }
     test.clock += time.delta_secs();
     let t = test.clock;
@@ -490,7 +553,7 @@ fn selftest_play(
     }
     if test.reached(0, 1.9) {
         println!("[selftest] aim {:.2} ammo {} grenades {:.2?}", player.aim, player.guns[0].ammo, player.grenades);
-        test.capture(&mut commands, "aim.png");
+        test.capture("aim.png");
     }
     if test.reached(1, 2.7) {
         println!(
@@ -500,7 +563,7 @@ fn selftest_play(
             player.horizontal_speed(),
             player.eye().y - player.feet().y
         );
-        test.capture(&mut commands, "slide.png");
+        test.capture("slide.png");
     }
 
     let eye = player.eye();
@@ -569,7 +632,7 @@ fn selftest_play(
                 captured.body_shots += 1;
                 let seen = if spot.is_some() { "seen" } else { "no clear view" };
                 println!("[selftest] body {:.1} s old, {seen}", corpse.age);
-                test.capture(&mut commands, name);
+                test.capture(name);
             }
         }
     }
@@ -578,31 +641,31 @@ fn selftest_play(
     // while reloading.
     if t > 5.75 && !captured.switch {
         captured.switch = true;
-        test.capture(&mut commands, "panel_switch.png");
+        test.capture("panel_switch.png");
     }
     if dropped.iter().any(|(magazine, _)| !magazine.landed) && !captured.drop {
         captured.drop = true;
-        test.capture(&mut commands, "magazine_drop.png");
+        test.capture("magazine_drop.png");
     }
     if t > 7.0 && player.reloading() && !captured.reload {
         captured.reload = true;
-        test.capture(&mut commands, "panel_reload.png");
+        test.capture("panel_reload.png");
     }
 
     if test.reached(2, 3.3) {
-        test.capture(&mut commands, "ping.png");
+        test.capture("ping.png");
     }
     if test.reached(3, 3.6) {
-        test.capture(&mut commands, "play.png");
+        test.capture("play.png");
     }
     if test.reached(4, 6.0) {
-        test.capture(&mut commands, "scores.png");
+        test.capture("scores.png");
     }
     if test.reached(5, 7.5) {
         controls.captured = false;
     }
     if test.reached(6, 8.0) {
-        test.capture(&mut commands, "pause.png");
+        test.capture("pause.png");
     }
     // A screenshot is taken a frame or two after it is asked for, so the
     // settings open a moment later, not at once.
@@ -610,7 +673,7 @@ fn selftest_play(
         settings_menu.open = true;
     }
     if test.reached(8, 8.8) {
-        test.capture(&mut commands, "settings.png");
+        test.capture("settings.png");
     }
     if test.reached(9, 9.2) {
         settings_menu.open = false;
@@ -622,11 +685,11 @@ fn selftest_play(
     }
     if test.reached(11, 10.0) {
         println!("[selftest] shotgun aim {:.2} choke {:.2} spread {:.3}", player.aim, player.choke(), player.spread());
-        test.capture(&mut commands, "choke_open.png");
+        test.capture("choke_open.png");
     }
     if test.reached(12, 10.6) {
         println!("[selftest] shotgun aim {:.2} choke {:.2} spread {:.3}", player.aim, player.choke(), player.spread());
-        test.capture(&mut commands, "choke.png");
+        test.capture("choke.png");
     }
     // Conquest: onto the nearest flag, looking at its pole, and a look once
     // it is partly ours.
@@ -644,7 +707,7 @@ fn selftest_play(
     }
     if test.reached(14, if conquest { 17.0 } else { 11.0 }) && conquest {
         println!("[selftest] flags {:?}", session.flags);
-        test.capture(&mut commands, "flag.png");
+        test.capture("flag.png");
     }
     // The death screen with its map to pick where to come back in (only on
     // our side: the server still has us alive).
@@ -653,7 +716,7 @@ fn selftest_play(
         player.killed_by = Some("[bot] Clanker".to_string());
     }
     if test.reached(16, if conquest { 18.0 } else { 11.15 }) && conquest {
-        test.capture(&mut commands, "deploy.png");
+        test.capture("deploy.png");
     }
     if test.reached(17, if conquest { 18.5 } else { 11.2 }) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
