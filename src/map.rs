@@ -5,7 +5,7 @@
 use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
-    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, MODE_FFA, MODE_TEAMS, SMOKE_RADIUS, SMOKE_RISE},
+    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, MODE_FFA, MODE_TEAMS, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE},
     props::{FLAGPOLE, PROPS},
     terrain::Terrain,
 };
@@ -437,6 +437,7 @@ impl Map {
             add([s0, 0.0, t0], [s1, 1.25, t1], COVER);
 
             spawns.push(spawn_facing_center(Vec3::new(27.0 * sx, 2.5, 27.0 * sz)));
+            spawns.push(spawn_facing_center(Vec3::new(29.5 * sx, 2.5, 23.0 * sz)));
 
             // Plain pad by the tower: run across it to hop onto the platform,
             // or over the low cover.
@@ -464,6 +465,7 @@ impl Map {
             pads.push(JumpPad::arrow(dir * 24.0, dir * 6.5 + Vec3::Y * 17.0));
 
             spawns.push(spawn_facing_center(dir * 13.5 + side * 5.0));
+            spawns.push(spawn_facing_center(dir * 13.5 - side * 5.0));
         }
 
         // Armor: on top of the tower, and out on each wall ledge.
@@ -532,6 +534,7 @@ impl Map {
             // A wall that shields the corner spawn.
             add(28.0 * sx, 24.5 * sz, 2.5, 0.4, 0.0, 2.0, CONCRETE);
             spawns.push(spawn_facing_center(Vec3::new(28.5 * sx, 0.0, 28.5 * sz)));
+            spawns.push(spawn_facing_center(Vec3::new(23.5 * sx, 0.0, 28.5 * sz)));
 
             // Plain pad beside the near container: run at it to land on top.
             pads.push(JumpPad::plain(Vec3::new(16.5 * sx, 0.0, 8.0 * sz), 12.0));
@@ -556,6 +559,7 @@ impl Map {
             pads.push(JumpPad::arrow(dir * 27.0, -dir * 7.0 + Vec3::Y * 15.0));
 
             spawns.push(spawn_facing_center(dir * 27.0 + side * 7.0));
+            spawns.push(spawn_facing_center(dir * 27.0 - side * 7.0));
         }
 
         // Armor: on the bunker roof, and on top of each stacked pair of crates.
@@ -912,7 +916,7 @@ fn with_flags(map: Map, flags: &[(char, f32, f32)], radius: f32) -> Map {
             name,
             pos: Vec3::new(x, 0.0, z),
             radius,
-            spawns: spawn_ring(&map, Vec2::new(x, z), 3.5, radius, 4),
+            spawns: spawn_ring(&map, Vec2::new(x, z), 2.5, radius - 0.5, TEAM_SIZE),
         })
         .collect();
     for (team, west) in [(0, true), (1, false)] {
@@ -998,6 +1002,7 @@ pub fn look_dir(yaw: f32, pitch: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::MAX_PLAYERS;
 
     #[test]
     fn the_head_is_at_eye_height() {
@@ -1077,6 +1082,43 @@ mod tests {
                 let (mut pos, mut vel) = (spawn.pos, Vec3::new(0.0, -5.0, 0.0));
                 assert!(map.move_and_slide(&mut pos, &mut vel, PLAYER_HALF, 0.1));
                 assert!(spawn.pos.y - pos.y < 0.1, "map {} spawn {:?} floats", map.id, spawn.pos);
+            }
+        }
+    }
+
+    /// Closer than this, two players' boxes touch (with a little to spare).
+    const SPAWN_SPACING: f32 = 2.0 * PLAYER_HALF.x + 0.7;
+
+    /// No two points of `spawns` so close that players coming in at both
+    /// would stand in each other.
+    fn spread_out(spawns: &[Spawn]) -> Option<(Vec3, Vec3)> {
+        spawns.iter().enumerate().find_map(|(i, a)| {
+            spawns[i + 1..]
+                .iter()
+                .find(|b| (a.pos - b.pos).with_y(0.0).length() < SPAWN_SPACING && (a.pos.y - b.pos.y).abs() < 2.0 * PLAYER_HALF.y)
+                .map(|b| (a.pos, b.pos))
+        })
+    }
+
+    #[test]
+    fn every_map_has_a_spawn_for_everybody() {
+        for map in maps() {
+            assert!(map.spawns.len() >= MAX_PLAYERS, "map {} has {} spawns", map.id, map.spawns.len());
+            assert_eq!(spread_out(&map.spawns), None, "map {}: spawns on top of each other", map.id);
+            for spawn in &map.spawns {
+                let ahead = map.raycast(spawn.pos + Vec3::Y * 0.7, look_dir(spawn.yaw, 0.0), 3.0);
+                assert!(ahead.is_none(), "map {} spawn {:?} faces a wall", map.id, spawn.pos);
+            }
+            if !plays(map.id, MODE_CONQUEST) {
+                continue;
+            }
+            for (team, base) in map.bases.iter().enumerate() {
+                assert!(base.len() >= TEAM_SIZE, "map {} base {team} has {}", map.id, base.len());
+                assert_eq!(spread_out(base), None, "map {} base {team}", map.id);
+            }
+            for flag in &map.flags {
+                assert!(flag.spawns.len() >= TEAM_SIZE, "map {} flag {} has {}", map.id, flag.name, flag.spawns.len());
+                assert_eq!(spread_out(&flag.spawns), None, "map {} flag {}", map.id, flag.name);
             }
         }
     }

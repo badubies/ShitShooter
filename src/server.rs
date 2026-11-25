@@ -1355,20 +1355,40 @@ impl Server {
             &self.map.spawns
         };
         let pool = if pool.is_empty() { &self.map.spawns } else { pool };
-        let mut ranked: Vec<(f32, usize)> = pool
+        // Everybody standing, teammates too: nobody comes in inside them.
+        let bodies: Vec<Vec3> = self
+            .players
             .iter()
-            .enumerate()
-            .map(|(index, spawn)| {
-                let nearest = others
-                    .iter()
-                    .map(|pos| pos.distance(spawn.pos))
-                    .fold(f32::INFINITY, f32::min);
-                (nearest, index)
-            })
+            .filter(|(other, p)| **other != id && p.alive)
+            .map(|(_, p)| p.pos)
             .collect();
+        let taken = |pos: Vec3| bodies.iter().any(|body| crowds(*body, pos));
+        let away = |pos: Vec3| others.iter().map(|other| other.distance(pos)).fold(f32::INFINITY, f32::min);
+        let mut ranked: Vec<(f32, Vec3, f32)> = pool
+            .iter()
+            .filter(|spawn| !taken(spawn.pos))
+            .map(|spawn| (away(spawn.pos), spawn.pos, spawn.yaw))
+            .collect();
+        if ranked.is_empty() {
+            // Every point taken (more players than points, or a crowd standing
+            // on them): somewhere clear near one of them instead.
+            ranked = pool
+                .iter()
+                .flat_map(|spawn| {
+                    let around = map::spawn_ring(&self.map, Vec2::new(spawn.pos.x, spawn.pos.z), 1.5, 6.0, 24);
+                    around.into_iter().map(move |near| (near.pos, spawn.yaw))
+                })
+                .filter(|(pos, _)| !taken(*pos))
+                .map(|(pos, yaw)| (away(pos), pos, yaw))
+                .collect();
+        }
+        if ranked.is_empty() {
+            // Nowhere clear at all: no better than overlapping somebody.
+            ranked = pool.iter().map(|spawn| (0.0, spawn.pos, spawn.yaw)).collect();
+        }
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
         let pick = (self.rng >> 17) as usize % ranked.len().min(3);
-        let (pos, yaw) = (pool[ranked[pick].1].pos, pool[ranked[pick].1].yaw);
+        let (_, pos, yaw) = ranked[pick];
         self.random();
         let bot_gun = (self.random() % GUN_COUNT as u64) as WeaponId;
 
@@ -1728,6 +1748,17 @@ impl Drop for ServerHandle {
         }
     }
 }
+
+/// True if a player coming in with their box centred at `spawn` would be
+/// inside, or right up against, one whose box is centred at `body`.
+fn crowds(body: Vec3, spawn: Vec3) -> bool {
+    let apart = body - spawn;
+    apart.with_y(0.0).length() < SPAWN_CLEARANCE && apart.y.abs() < 2.0 * map::PLAYER_HALF.y
+}
+
+/// How far apart (along the ground) two players' centres must be for one
+/// to spawn by the other: their boxes' width and a step to spare.
+const SPAWN_CLEARANCE: f32 = 2.0 * map::PLAYER_HALF.x + 0.7;
 
 /// Where a bot's eyes are (bots never crouch).
 fn bot_eye(player: &Player) -> Vec3 {
@@ -2368,6 +2399,52 @@ mod tests {
         server.team_scores[0] = 1;
         server.damage(1000, 1001, 500, 0);
         assert!(server.phase == Phase::Lobby);
+    }
+
+    /// No two living players stand in each other.
+    fn assert_nobody_overlaps(server: &Server, what: &str) {
+        let alive: Vec<(PlayerId, Vec3)> = server.players.iter().filter(|(_, p)| p.alive).map(|(id, p)| (*id, p.pos)).collect();
+        for (i, (a, pa)) in alive.iter().enumerate() {
+            for (b, pb) in &alive[i + 1..] {
+                assert!(!crowds(*pa, *pb), "{what}: {a} at {pa} and {b} at {pb} spawned in each other");
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_server_spawns_nobody_inside_anybody_else() {
+        for map in 0..map::MAP_NAMES.len() as u8 {
+            for mode in (0..MODE_NAMES.len() as u8).filter(|mode| map::plays(map, *mode)) {
+                let mut server = Server::bind(ServerSettings { port: 0, mode, map, ..ServerSettings::default() }).unwrap();
+                while server.players.len() < MAX_PLAYERS {
+                    server.add_bot();
+                }
+                for round in 0..20 {
+                    server.start_match();
+                    let what = format!("map {map} mode {mode} round {round}");
+                    assert_eq!(server.players.values().filter(|p| p.alive).count(), MAX_PLAYERS, "{what}");
+                    assert_nobody_overlaps(&server, &what);
+                    // And one at a time, coming back while everybody else stands.
+                    let ids: Vec<PlayerId> = server.players.keys().copied().collect();
+                    for id in ids {
+                        server.players.get_mut(&id).unwrap().alive = false;
+                        server.spawn_player(id);
+                        assert_nobody_overlaps(&server, &what);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn with_too_few_spawns_players_still_come_in_apart() {
+        let mut server = Server::bind(ServerSettings { port: 0, map: 0, ..ServerSettings::default() }).unwrap();
+        server.map.spawns.truncate(2);
+        while server.players.len() < 8 {
+            server.add_bot();
+        }
+        server.start_match();
+        assert_nobody_overlaps(&server, "two spawns, eight players");
     }
 
     #[test]
