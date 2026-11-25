@@ -230,13 +230,19 @@ b.box("Base", -0.012, 0.012, -0.013, 0.023, 0.0, top)
 b.box("Clamp", -0.0148, -0.012, -0.007, 0.017, 0.0, top * 0.8)
 for y in (-0.003, 0.013):
     b.cylinder_x(f"ClampBolt{int(y > 0)}", 0.0025, -0.018, -0.0148, y, top * 0.45)
-# The turrets stand on the housing where it is about as wide as at its middle.
+# The turrets: on top, and on the left on a flat pad. Neither may reach into
+# the window, which is widest at the bottom of its front (`flare` times
+# `width`), so the pad starts just outside that and fills the gap to the
+# sloping, flaring wall.
+turret_y, turret_radius = 0.004, 0.0048
 roof = AXIS_Z + height / 2 + wall
-b.cylinder_z("ElevationTurret", 0.0048, 0.0, 0.004, roof - 0.001, roof + 0.0045, segments=20)
-b.cylinder_z("ElevationCap", 0.0052, 0.0, 0.004, roof + 0.0045, roof + 0.006, segments=20)
-side = width * (1.0 + TOP_NARROWING) / 4 + wall
-b.cylinder_x("WindageTurret", 0.0048, -side - 0.0045, -side + 0.001, 0.004, AXIS_Z)
-b.cylinder_x("WindageCap", 0.0052, -side - 0.006, -side - 0.0045, 0.004, AXIS_Z)
+b.cylinder_z("ElevationTurret", turret_radius, 0.0, turret_y, roof - 0.001, roof + 0.0045, segments=20)
+b.cylinder_z("ElevationCap", 0.0052, 0.0, turret_y, roof + 0.0045, roof + 0.006, segments=20)
+pad_in = 1.22 * width / 2 + 0.0003
+pad_out = pad_in + 0.002
+b.box("WindagePad", -pad_out, -pad_in, turret_y - 0.0055, turret_y + 0.0055, AXIS_Z - 0.0058, AXIS_Z + 0.0058)
+b.cylinder_x("WindageTurret", turret_radius, -pad_out - 0.0045, -pad_out, turret_y, AXIS_Z)
+b.cylinder_x("WindageCap", 0.0052, -pad_out - 0.006, -pad_out - 0.0045, turret_y, AXIS_Z)
 glass_y = 0.017
 b.glass("Glass", width, height, glass_y, inside(1.22, front, back, glass_y))
 mark_y = glass_y - 0.0004
