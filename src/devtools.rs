@@ -23,7 +23,7 @@ use crate::{
     protocol::{ClientMsg, MODE_CONQUEST},
     map::PLAYER_HALF,
     loadout::{Choice, LoadoutScreen},
-    remote::{Corpse, RemotePlayer},
+    remote::{Corpse, RemotePlayer, Spectate},
     weapons::{GUN_COUNT, IRON_SIGHTS, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
     ui::{FinalScoresOpen, MatchChoice, PickerOpen},
     world::{GameMap, MainCamera},
@@ -41,6 +41,7 @@ impl Plugin for DevToolsPlugin {
         // Without `--bots` it adds three; with it, the host starts with them.
         let add_bots = if launch.bots.is_some() { 0 } else { 3 };
         let bots_hold_fire = launch.server.bots_hold_fire;
+        let mode = launch.server.mode;
         if let Some(dir) = selftest {
             let dir = PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
@@ -53,6 +54,7 @@ impl Plugin for DevToolsPlugin {
                 pictures: VecDeque::new(),
                 add_bots,
                 bots_hold_fire,
+                mode,
             })
             .add_systems(First, draw_to_canvas)
             .add_systems(Last, take_picture)
@@ -109,6 +111,8 @@ struct SelfTest {
     /// Whether it leaves the lobby with the bots holding their fire
     /// (`--bots-hold-fire`): for pictures that being shot would spoil.
     bots_hold_fire: bool,
+    /// The mode it leaves the lobby with (`--mode`).
+    mode: u8,
 }
 
 impl SelfTest {
@@ -312,8 +316,8 @@ fn selftest_lobby(
     // The mode and map are picked in the match picker, open while they are clicked.
     picker.0 = (1.6..3.0).contains(&test.clock);
     // The lobby's chips and cards, clicked: team deathmatch on Arena with
-    // the bots' fire the other way, then back to free for all on Depot with
-    // it as asked. Each click is checked once the server has answered.
+    // the bots' fire the other way, then back to the mode asked for (free
+    // for all unless `--mode`) on Depot with the bots' fire as asked. Each click is checked once the server has answered.
     let scale = window.1.scale_factor();
     let card_at = |target: Choice| {
         choices.iter().find(|(choice, ..)| **choice == target).map(|(_, at, _)| at.translation / scale)
@@ -326,7 +330,7 @@ fn selftest_lobby(
         MatchChoice::Mode(1),
         MatchChoice::Map(0),
         MatchChoice::BotsHoldFire(!hold),
-        MatchChoice::Mode(0),
+        MatchChoice::Mode(test.mode),
         MatchChoice::Map(1),
         MatchChoice::BotsHoldFire(hold),
     ];
@@ -449,7 +453,7 @@ fn selftest_play(
     remotes: Query<(&RemotePlayer, &Transform)>,
     (corpses, dropped): (Query<(Entity, &Corpse, &Transform)>, Query<(&DroppedMagazine, &Transform)>),
     map: Res<GameMap>,
-    cue_count: Res<CueCount>,
+    (cue_count, spectate, mut wheel): (Res<CueCount>, Res<Spectate>, MessageWriter<bevy::input::mouse::MouseWheel>),
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut captured: Local<Captured>,
 ) {
@@ -520,7 +524,7 @@ fn selftest_play(
     // Not while the scoreboard is held (below), which hides the death screen.
     let scores_held = (5.0..6.6).contains(&test.clock);
     if player.on_death_screen()
-        && player.dead_for > 1.0
+        && player.dead_for > 2.0
         && controls.captured
         && !settings_menu.open
         && !scores_held
@@ -528,6 +532,29 @@ fn selftest_play(
     {
         captured.dead = true;
         test.capture("dead.png");
+        println!("[selftest] dead, watching {:?}", spectate.watching.map(|id| session.name_of(id)));
+    }
+    // A notch of the wheel moves the camera on to the next teammate.
+    if captured.dead && player.on_death_screen() && spectate.watching.is_some() {
+        if player.dead_for > 2.2 && captured.watched.is_none() {
+            captured.watched = spectate.watching;
+            wheel.write(bevy::input::mouse::MouseWheel {
+                unit: bevy::input::mouse::MouseScrollUnit::Line,
+                x: 0.0,
+                y: -1.0,
+                window: Entity::PLACEHOLDER,
+                phase: bevy::input::touch::TouchPhase::Moved,
+            });
+        }
+        if player.dead_for > 3.2 && !captured.scrolled {
+            captured.scrolled = true;
+            test.capture("dead_scrolled.png");
+            println!(
+                "[selftest] after a scroll, watching {:?} (was {:?})",
+                spectate.watching.map(|id| session.name_of(id)),
+                captured.watched.map(|id| session.name_of(id))
+            );
+        }
     }
     if let Some(arc) = player.damage_arcs.first()
         && !captured.hurt
@@ -769,14 +796,23 @@ fn selftest_play(
     }
     // The death screen with its map to pick where to come back in (only on
     // our side: the server still has us alive).
-    if test.reached(15, if conquest { 17.3 } else { 11.1 }) && conquest {
+    // In the other team modes, the camera going to a teammate and on to the
+    // next with the wheel (above), if no bot has killed us yet.
+    let teams = session.team_mode() && !conquest;
+    if test.reached(15, if conquest { 17.3 } else { 11.1 }) && (conquest || teams && !captured.scrolled) {
         player.alive = false;
         player.killed_by = Some("[bot] Clanker".to_string());
+        player.dead_for = 0.0;
     }
     if test.reached(16, if conquest { 18.0 } else { 11.15 }) && conquest {
         test.capture("deploy.png");
     }
-    if test.reached(17, if conquest { 18.5 } else { 11.2 }) {
+    let end = match () {
+        _ if conquest => 18.5,
+        _ if teams && player.on_death_screen() && !captured.scrolled => 15.0,
+        _ => 11.2,
+    };
+    if test.reached(17, end) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
             "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me (kills, assists, deaths) {:?} ping {:.1}ms",
@@ -808,6 +844,9 @@ struct Captured {
     ally: bool,
     hurt: bool,
     dead: bool,
+    /// Who the camera was on when the wheel turned while we were dead.
+    watched: Option<crate::protocol::PlayerId>,
+    scrolled: bool,
     switch: bool,
     reload: bool,
     drop: bool,

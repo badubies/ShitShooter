@@ -6,10 +6,10 @@ use bevy::{light::NotShadowCaster, prelude::*, window::PrimaryWindow};
 
 use crate::{
     AppState,
-    map::{CROUCH_HALF, PLAYER_HALF},
+    map::{CROUCH_HALF, PLAYER_HALF, STAND_EYE},
     net::{NetMsg, Session, SnapshotMsg},
     paint::{BODY_HEIGHT, BODY_RADIUS, BODY_Y, HEAD_RADIUS, HEAD_Y, NECK, PlayerModel, Skins},
-    player::{GRAVITY, LocalPlayer, PlayerSystems, magazine_out},
+    player::{GRAVITY, LocalPlayer, PlayerSystems, magazine_out, smooth},
     gun_model::{FittedModels, GunHolder, GunModelSystems, GunPart, PartKind},
     protocol::*,
     ui::BLUE,
@@ -31,6 +31,7 @@ pub struct RemotePlugin;
 impl Plugin for RemotePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RemoteIndex>()
+            .init_resource::<Spectate>()
             .add_systems(OnExit(AppState::Playing), clear_index)
             .add_systems(
                 Update,
@@ -44,7 +45,7 @@ impl Plugin for RemotePlugin {
                 (
                     size_gun_boxes.after(GunModelSystems::Show),
                     settle_corpses,
-                    (show_outlines, draw_ally_tags)
+                    (spectate, show_outlines, draw_ally_tags)
                         .chain()
                         .after(RemoteSystems)
                         .after(PlayerSystems::Camera),
@@ -422,6 +423,124 @@ fn reset_on_spawn(
             remote.samples.clear();
         }
     }
+}
+
+/// Seconds after we die that the camera stays where we fell...
+const SPECTATE_AFTER: f32 = 0.6;
+/// ...before it takes this long to glide over to a teammate, from one
+/// teammate to the next, or back to where we fell.
+const SPECTATE_GLIDE: f32 = 0.7;
+/// Where it sits from a teammate's eyes: behind, above and off to the
+/// right, looking the way they aim.
+const SPECTATE_BACK: f32 = 2.4;
+const SPECTATE_UP: f32 = 0.45;
+const SPECTATE_SIDE: f32 = 0.55;
+/// How far it keeps off a wall that is in the way.
+const SPECTATE_WALL_GAP: f32 = 0.25;
+
+/// The teammate we watch while dead, if any (shown on the death screen).
+#[derive(Resource, Default)]
+pub struct Spectate {
+    pub watching: Option<PlayerId>,
+}
+
+/// The camera while we are dead.
+#[derive(Default)]
+struct SpectateCamera {
+    /// Where we died, looking the way we were.
+    fell: Option<Transform>,
+    /// Who it is going to or with (`None`: where we died).
+    heading_for: Option<PlayerId>,
+    /// Where it set off from, and how far (0 -> 1) it has gone.
+    from: Option<Transform>,
+    glide: f32,
+    /// The view it last had. (`follow_camera` turns the camera back the way
+    /// we were looking each frame before this runs.)
+    view: Option<Transform>,
+}
+
+/// While we are dead in a team mode, the camera watches a living teammate
+/// from over their shoulder, looking where they aim; the scroll wheel steps
+/// to the next or the one before. When they die it moves on to another.
+/// With none left alive, or in free for all, it stays where we died.
+fn spectate(
+    time: Res<Time>,
+    player: Res<LocalPlayer>,
+    session: Res<Session>,
+    map: Res<GameMap>,
+    wheel: Res<crate::settings::WheelSteps>,
+    remotes: Query<(&RemotePlayer, &Transform), Without<MainCamera>>,
+    mut camera: Single<&mut Transform, With<MainCamera>>,
+    mut spectate: ResMut<Spectate>,
+    mut state: Local<SpectateCamera>,
+) {
+    if !player.on_death_screen() {
+        *state = SpectateCamera::default();
+        spectate.watching = None;
+        return;
+    }
+    let fell = *state.fell.get_or_insert(**camera);
+    // Living teammates, in a fixed order to step through.
+    let mut team: Vec<_> = remotes
+        .iter()
+        .filter(|(remote, _)| {
+            session.team_mode()
+                && player.dead_for >= SPECTATE_AFTER
+                && remote.alive
+                && remote.id != session.my_id
+                && !session.enemies(session.my_id, remote.id)
+        })
+        .collect();
+    team.sort_by_key(|(remote, _)| remote.id);
+    let at = spectate.watching.and_then(|id| team.iter().position(|(remote, _)| remote.id == id));
+    let step = match wheel.step() {
+        Some(crate::settings::Bind::WheelUp) => -1,
+        Some(crate::settings::Bind::WheelDown) => 1,
+        _ => 0,
+    };
+    let pick = match at {
+        _ if team.is_empty() => None,
+        Some(i) => Some((i as isize + step).rem_euclid(team.len() as isize) as usize),
+        // The one we watched is gone: the next one after them, or the first.
+        None => Some(
+            spectate
+                .watching
+                .and_then(|id| team.iter().position(|(remote, _)| remote.id > id))
+                .unwrap_or(0),
+        ),
+    };
+    spectate.watching = pick.map(|i| team[i].0.id);
+
+    let target = match pick.map(|i| team[i]) {
+        Some((remote, transform)) => {
+            // Their eyes, from the middle of their box (lower when they crouch).
+            let eye = transform.translation + Vec3::Y * (STAND_EYE - PLAYER_HALF.y);
+            let aim = transform.rotation * Quat::from_rotation_x(remote.pitch);
+            let wanted = aim * Vec3::new(SPECTATE_SIDE, 0.0, SPECTATE_BACK) + Vec3::Y * SPECTATE_UP;
+            // Pulled in short of a wall between their head and that spot.
+            let length = wanted.length();
+            let out = match map.0.raycast(eye, wanted / length, length + SPECTATE_WALL_GAP) {
+                Some(hit) => (hit - SPECTATE_WALL_GAP).max(0.0),
+                None => length,
+            };
+            Transform::from_translation(eye + wanted / length * out).with_rotation(aim)
+        }
+        None => fell,
+    };
+    // Off somewhere new: glide there from wherever the camera is now.
+    if state.from.is_none() || state.heading_for != spectate.watching {
+        state.heading_for = spectate.watching;
+        state.from = Some(state.view.unwrap_or(fell));
+        state.glide = 0.0;
+    }
+    let from = state.from.unwrap_or(fell);
+    state.glide = (state.glide + time.delta_secs() / SPECTATE_GLIDE).min(1.0);
+    let t = smooth(state.glide);
+    let view = Transform::from_translation(from.translation.lerp(target.translation, t))
+        .with_rotation(from.rotation.slerp(target.rotation, t));
+    state.view = Some(view);
+    camera.translation = view.translation;
+    camera.rotation = view.rotation;
 }
 
 /// Where the gun is held, relative to the head.

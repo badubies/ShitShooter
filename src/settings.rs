@@ -723,6 +723,13 @@ pub struct WheelSteps {
     owed: f32,
 }
 
+impl WheelSteps {
+    /// The notch the wheel turned this frame, if it did.
+    pub fn step(&self) -> Option<Bind> {
+        self.step
+    }
+}
+
 /// At most one notch a frame, so a hard flick does not race through every weapon.
 fn read_wheel(scroll: Res<AccumulatedMouseScroll>, mut wheel: ResMut<WheelSteps>) {
     let (delta, notch) = match scroll.unit {

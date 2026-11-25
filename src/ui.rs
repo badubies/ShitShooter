@@ -1898,6 +1898,8 @@ enum Hud {
     Killer,
     /// Under it: how many kills that makes for them.
     KillerNote,
+    /// The teammate the camera is on while we are dead.
+    Watching,
     /// The seconds until we respawn.
     RespawnIn,
     /// How to respawn now.
@@ -2474,6 +2476,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                             weighted("FRAGGED BY", 12.0, 700, DANGER_TEXT),
                             (heading("", 44.0, RED), Hud::Killer, hud_shadow()),
                             (label("", 15.0, TEXT), Hud::KillerNote, hud_shadow()),
+                            (label("", 13.0, DIM), Hud::Watching, hud_shadow()),
                         ],
                     ),
                     (
@@ -2899,6 +2902,7 @@ fn update_hud(
     connection: Option<Res<Connection>>,
     time: Res<Time>,
     mut fps: Local<FpsCounter>,
+    spectate: Res<crate::remote::Spectate>,
     mut texts: Query<(&Hud, &mut Text, &mut TextColor)>,
 ) {
     fps.tick(time.delta_secs());
@@ -3008,6 +3012,16 @@ fn update_hud(
                 };
                 (note, TEXT)
             }
+            Hud::Watching => (
+                match spectate.watching {
+                    Some(id) => {
+                        let name = session.name_of(id);
+                        format!("Watching {}  ·  scroll for another teammate", name.strip_prefix("[bot] ").unwrap_or(name))
+                    }
+                    None => String::new(),
+                },
+                DIM,
+            ),
             Hud::RespawnIn => {
                 let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
                 (if player.respawn_asked { "…".to_string() } else { format!("{left:.0}") }, TEXT)

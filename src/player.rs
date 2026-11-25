@@ -170,7 +170,7 @@ fn bolt_home(home: f32) -> (f32, f32) {
 }
 
 /// Eases 0 -> 1 in and out; clamped.
-fn smooth(t: f32) -> f32 {
+pub fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -1060,7 +1060,8 @@ fn follow_camera(
     player.view_height += (eye_target - player.view_height) * (dt * 14.0).min(1.0);
 
     let (mut transform, mut projection) = camera.into_inner();
-    // When dead the camera stays where we died, but you can still look around.
+    // When dead the camera stays where we died, unless it goes to watch a
+    // teammate (`remote::spectate`).
     if player.alive {
         transform.translation = player.eye();
     }
