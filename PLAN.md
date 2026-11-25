@@ -47,8 +47,13 @@ sights were made here already. Each new gun gets:
   straight magazine, a ported muzzle brake, a solid stock with an
   adjustable cheek piece and a storage door. Its sights sit forward on the
   rail as on the sniper, so the stock stays out of the aimed view. It takes
-  the red dot, reflex and 2x (the 2x by default), not the scope. Its own
+  the red dot, reflex, 2x, 3x and scope (the 2x by default). Its own
   gunshot and reload handling in `audio.rs`.
+- A 3x sight (`assets/models/sights/3x.glb`, by `art/sights.py` with the
+  reflex and 2x): the 2x made bulkier, with thicker walls, a bigger window
+  under a deeper hood, a rim round the eyepiece, elevation and windage
+  turrets, a two-bolt clamp, and holdover dots under its chevron. Zoom
+  0.34. The rifle, DMR and sniper take it.
 - `art/sniper.py` builds the sniper (`assets/models/weapons/sniper.glb`), a
   bolt-action rifle 1200 mm long at true size: a black round receiver and
   heavy barrel in a dark aluminium chassis, a slotted handguard under one
@@ -222,8 +227,8 @@ irons alone (a new field) would put it behind the eye.
   Name other parts too (`Trigger`, `SlideStop`, `MagRelease`, a charging
   handle...), with sensible pivots, for animations to come.
 - `src/weapons.rs`: point the gun's `Model` at the new file and list its
-  `sights`. The long guns take the red dot,
-  reflex and 2x; the sniper takes the scope too. Every gun must take `TWO_X`
+  `sights`. The long guns take the red dot, reflex and 2x; the rifle, DMR
+  and sniper the 3x too, and the DMR and sniper the scope. Every gun must take `TWO_X`
   (a test checks it). Then delete the downloaded model and its `.blend`
   (`git rm`): git keeps them.
 - Build: `/Applications/Blender.app/Contents/MacOS/Blender --background
@@ -285,8 +290,8 @@ players' guns only drop their magazine (`remote.rs`).
 - `dropped magazines: []` at the end of the self-test is how `main` already
   was; it is not a regression.
 - The red dot and scope were built here, in Blender by hand
-  (`art/red_dot.blend`, `art/scope.blend`), with no scripts. The reflex and
-  2x come from `art/sights.py`.
+  (`art/red_dot.blend`, `art/scope.blend`), with no scripts. The reflex, 2x
+  and 3x come from `art/sights.py`.
 
 ### Steps
 

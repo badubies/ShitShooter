@@ -81,6 +81,7 @@ pub const RED_DOT: SightId = 1;
 pub const SCOPE: SightId = 2;
 pub const REFLEX: SightId = 3;
 pub const TWO_X: SightId = 4;
+pub const THREE_X: SightId = 5;
 
 pub struct Sight {
     pub name: &'static str,
@@ -98,7 +99,7 @@ pub struct Sight {
     pub overlay: bool,
 }
 
-pub const SIGHTS: [Sight; 5] = [
+pub const SIGHTS: [Sight; 6] = [
     Sight {
         name: "Iron sights",
         path: None,
@@ -131,6 +132,14 @@ pub const SIGHTS: [Sight; 5] = [
         name: "2x sight",
         path: Some("models/sights/2x.glb"),
         zoom: 0.5,
+        overlay: false,
+    },
+    // The 2x made bulkier, magnifying three times: for the long guns. Made by
+    // art/sights.py with the reflex and 2x.
+    Sight {
+        name: "3x sight",
+        path: Some("models/sights/3x.glb"),
+        zoom: 0.34,
         overlay: false,
     },
 ];
@@ -200,7 +209,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 2.0,
         model: Some(Model {
             path: "models/weapons/rifle.glb",
-            sights: &[RED_DOT, REFLEX, TWO_X],
+            sights: &[RED_DOT, REFLEX, TWO_X, THREE_X],
         }),
         choke: None,
     },
@@ -284,7 +293,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 2.0,
         model: Some(Model {
             path: "models/weapons/dmr.glb",
-            sights: &[RED_DOT, REFLEX, TWO_X],
+            sights: &[RED_DOT, REFLEX, TWO_X, THREE_X, SCOPE],
         }),
         choke: None,
     },
@@ -310,7 +319,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 2.5,
         model: Some(Model {
             path: "models/weapons/sniper.glb",
-            sights: &[RED_DOT, REFLEX, TWO_X, SCOPE],
+            sights: &[RED_DOT, REFLEX, TWO_X, THREE_X, SCOPE],
         }),
         choke: None,
     },

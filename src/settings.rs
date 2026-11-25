@@ -1393,7 +1393,7 @@ fn apply_volume(settings: Res<Settings>, args: Res<LaunchArgs>, mut global: ResM
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::weapons::{REFLEX, TWO_X};
+    use crate::weapons::{REFLEX, THREE_X, TWO_X};
 
     #[test]
     fn settings_survive_a_save_and_load() {
@@ -1444,21 +1444,34 @@ mod tests {
     }
 
     #[test]
-    fn only_the_sniper_takes_the_scope() {
+    fn the_long_guns_take_the_3x_and_the_dmr_and_sniper_the_scope() {
         let mut settings = Settings::parse("primary = Sniper
 secondary = Pistol
 sight.Pistol = Scope
 ");
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(SNIPER), SCOPE, "the sniper's default");
-        for sight in [IRON_SIGHTS, RED_DOT, REFLEX, TWO_X, SCOPE] {
+        for sight in [IRON_SIGHTS, RED_DOT, REFLEX, TWO_X, THREE_X, SCOPE] {
             settings.set_sight(0, sight);
             assert_eq!(settings.sight_for(SNIPER), sight);
         }
         settings.set_sight(1, REFLEX);
         assert_eq!(settings.sight_for(PISTOL), REFLEX);
-        settings.set_sight(1, SCOPE);
-        assert_eq!(settings.sight_for(PISTOL), REFLEX, "the pistol takes no scope");
+        for sight in [SCOPE, THREE_X] {
+            settings.set_sight(1, sight);
+            assert_eq!(settings.sight_for(PISTOL), REFLEX, "the pistol takes no {}", crate::weapons::sight(sight).name);
+        }
+        // The DMR takes both; the rifle the 3x but not the scope.
+        settings.set_gun(0, DMR);
+        for sight in [THREE_X, SCOPE] {
+            settings.set_sight(0, sight);
+            assert_eq!(settings.sight_for(DMR), sight);
+        }
+        settings.set_gun(0, RIFLE);
+        settings.set_sight(0, THREE_X);
+        assert_eq!(settings.sight_for(RIFLE), THREE_X);
+        settings.set_sight(0, SCOPE);
+        assert_eq!(settings.sight_for(RIFLE), THREE_X, "the rifle takes no scope");
     }
 
     #[test]

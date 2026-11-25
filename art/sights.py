@@ -1,12 +1,15 @@
-"""Builds the reflex and the 2x sight as one family: a short housing of thin
-walls round a big window, a trapezoid with rounded corners that flares a little
-towards the front, on a low clamp. Little of it gets in the way when aiming.
-The reflex is short with a dot in a ring; the 2x is longer, its lens set back
-under a hood, with a chevron in a ring. Metres, Z up, the front towards +Y
+"""Builds the reflex, the 2x and the 3x sight as one family: a short housing
+of thin walls round a big window, a trapezoid with rounded corners that flares
+a little towards the front, on a low clamp. Little of it gets in the way when
+aiming. The reflex is short with a dot in a ring; the 2x is longer, its lens
+set back under a hood, with a chevron in a ring; the 3x is the 2x made
+bulkier: thicker walls, a bigger window under a deeper hood, a rim round the
+eyepiece, turrets on top and on the left, and holdover dots under its
+chevron. Metres, Z up, the front towards +Y
 (as the guns face, so a gun's mount puts them on as they are), the base on
 the origin, like the other sights. Small enough for the pistol.
-Saves art/reflex.blend and art/2x.blend and exports
-assets/models/sights/reflex.glb and 2x.glb. Run with:
+Saves art/reflex.blend, art/2x.blend and art/3x.blend and exports
+assets/models/sights/reflex.glb, 2x.glb and 3x.glb. Run with:
 blender --background --factory-startup --python sights.py -- <repo root>
 """
 import math
@@ -76,12 +79,18 @@ class Builder:
                               matrix=Matrix.Translation(((x0 + x1) / 2, y, z)) @ Matrix.Rotation(math.pi / 2, 4, "Y"))
         return self.finish(name, bm, self.body)
 
-    def housing(self, name, width, height, y_front, y_back, flare):
-        """A tube of thin walls round a window `width` by `height` at the back,
-        `flare` times that at the front, open at both ends."""
+    def cylinder_z(self, name, radius, x, y, z0, z1, segments=16):
+        bm = bmesh.new()
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=segments, radius1=radius, radius2=radius, depth=z1 - z0,
+                              matrix=Matrix.Translation((x, y, (z0 + z1) / 2)))
+        return self.finish(name, bm, self.body)
+
+    def housing(self, name, width, height, y_front, y_back, flare, wall=WALL):
+        """A tube of walls `wall` thick round a window `width` by `height` at the
+        back, `flare` times that at the front, open at both ends."""
         bm = bmesh.new()
         rims = [[bm.verts.new((x, y, z)) for x, z in outline(width * scale, height * scale, CORNER + extra)]
-                for extra in (WALL, 0.0) for y, scale in ((y_front, flare), (y_back, 1.0))]
+                for extra in (wall, 0.0) for y, scale in ((y_front, flare), (y_back, 1.0))]
         outer_front, outer_back, inner_front, inner_back = rims
         n = len(outer_front)
         for i in range(n):
@@ -206,3 +215,39 @@ b.box("Adjuster", -width / 2 - WALL - 0.0025, -width / 2 - WALL + 0.0005, -0.003
       AXIS_Z - 0.001)
 b.aim_point(mark_y)
 b.save("2x")
+
+# The 3x: the 2x made bulkier. Thicker walls round a bigger window, the glass
+# set further back under a deeper hood, a rim round the eyepiece, an
+# elevation turret on top and a windage turret on the left, a longer clamp
+# with two bolts, and a chevron in a ring with holdover dots under it.
+b = Builder("ThreeX")
+width, height, wall = 0.030, 0.024, 0.0026
+front, back = 0.026, -0.014
+b.housing("Housing", width, height, front, back, flare=1.22, wall=wall)
+b.housing("Eyepiece", width + 0.0016, height + 0.0016, back, back - 0.004, flare=1.0, wall=wall)
+top = AXIS_Z - height / 2 - wall + 0.0003
+b.box("Base", -0.012, 0.012, -0.013, 0.023, 0.0, top)
+b.box("Clamp", -0.0148, -0.012, -0.007, 0.017, 0.0, top * 0.8)
+for y in (-0.003, 0.013):
+    b.cylinder_x(f"ClampBolt{int(y > 0)}", 0.0025, -0.018, -0.0148, y, top * 0.45)
+# The turrets stand on the housing where it is about as wide as at its middle.
+roof = AXIS_Z + height / 2 + wall
+b.cylinder_z("ElevationTurret", 0.0048, 0.0, 0.004, roof - 0.001, roof + 0.0045, segments=20)
+b.cylinder_z("ElevationCap", 0.0052, 0.0, 0.004, roof + 0.0045, roof + 0.006, segments=20)
+side = width * (1.0 + TOP_NARROWING) / 4 + wall
+b.cylinder_x("WindageTurret", 0.0048, -side - 0.0045, -side + 0.001, 0.004, AXIS_Z)
+b.cylinder_x("WindageCap", 0.0052, -side - 0.006, -side - 0.0045, 0.004, AXIS_Z)
+glass_y = 0.017
+b.glass("Glass", width, height, glass_y, inside(1.22, front, back, glass_y))
+mark_y = glass_y - 0.0004
+arm, thick, spread = 0.0036, 0.0005, math.radians(38)
+for side_sign, name in ((-1, "ChevronLeft"), (1, "ChevronRight")):
+    sx, sz = side_sign * math.sin(spread), -math.cos(spread)
+    nx, nz = -sz * thick / 2, sx * thick / 2
+    b.flat(name, [(nx, nz), (-nx, -nz), (sx * arm - nx, sz * arm - nz), (sx * arm + nx, sz * arm + nz)], mark_y)
+b.dot("Dot", 0.0005, mark_y)
+for i, below in enumerate((0.0040, 0.0050)):
+    b.flat(f"Holdover{i}", [(x, z - below) for x, z in circle(0.00035, 10)], mark_y)
+b.ring("Ring", 0.0060, 0.0055, mark_y)
+b.aim_point(mark_y)
+b.save("3x")
