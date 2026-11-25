@@ -192,7 +192,7 @@ fn fire(
             player.slot = slot;
             player.draw = DRAW_TIME;
             player.reload = 0.0;
-            own_sound(Sound::Reload);
+            own_sound(Sound::Draw);
         }
     }
     let weapon_id = player.weapon_id();
@@ -224,13 +224,13 @@ fn fire(
                 }
             } else {
                 if passed(MAGAZINE_OUT) {
-                    own_sound(Sound::MagOut);
+                    own_sound(Sound::MagOut(weapon_id));
                 }
                 if passed(MAGAZINE_IN) {
-                    own_sound(Sound::MagIn);
+                    own_sound(Sound::MagIn(weapon_id));
                 }
                 if passed(BOLT_HOME) && player.reload_empty {
-                    own_sound(Sound::Bolt);
+                    own_sound(Sound::Bolt(weapon_id));
                 }
             }
             if player.reload <= 0.0 {
@@ -259,6 +259,7 @@ fn fire(
             player.reload = stats.reload;
             player.reload_empty = player.guns[slot].ammo == 0;
             player.reload_stop = false;
+            own_sound(Sound::Rustle);
         }
     }
 

@@ -14,6 +14,7 @@ use bevy::{
 
 use crate::{
     AppState,
+    audio::{Sound, SoundCue, surface_under},
     gun_model::{Fitted, FittedModels, GunHolder, GunPart, PartKind},
     map::{self, CROUCH_EYE, Map, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
@@ -1187,6 +1188,8 @@ pub struct DroppedMagazine {
     age: f32,
     pub landed: bool,
     scale: Vec3,
+    /// Whose magazine it is, for the sound it makes landing.
+    weapon: WeaponId,
 }
 
 /// Once the old magazine has dropped away from the gun in our hands, a copy
@@ -1226,6 +1229,7 @@ fn drop_magazine(
                 age: 0.0,
                 landed: false,
                 scale: at.scale,
+                weapon: player.weapon_id(),
             },
             at,
             Visibility::default(),
@@ -1247,6 +1251,7 @@ fn fall_magazines(
     time: Res<Time>,
     map: Res<GameMap>,
     mut magazines: Query<(Entity, &mut DroppedMagazine, &mut Transform)>,
+    mut cues: MessageWriter<SoundCue>,
 ) {
     let dt = time.delta_secs().min(0.05);
     for (entity, mut magazine, mut transform) in &mut magazines {
@@ -1271,6 +1276,11 @@ fn fall_magazines(
         {
             transform.translation += step / distance * (hit - 0.04).max(0.0);
             magazine.landed = true;
+            let at = transform.translation;
+            cues.write(SoundCue {
+                sound: Sound::MagDrop(surface_under(&map.0, at), magazine.weapon),
+                at: Some(at),
+            });
             continue;
         }
         transform.translation += step;

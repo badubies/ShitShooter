@@ -72,14 +72,18 @@ pub enum Sound {
     Footstep(Surface),
     /// Hitting the ground after a jump or fall.
     Land(Surface),
-    /// The clack of a weapon being taken out.
-    Reload,
-    /// A magazine released and sliding out.
-    MagOut,
-    /// A magazine pushed in until it latches.
-    MagIn,
-    /// A bolt or slide snapping forward at the end of a reload.
-    Bolt,
+    /// A weapon being taken out: a rustle, and the grip taken.
+    Draw,
+    /// Clothes and gear moving as a reload starts.
+    Rustle,
+    /// That gun's magazine released and sliding out.
+    MagOut(WeaponId),
+    /// That gun's magazine pushed in until it latches.
+    MagIn(WeaponId),
+    /// That gun's bolt or slide snapping forward at the end of a reload.
+    Bolt(WeaponId),
+    /// A magazine of that gun, dropped in a reload, hitting the ground.
+    MagDrop(Surface, WeaponId),
     /// A shell pushed into a shotgun's tube.
     ShellIn,
     /// A shotgun's pump racked back and forth.
@@ -149,9 +153,14 @@ struct Sounds {
     beep: Handle<AudioSource>,
     blip: Handle<AudioSource>,
     click: Handle<AudioSource>,
-    mag_out: Handle<AudioSource>,
-    mag_in: Handle<AudioSource>,
-    bolt: Handle<AudioSource>,
+    draw: Handle<AudioSource>,
+    rustle: Handle<AudioSource>,
+    /// These three indexed by weapon.
+    mag_out: Vec<Handle<AudioSource>>,
+    mag_in: Vec<Handle<AudioSource>>,
+    bolt: Vec<Handle<AudioSource>>,
+    /// Indexed by `Surface`.
+    mag_drops: [Vec<Handle<AudioSource>>; Surface::COUNT],
     shell_in: Handle<AudioSource>,
     pump: Handle<AudioSource>,
     /// State of the tiny random generator used to vary pitch.
@@ -189,9 +198,12 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         beep: add(synth_beep()),
         blip: add(synth_blip()),
         click: add(synth_click()),
-        mag_out: add(synth_mag_out()),
-        mag_in: add(synth_mag_in()),
-        bolt: add(synth_bolt()),
+        draw: add(synth_handling(true)),
+        rustle: add(synth_handling(false)),
+        mag_out: (0..GUN_COUNT).map(|weapon_id| add(synth_mag_out(weapon_id))).collect(),
+        mag_in: (0..GUN_COUNT).map(|weapon_id| add(synth_mag_in(weapon_id))).collect(),
+        bolt: (0..GUN_COUNT).map(|weapon_id| add(synth_bolt_release(weapon_id))).collect(),
+        mag_drops: Surface::ALL.map(|surface| (0..MAG_DROP_TAKES).map(|take| add(synth_mag_drop(surface, take))).collect()),
         shell_in: add(synth_shell_in()),
         pump: add(synth_pump()),
         rng: 0x2545_f491,
@@ -235,7 +247,8 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
                     0.95 + random * 0.1,
                 )
             }
-            Sound::Reload => (sounds.clack.clone(), 0.5, 0.95 + random * 0.1),
+            Sound::Draw => (sounds.draw.clone(), 0.5, 0.95 + random * 0.1),
+            Sound::Rustle => (sounds.rustle.clone(), 0.35, 0.9 + random * 0.2),
             Sound::Pin => (sounds.clack.clone(), 0.35, 2.4 + random * 0.2),
             Sound::Throw => (sounds.swish.clone(), 0.5, 0.95 + random * 0.1),
             Sound::Bounce => (sounds.clack.clone(), 0.8, 1.5 + random * 0.3),
@@ -253,9 +266,19 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             Sound::Go => (sounds.beep.clone(), 0.7, 2.0),
             Sound::Ping => (sounds.blip.clone(), 0.5, 1.0),
             Sound::Choke => (sounds.click.clone(), 0.3, 1.0),
-            Sound::MagOut => (sounds.mag_out.clone(), 0.55, 0.95 + random * 0.1),
-            Sound::MagIn => (sounds.mag_in.clone(), 0.6, 0.95 + random * 0.1),
-            Sound::Bolt => (sounds.bolt.clone(), 0.6, 0.96 + random * 0.08),
+            Sound::MagOut(weapon_id) => (by_weapon(&sounds.mag_out, weapon_id), 0.55, 0.97 + random * 0.06),
+            // Hardly varied: it should seat as the magazine is seen to.
+            Sound::MagIn(weapon_id) => (by_weapon(&sounds.mag_in, weapon_id), 0.6, 0.98 + random * 0.04),
+            Sound::Bolt(weapon_id) => (by_weapon(&sounds.bolt, weapon_id), 0.6, 0.97 + random * 0.06),
+            Sound::MagDrop(surface, weapon_id) => {
+                let takes = &sounds.mag_drops[surface as usize];
+                (
+                    takes[(random * 997.0) as usize % takes.len()].clone(),
+                    0.4,
+                    // A smaller magazine sounds higher.
+                    handling(weapon_id).pitch.sqrt() * (0.95 + random * 0.1),
+                )
+            }
             Sound::ShellIn => (sounds.shell_in.clone(), 0.5, 0.92 + random * 0.16),
             Sound::Pump => (sounds.pump.clone(), 0.75, 0.97 + random * 0.06),
             Sound::BoltBack => (sounds.bolt_back.clone(), 0.45, 0.97 + random * 0.06),
@@ -286,6 +309,12 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             }
         }
     }
+}
+
+/// The sound for `weapon_id` from a list of one per gun (the rifle's for
+/// anything else).
+fn by_weapon(sounds: &[Handle<AudioSource>], weapon_id: WeaponId) -> Handle<AudioSource> {
+    sounds.get(weapon_id as usize).unwrap_or(&sounds[RIFLE as usize]).clone()
 }
 
 /// Our own steps: one per stride while running on the ground, plus a thump on landing.
@@ -439,65 +468,317 @@ fn knock(t: f32, at: f32, decay: f32, frequency: f32, noise: f32) -> f32 {
     (noise * 1.3 + (TAU * frequency * since).sin() * 0.6) * envelope
 }
 
-/// A magazine released: the catch clicks, then it scrapes out of the well.
-fn synth_mag_out() -> Vec<f32> {
-    let mut rng = 0x3a6_0001;
-    let mut low_passed = 0.0;
-    samples(0.2, |t| {
+/// A part ringing at a few unrelated pitches (frequency, decay per
+/// second), struck `at` seconds in.
+fn ring(t: f32, at: f32, partials: &[(f32, f32)]) -> f32 {
+    if t < at {
+        return 0.0;
+    }
+    let since = t - at;
+    let tone: f32 = partials
+        .iter()
+        .map(|(frequency, decay)| (TAU * frequency * since).sin() * (-since * decay).exp())
+        .sum();
+    tone * (since * 3000.0).min(1.0) / partials.len() as f32
+}
+
+/// How loud something sliding over `from..to` seconds is at `t`: it
+/// picks up speed and slows again.
+fn sliding(t: f32, from: f32, to: f32) -> f32 {
+    if (from..to).contains(&t) {
+        ((t - from) / (to - from) * std::f32::consts::PI).sin()
+    } else {
+        0.0
+    }
+}
+
+/// Noise for things rubbing together: it catches and slips, so its level
+/// wanders. `rough` is its state, starting at 0.5.
+fn rubbing(noise: f32, rough: &mut f32, rng: &mut u32) -> f32 {
+    *rough += (next_random(rng) - *rough) * 0.02;
+    noise * *rough * 2.0
+}
+
+// ---------------------------------------------------------------- reloads
+
+/// Seconds into `Sound::MagIn` that the magazine seats. It is played at
+/// `MAGAZINE_IN`, a moment before the magazine is seen to be all the way in.
+const MAGAZINE_SEAT: f32 = 0.03;
+/// Takes of a magazine hitting each surface.
+const MAG_DROP_TAKES: u32 = 2;
+
+/// What a gun's magazine and action are like in the hands, for its reload
+/// sounds.
+struct Handling {
+    /// Higher for a smaller magazine and lighter parts.
+    pitch: f32,
+    /// How much its parts ring: polymer hardly, steel a lot (0..1).
+    metal: f32,
+    /// Heavier parts hit with more body.
+    weight: f32,
+    /// The magazine is slapped home with a palm, not pushed with a thumb.
+    slap: bool,
+}
+
+fn handling(weapon_id: WeaponId) -> Handling {
+    match weapon_id {
+        // Polymer, light.
+        SMG => Handling {
+            pitch: 1.2,
+            metal: 0.3,
+            weight: 0.75,
+            slap: true,
+        },
+        SNIPER => Handling {
+            pitch: 0.85,
+            metal: 0.6,
+            weight: 1.3,
+            slap: true,
+        },
+        // A small steel magazine and a heavy slide.
+        PISTOL => Handling {
+            pitch: 1.45,
+            metal: 0.9,
+            weight: 0.6,
+            slap: false,
+        },
+        // Aluminium.
+        _ => Handling {
+            pitch: 1.0,
+            metal: 0.7,
+            weight: 1.0,
+            slap: true,
+        },
+    }
+}
+
+/// A gun's magazine released: the button and the catch click, the
+/// magazine slides out of the well (a light one drops, a heavy one is
+/// pulled) and ticks as it comes free.
+fn synth_mag_out(weapon_id: WeaponId) -> Vec<f32> {
+    let Handling { pitch, metal, weight, .. } = handling(weapon_id);
+    let mut rng = 0x3a6_0101 ^ (weapon_id as u32 + 1).wrapping_mul(7919);
+    let mut rough = 0.5;
+    let mut well = Biquad::new(Pass::Band, 1500.0 * pitch, 1.0);
+    let ringing = [(1900.0 * pitch, 60.0), (3100.0 * pitch, 80.0), (4700.0 * pitch, 110.0)];
+    let out = 0.07 * weight;
+    samples(0.15 + out, |t| {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
-        low_passed += (noise - low_passed) * 0.25;
-        let scrape = low_passed * (t * 40.0).min(1.0) * (-(t - 0.02).max(0.0) * 18.0).exp() * 0.8;
-        ((knock(t, 0.0, 220.0, 2300.0, noise) + scrape) * 1.4).tanh() * 0.8
+        let button = knock(t, 0.0, 400.0, 3200.0 * pitch, noise) * 0.3;
+        let catch = knock(t, 0.012, 260.0, 2300.0 * pitch, noise) * 0.6 + ring(t, 0.012, &ringing) * metal * 0.9;
+        let slide = well.run(rubbing(noise, &mut rough, &mut rng) * sliding(t, 0.02, 0.02 + out)) * 0.8;
+        let free = knock(t, 0.02 + out, 300.0, 2600.0 * pitch, noise) * 0.25;
+        ((button + catch + slide + free) * 1.5).tanh() * 0.8
     })
 }
 
-/// A magazine pushed home: a dull thud, then the catch latching.
-fn synth_mag_in() -> Vec<f32> {
-    let mut rng = 0x3a6_0002;
+/// A gun's magazine pushed home: it slides into the well and seats
+/// `MAGAZINE_SEAT` seconds in with a thud and the latch clicking, a
+/// palm slapping it on a rifle, and the rounds inside settling.
+fn synth_mag_in(weapon_id: WeaponId) -> Vec<f32> {
+    let Handling { pitch, metal, weight, slap } = handling(weapon_id);
+    let mut rng = 0x3a6_0201 ^ (weapon_id as u32 + 1).wrapping_mul(7919);
+    let mut rough = 0.5;
     let mut low_passed = 0.0;
-    samples(0.16, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        low_passed += (noise - low_passed) * 0.18;
-        let thud = knock(t, 0.0, 70.0, 180.0, low_passed * 2.0);
-        let latch = knock(t, 0.055, 260.0, 2600.0, noise);
-        ((thud + latch * 0.8) * 1.5).tanh() * 0.85
-    })
-}
-
-/// A bolt or slide let go: a sharp metal slam with a bright ring.
-fn synth_bolt() -> Vec<f32> {
-    let mut rng = 0x3a6_0003;
-    samples(0.18, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        let slam = knock(t, 0.0, 120.0, 1700.0, noise) + knock(t, 0.012, 60.0, 3100.0, 0.0) * 0.5;
-        (slam * 1.6).tanh() * 0.85
-    })
-}
-
-/// A shell thumbed into the tube: a short, soft knock.
-fn synth_shell_in() -> Vec<f32> {
-    let mut rng = 0x3a6_0004;
-    let mut low_passed = 0.0;
-    samples(0.1, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        low_passed += (noise - low_passed) * 0.3;
-        let push = knock(t, 0.0, 140.0, 900.0, low_passed * 1.5) + knock(t, 0.03, 200.0, 1500.0, noise) * 0.6;
-        (push * 1.5).tanh() * 0.75
-    })
-}
-
-/// A pump racked: back with a scrape and a clack, then forward with a heavier one.
-fn synth_pump() -> Vec<f32> {
-    let mut rng = 0x3a6_0005;
-    let mut low_passed = 0.0;
-    samples(0.32, |t| {
+    let mut well = Biquad::new(Pass::Band, 1700.0 * pitch, 1.0);
+    let mut palm = Biquad::new(Pass::Low, 500.0, 0.7);
+    let ringing = [(1700.0 * pitch, 50.0), (2900.0 * pitch, 70.0), (4300.0 * pitch, 95.0)];
+    let mut rounds = Grains::new(1500.0);
+    samples(0.22, |t| {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
         low_passed += (noise - low_passed) * 0.2;
-        let slide = |from: f32, to: f32| if (from..to).contains(&t) { low_passed * 0.5 } else { 0.0 };
-        let back = knock(t, PUMP_CLACK, 110.0, 1300.0, noise) + slide(0.0, PUMP_CLACK);
-        let forward = knock(t, 0.22, 90.0, 900.0, noise) + slide(0.14, 0.22);
-        ((back + forward * 1.2) * 1.5).tanh() * 0.9
+        let entering = well.run(rubbing(noise, &mut rough, &mut rng) * sliding(t, 0.0, MAGAZINE_SEAT + 0.004)) * 0.6;
+        let seat = knock(t, MAGAZINE_SEAT, 70.0 / weight, 260.0 * pitch, low_passed * 2.0) * weight.min(1.2)
+            + knock(t, MAGAZINE_SEAT + 0.004, 260.0, 2600.0 * pitch, noise) * 0.8
+            + ring(t, MAGAZINE_SEAT, &ringing) * metal * 0.9;
+        let slapped = if slap && t >= MAGAZINE_SEAT { (-(t - MAGAZINE_SEAT) * 55.0).exp() } else { 0.0 };
+        let slapping = palm.run(noise * slapped) * 1.6;
+        let since = t - MAGAZINE_SEAT;
+        if (0.008..0.07).contains(&since) && next_random(&mut rng) < 900.0 / SAMPLE_RATE as f32 {
+            let size = next_random(&mut rng).powi(2) * 0.3;
+            rounds.add((3000.0 + 3000.0 * next_random(&mut rng)) * pitch, 8.0, size);
+        }
+        let settling = rounds.run(noise) * 1.5;
+        ((entering + seat + slapping + settling) * 1.5).tanh() * 0.62
     })
+}
+
+/// A gun's bolt or slide let go at the end of a reload: the catch clicks,
+/// it slams home and turns into its lugs, and the spring behind it rings.
+fn synth_bolt_release(weapon_id: WeaponId) -> Vec<f32> {
+    let Handling { pitch, metal, weight, .. } = handling(weapon_id);
+    let mut rng = 0x3a6_0301 ^ (weapon_id as u32 + 1).wrapping_mul(7919);
+    let mut low_passed = 0.0;
+    let spring = [(880.0 * pitch, 14.0), (1340.0 * pitch, 18.0), (2210.0 * pitch, 26.0)];
+    samples(0.4, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let catch = knock(t, 0.0, 380.0, 3000.0 * pitch, noise) * 0.3;
+        let slam = knock(t, 0.015, 110.0, 1200.0 * pitch, noise)
+            + knock(t, 0.015, 60.0 / weight, 300.0 * pitch, low_passed * 2.0) * weight;
+        let lugs = knock(t, 0.032, 220.0, 2000.0 * pitch, noise) * 0.4;
+        // A rifle's long buffer spring rings out; a pistol's short one hardly.
+        let ringing = ring(t, 0.015, &spring) * metal * weight.min(1.0) * 0.8;
+        ((catch + slam + lugs + ringing) * 1.6).tanh() * 0.6
+    })
+}
+
+/// Clothes and gear moving: many tiny crinkles under a soft swish. With
+/// `grip`, a hand then takes hold of the gun and its sling swivel jingles.
+fn synth_handling(grip: bool) -> Vec<f32> {
+    let mut rng = if grip { 0x3a6_0401 } else { 0x3a6_0402 };
+    let mut low_passed = 0.0;
+    let mut swish = Biquad::new(Pass::Band, 2200.0, 0.6);
+    let mut cloth = Grains::new(2500.0);
+    samples(0.26, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let moving = sliding(t, 0.0, 0.18);
+        if next_random(&mut rng) < 1800.0 * moving / SAMPLE_RATE as f32 {
+            let size = next_random(&mut rng).powi(2);
+            cloth.add(1200.0 * 5.0_f32.powf(next_random(&mut rng)), 1.2, size);
+        }
+        let rustle = cloth.run(noise) * 0.9 + swish.run(noise * moving) * 0.25;
+        let held = if grip {
+            knock(t, 0.14, 200.0, 1500.0, noise) * 0.5
+                + knock(t, 0.143, 110.0, 450.0, low_passed * 1.5) * 0.5
+                + ring(t, 0.15, &[(4800.0, 60.0), (6900.0, 80.0)]) * 0.3
+        } else {
+            0.0
+        };
+        ((rustle + held) * 1.4).tanh() * 0.7
+    })
+}
+
+/// A shell thumbed into the tube: its hull slides over the lifter, passes
+/// the latch with a click, and knocks against the follower.
+fn synth_shell_in() -> Vec<f32> {
+    let mut rng = 0x3a6_0004;
+    let mut rough = 0.5;
+    let mut low_passed = 0.0;
+    let mut hull = Biquad::new(Pass::Band, 1300.0, 0.9);
+    samples(0.15, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let pushing = hull.run(rubbing(noise, &mut rough, &mut rng) * sliding(t, 0.0, 0.05)) * 0.6;
+        let latch = knock(t, 0.045, 300.0, 2900.0, noise) * 0.55;
+        let seat = knock(t, 0.05, 160.0, 700.0, low_passed * 1.5) * 0.7 + ring(t, 0.05, &[(1800.0, 60.0), (2700.0, 75.0)]) * 0.3;
+        let slip = knock(t, 0.075, 350.0, 3400.0, noise) * 0.15;
+        ((pushing + latch + seat + slip) * 1.5).tanh() * 0.75
+    })
+}
+
+/// A pump racked: the forend slides back along its rails to a heavy clack
+/// `PUMP_CLACK` seconds in, flicking the empty hull out, then forward again
+/// and locks.
+fn synth_pump() -> Vec<f32> {
+    let mut rng = 0x3a6_0005;
+    let mut rough = 0.5;
+    let mut low_passed = 0.0;
+    let mut rails = Biquad::new(Pass::Band, 1100.0, 0.8);
+    samples(0.34, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let moving = sliding(t, 0.0, PUMP_CLACK + 0.005) + sliding(t, PUMP_CLACK + 0.04, 0.225);
+        let slide = rails.run(rubbing(noise, &mut rough, &mut rng) * moving) * 0.5;
+        let back = knock(t, PUMP_CLACK, 110.0, 1300.0, noise) + knock(t, PUMP_CLACK, 70.0, 350.0, low_passed * 2.0) * 0.8;
+        let hull = knock(t, PUMP_CLACK + 0.03, 220.0, 1700.0, low_passed) * 0.15;
+        let lock = knock(t, 0.22, 90.0, 900.0, noise) * 1.1
+            + knock(t, 0.226, 220.0, 2400.0, noise) * 0.6
+            + knock(t, 0.22, 60.0, 280.0, low_passed * 2.0) * 0.8;
+        ((slide + back + hull + lock) * 1.5).tanh() * 0.8
+    })
+}
+
+/// A dropped magazine hitting the ground: on hard ground its hollow body
+/// clatters and bounces and the rounds rattle; grass takes it with a dull
+/// thud, earth and gravel with grit or a crunch; water with a plop.
+fn synth_mag_drop(surface: Surface, take: u32) -> Vec<f32> {
+    if surface == Surface::Water {
+        return synth_plop(take);
+    }
+    let mut rng = 0x3a6_0501 ^ (surface as u32 + 1).wrapping_mul(0x9e37_79b9) ^ (take + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+    // (when, how hard) it hits: it bounces only off hard things.
+    let bounce = vary(0.1, 0.25);
+    let hits = match surface {
+        Surface::Hard => vec![(0.0, 1.0), (bounce, 0.35), (bounce + vary(0.06, 0.2), 0.12)],
+        Surface::Gravel => vec![(0.0, 1.0), (bounce * 0.7, 0.2)],
+        _ => vec![(0.0, 1.0)],
+    };
+    // (how much its body rings, thud cutoff, grains per second, grain
+    // pitches, how sharply they ring, their gain)
+    let (clatter, thud_cutoff, grain_rate, (low, high), grain_q, grain_gain): (f32, f32, f32, (f32, f32), f32, f32) = match surface {
+        Surface::Hard => (1.0, 900.0, 1200.0, (3000.0, 6500.0), 10.0, 1.0),
+        Surface::Gravel => (0.5, 700.0, 2500.0, (1100.0, 6000.0), 8.0, 2.0),
+        Surface::Dirt => (0.15, 500.0, 1200.0, (1500.0, 5000.0), 4.0, 1.4),
+        _ => (0.05, 380.0, 4000.0, (2500.0, 6000.0), 0.7, 1.2),
+    };
+    // The hollow body of the magazine.
+    let body = [
+        (vary(620.0, 0.08), 35.0),
+        (vary(1130.0, 0.08), 45.0),
+        (vary(1870.0, 0.08), 55.0),
+        (vary(2950.0, 0.08), 70.0),
+    ];
+    let mut thud = Biquad::new(Pass::Low, thud_cutoff, 0.7);
+    let mut grains = Grains::new(if grain_q < 1.0 { 3000.0 } else { 900.0 });
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+    let mut sound = samples(0.45, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let (mut out, mut blow, mut density) = (0.0, 0.0, 0.0);
+        for (at, hard) in &hits {
+            if t < *at {
+                continue;
+            }
+            let since = t - at;
+            out += ring(t, *at, &body) * hard * clatter * 2.5;
+            blow += hard * (-since * 60.0).exp() * (since / 0.001).min(1.0);
+            density += hard * (-since / 0.03).exp();
+        }
+        out += thud.run(noise * blow) * 2.0;
+        if next_random(&mut noise_rng) < grain_rate * density / SAMPLE_RATE as f32 {
+            let size = next_random(&mut noise_rng).powi(3) * density.min(1.0);
+            grains.add(low * (high / low).powf(next_random(&mut noise_rng)), grain_q, size);
+        }
+        out += grains.run(noise) * grain_gain * grain_q.sqrt();
+        (out * 1.4).tanh()
+    });
+    muffle(&mut sound, 4500.0);
+    finish(&mut sound, 0.8);
+    sound
+}
+
+/// Something small dropping into shallow water: a little slosh and a few
+/// bubbles.
+fn synth_plop(take: u32) -> Vec<f32> {
+    let mut rng = 0x00a9_7e99 ^ (take + 1).wrapping_mul(7919);
+    let bubbles: Vec<(f32, f32, f32)> = (0..6)
+        .map(|_| {
+            let pitch = 700.0 * (2000.0_f32 / 700.0).powf(next_random(&mut rng));
+            (0.005 + next_random(&mut rng).powi(2) * 0.08, pitch, 0.4 + 0.6 * next_random(&mut rng))
+        })
+        .collect();
+    let mut slosh = Biquad::new(Pass::Low, 500.0, 0.9);
+    let mut phases = vec![0.0_f32; bubbles.len()];
+    let mut sound = samples(0.3, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        let mut out = slosh.run(noise * (t / 0.006).min(1.0) * (-t * 25.0).exp()) * 2.5;
+        for ((at, pitch, gain), phase) in bubbles.iter().zip(&mut phases) {
+            if t < *at {
+                continue;
+            }
+            let since = t - at;
+            let damping = 0.13 * pitch + 0.0072 * pitch.powf(1.5);
+            *phase += TAU * pitch * (1.0 + 0.1 * damping * since) / SAMPLE_RATE as f32;
+            out += phase.sin() * (-damping * since).exp() * (since * 4000.0).min(1.0) * gain;
+        }
+        out
+    });
+    muffle(&mut sound, FOOTSTEP_CUTOFF);
+    finish(&mut sound, 0.7);
+    sound
 }
 
 /// A soft, dry click, like a dial turning one notch.
@@ -893,7 +1174,7 @@ impl Surface {
 /// worked out: wading if they are below the creek's surface, hard if they
 /// are on a block or a paved road, and on the bare ground its colour tells
 /// grass (green) from earth (brown) and stones (light grey).
-fn surface_under(map: &Map, feet: Vec3) -> Surface {
+pub fn surface_under(map: &Map, feet: Vec3) -> Surface {
     let at = Vec2::new(feet.x, feet.z);
     let wading = map.water.iter().any(|(points, width)| {
         points.windows(2).any(|pair| {
@@ -1344,14 +1625,17 @@ mod tests {
             synth_hiss(),
             synth_ring(),
             synth_click(),
-            synth_mag_out(),
-            synth_mag_in(),
-            synth_bolt(),
+            synth_handling(true),
+            synth_handling(false),
             synth_shell_in(),
             synth_pump(),
         ];
         for weapon_id in 0..GUN_COUNT {
             all.extend((0..GUNSHOT_TAKES).map(|take| synth_gunshot(weapon_id, take)));
+            all.extend([synth_mag_out(weapon_id), synth_mag_in(weapon_id), synth_bolt_release(weapon_id)]);
+        }
+        for surface in Surface::ALL {
+            all.extend((0..MAG_DROP_TAKES).map(|take| synth_mag_drop(surface, take)));
         }
         for surface in Surface::ALL {
             all.extend((0..FOOTSTEP_TAKES).map(|take| synth_footstep(surface, take, false)));
@@ -1443,6 +1727,62 @@ mod tests {
             }
             std::fs::write(format!("{dir}/firing_{name}.wav"), wav_bytes(&fired)).unwrap();
         }
+    }
+
+    /// Writes the reloads out to listen to: each gun's whole reload from
+    /// empty at its own pace (the shotgun three rounds and the rack), the
+    /// draw, and a magazine landing on each surface. `cargo test
+    /// write_reloads -- --ignored`, into `target/sounds` (or `$SOUND_DIR`).
+    #[test]
+    #[ignore]
+    fn write_reloads() {
+        use crate::{
+            player::{BOLT_HOME, MAGAZINE_DROPPED, MAGAZINE_IN, MAGAZINE_OUT, RACK_TIME},
+            weapons::weapon,
+        };
+        let dir = std::env::var("SOUND_DIR").unwrap_or_else(|_| "target/sounds".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let rate = SAMPLE_RATE as f32;
+        std::fs::write(format!("{dir}/draw.wav"), wav_bytes(&synth_handling(true))).unwrap();
+        for surface in Surface::ALL {
+            let name = format!("{surface:?}").to_lowercase();
+            for take in 0..MAG_DROP_TAKES {
+                std::fs::write(format!("{dir}/mag_drop_{name}_{take}.wav"), wav_bytes(&synth_mag_drop(surface, take)))
+                    .unwrap();
+            }
+        }
+        for weapon_id in 0..GUN_COUNT {
+            let stats = weapon(weapon_id);
+            let mut heard = vec![0.0; ((stats.reload * 4.0 + 1.5) * rate) as usize];
+            let mut put = |at: f32, sound: &[f32], volume: f32| {
+                for (i, s) in sound.iter().enumerate() {
+                    heard[(at * rate) as usize + i] += s * volume;
+                }
+            };
+            put(0.0, &synth_handling(false), 0.35);
+            if stats.reload_per_round {
+                for round in 0..3 {
+                    put((round as f32 + 0.55) * stats.reload, &synth_shell_in(), 0.5);
+                }
+                put(3.0 * stats.reload + 0.1 * RACK_TIME, &synth_pump(), 0.75);
+            } else {
+                let reload = stats.reload;
+                put(MAGAZINE_OUT * reload, &synth_mag_out(weapon_id), 0.55);
+                // It falls about a metre and a half.
+                put(MAGAZINE_DROPPED * reload + 0.5, &synth_mag_drop(Surface::Hard, 0), 0.4);
+                put(MAGAZINE_IN * reload, &synth_mag_in(weapon_id), 0.6);
+                put(BOLT_HOME * reload, &synth_bolt_release(weapon_id), 0.6);
+            }
+            let name = stats.name.to_lowercase();
+            std::fs::write(format!("{dir}/reload_{name}.wav"), wav_bytes(&heard)).unwrap();
+            if !stats.reload_per_round {
+                std::fs::write(format!("{dir}/mag_out_{name}.wav"), wav_bytes(&synth_mag_out(weapon_id))).unwrap();
+                std::fs::write(format!("{dir}/mag_in_{name}.wav"), wav_bytes(&synth_mag_in(weapon_id))).unwrap();
+                std::fs::write(format!("{dir}/bolt_{name}.wav"), wav_bytes(&synth_bolt_release(weapon_id))).unwrap();
+            }
+        }
+        std::fs::write(format!("{dir}/shell_in.wav"), wav_bytes(&synth_shell_in())).unwrap();
+        std::fs::write(format!("{dir}/pump.wav"), wav_bytes(&synth_pump())).unwrap();
     }
 
     /// Writes the footsteps out to listen to: each take, and a run of
