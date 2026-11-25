@@ -36,7 +36,11 @@ impl Plugin for DevToolsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, screenshot_key);
 
-        let selftest = app.world().resource::<LaunchArgs>().selftest.clone();
+        let launch = app.world().resource::<LaunchArgs>();
+        let selftest = launch.selftest.clone();
+        // Without `--bots` it adds three; with it, the host starts with them.
+        let add_bots = if launch.bots.is_some() { 0 } else { 3 };
+        let bots_hold_fire = launch.server.bots_hold_fire;
         if let Some(dir) = selftest {
             let dir = PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
@@ -47,6 +51,8 @@ impl Plugin for DevToolsPlugin {
                 step: 0,
                 canvas: None,
                 pictures: VecDeque::new(),
+                add_bots,
+                bots_hold_fire,
             })
             .add_systems(First, draw_to_canvas)
             .add_systems(Last, take_picture)
@@ -98,6 +104,11 @@ struct SelfTest {
     /// Pictures asked for and not yet taken: one is taken a frame, as a
     /// second picture of the same frame would be dropped.
     pictures: VecDeque<String>,
+    /// Bots it adds in the lobby.
+    add_bots: usize,
+    /// Whether it leaves the lobby with the bots holding their fire
+    /// (`--bots-hold-fire`): for pictures that being shot would spoil.
+    bots_hold_fire: bool,
 }
 
 impl SelfTest {
@@ -277,9 +288,9 @@ fn selftest_lobby(
         return;
     }
     if test.reached(0, 0.5) {
-        connection.send(&ClientMsg::AddBot);
-        connection.send(&ClientMsg::AddBot);
-        connection.send(&ClientMsg::AddBot);
+        for _ in 0..test.add_bots {
+            connection.send(&ClientMsg::AddBot);
+        }
         // Play on the second map, which also exercises switching maps.
         connection.send(&ClientMsg::NextMap);
         // The lobby's picture shows the two teams.
@@ -290,9 +301,9 @@ fn selftest_lobby(
     }
     // The mode and map are picked in the match picker, open while they are clicked.
     picker.0 = (1.6..3.0).contains(&test.clock);
-    // The lobby's chips and cards, clicked: team deathmatch on Arena, then
-    // back to free for all on Depot. Each click is checked once the server
-    // has answered.
+    // The lobby's chips and cards, clicked: team deathmatch on Arena with
+    // the bots' fire the other way, then back to free for all on Depot with
+    // it as asked. Each click is checked once the server has answered.
     let scale = window.1.scale_factor();
     let card_at = |target: Choice| {
         choices.iter().find(|(choice, ..)| **choice == target).map(|(_, at, _)| at.translation / scale)
@@ -300,13 +311,24 @@ fn selftest_lobby(
     let chip_at = |target: MatchChoice| {
         match_choices.iter().find(|(choice, _)| **choice == target).map(|(_, at)| at.translation / scale)
     };
-    let clicks = [MatchChoice::Mode(1), MatchChoice::Map(0), MatchChoice::Mode(0), MatchChoice::Map(1)];
+    let hold = test.bots_hold_fire;
+    let clicks = [
+        MatchChoice::Mode(1),
+        MatchChoice::Map(0),
+        MatchChoice::BotsHoldFire(!hold),
+        MatchChoice::Mode(0),
+        MatchChoice::Map(1),
+        MatchChoice::BotsHoldFire(hold),
+    ];
     for (index, target) in clicks.into_iter().enumerate() {
-        let at = 1.7 + index as f32 * 0.3;
+        let at = 1.7 + index as f32 * 0.2;
         // Picking sees where the pointer is a frame after it moves there.
         if test.reached(2 + 2 * index as u32, at) {
-            if index == 2 {
-                println!("[selftest] after clicking Team deathmatch and Arena: mode {} map {}", session.mode, map.0.id);
+            if index == 3 {
+                println!(
+                    "[selftest] after clicking Team deathmatch, Arena and the bots' fire: mode {} map {} bots hold fire {}",
+                    session.mode, map.0.id, session.bots_hold_fire
+                );
             }
             point(&test.pointer_target(window.0), &mut pointer, chip_at(target), false);
         }
@@ -314,13 +336,16 @@ fn selftest_lobby(
             point(&test.pointer_target(window.0), &mut pointer, chip_at(target), true);
         }
     }
-    if test.reached(10, 2.9) {
-        println!("[selftest] after clicking the chips and cards: mode {} map {}", session.mode, map.0.id);
+    if test.reached(14, 2.9) {
+        println!(
+            "[selftest] after clicking the chips and cards: mode {} map {} bots hold fire {}",
+            session.mode, map.0.id, session.bots_hold_fire
+        );
         point(&test.pointer_target(window.0), &mut pointer, None, false);
         test.capture("lobby_picker.png");
     }
     // Stripes on the paint job, and a look at them on the paint screen.
-    if test.reached(11, 3.2) {
+    if test.reached(15, 3.2) {
         let mut canvas = paint.canvas.clone();
         for (pixel, texel) in canvas.0.iter_mut().zip(&model.texels) {
             if let Some((point, _)) = texel
@@ -333,7 +358,7 @@ fn selftest_lobby(
         editor.open = true;
     }
     // The brush size slider (the only slider there is) moved to 12 cm.
-    if test.reached(12, 3.7) {
+    if test.reached(16, 3.7) {
         for entity in &sliders {
             commands.trigger(SetSliderValue {
                 entity,
@@ -341,41 +366,41 @@ fn selftest_lobby(
             });
         }
     }
-    if test.reached(13, 4.2) {
+    if test.reached(17, 4.2) {
         test.capture("paint.png");
     }
-    if test.reached(14, 4.5) {
+    if test.reached(18, 4.5) {
         editor.open = false;
     }
     // The loadout screen, with the pointer: on the shotgun's card (the stage
     // shows it), a click on it, and back to the rifle.
-    if test.reached(15, 4.8) {
+    if test.reached(19, 4.8) {
         loadout.open = true;
     }
-    if test.reached(16, 5.4) {
+    if test.reached(20, 5.4) {
         point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), false);
     }
-    if test.reached(17, 5.8) {
+    if test.reached(21, 5.8) {
         test.capture("loadout_hover.png");
     }
     // Picking sees where the pointer is a frame after it moves there.
-    if test.reached(18, 6.0) {
+    if test.reached(22, 6.0) {
         point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, SHOTGUN)), true);
     }
-    if test.reached(19, 6.3) {
+    if test.reached(23, 6.3) {
         println!("[selftest] after a click on the shotgun's card: {}", weapon(settings.primary).name);
         test.capture("loadout_clicked.png");
         point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, RIFLE)), false);
     }
-    if test.reached(20, 6.4) {
+    if test.reached(24, 6.4) {
         point(&test.pointer_target(window.0), &mut pointer, card_at(Choice::Gun(0, RIFLE)), true);
     }
-    if test.reached(21, 6.7) {
+    if test.reached(25, 6.7) {
         println!("[selftest] and on the rifle's: {}", weapon(settings.primary).name);
         point(&test.pointer_target(window.0), &mut pointer, None, false);
         loadout.open = false;
     }
-    if test.reached(22, 6.8) {
+    if test.reached(26, 6.8) {
         println!("[selftest] roster: {:?}", session.roster.iter().map(|p| &p.name).collect::<Vec<_>>());
         connection.send(&ClientMsg::StartMatch);
     }

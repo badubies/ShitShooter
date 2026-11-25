@@ -2,6 +2,11 @@
 
 ## Round 4: original weapons
 
+Also in this round: a lobby setting, "Bots: Shoot / Hold fire" in the match
+picker (`ClientMsg::SetBotsHoldFire`, `--bots-hold-fire` on the command
+line). Bots holding fire still move and turn to their enemies. Protocol
+bumped to 15.
+
 Replace the downloaded guns (rifle, SMG, sniper; the shotgun and knife are
 already ours) with originals built by scripts in `art/`, one gun at a time.
 Each gets reload and cocking parts the code can move, iron sights that line
@@ -137,7 +142,10 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 - **Check it in the game.** `cargo run -- --host --bots 3` starts a lobby with
   bots, skipping the menu. `cargo run -- --selftest <dir>` plays a short match
   against bots by itself and saves screenshots to `<dir>` (`src/devtools.rs`;
-  add `--host` for the match, without it only the menus). Its window opens
+  add `--host` for the match, without it only the menus; it plays against 3
+  bots, or `--bots <N>`, and `--bots-hold-fire` keeps them from shooting, for
+  pictures that dying would spoil; the pictures of being hurt and dead need
+  bots that shoot). Its window opens
   without taking focus, to watch or to leave behind other windows: it draws
   off screen, so covering it does not spoil the pictures;
   extend its script when a step adds something to look at. F12 saves a

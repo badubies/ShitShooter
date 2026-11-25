@@ -192,7 +192,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-14:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-15:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -243,6 +243,9 @@ pub enum ClientMsg {
     SetMap(u8),
     /// Lobby leader only, in the lobby: one of `AIR_ACCEL_CHOICES`.
     SetAirAccel(u16),
+    /// Lobby leader only, in the lobby: whether the bots hold their fire.
+    /// They still move about and turn to their enemies, but never shoot.
+    SetBotsHoldFire(bool),
     /// In the lobby: move yourself to the other team.
     SwitchTeam,
     /// Lobby leader only: abort the running match and return to the lobby.
@@ -318,6 +321,8 @@ pub enum ServerMsg {
         mode: u8,
         /// See `AIR_ACCEL_CHOICES`.
         air_accel: u16,
+        /// The bots never shoot (see `ClientMsg::SetBotsHoldFire`).
+        bots_hold_fire: bool,
     },
     MatchStarted {
         /// See `score_limit`.

@@ -109,6 +109,8 @@ pub struct LaunchArgs {
     pub join: Option<String>,
     pub name: Option<String>,
     pub server: ServerSettings,
+    /// The `--bots` given, if any: the self-test plays against 3 bots unless told.
+    pub bots: Option<usize>,
     /// Hidden developer option: play a scripted match and save screenshots here.
     pub selftest: Option<String>,
 }
@@ -154,6 +156,7 @@ LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
     --frags <N>          Kills needed to win (doubled for teams) [default: 20]
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
+    --bots-hold-fire     The bots never shoot
     --map <NAME>         Map: arena, depot, valley or hamlet [default: arena]
                          (hamlet: ffa and teams only)
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
@@ -191,7 +194,11 @@ fn parse_args() -> Result<LaunchArgs, String> {
             "--port" => args.server.port = number(&flag, value("port")?)?,
             "--frags" => args.server.frag_limit = number::<u32>(&flag, value("count")?)?.max(1),
             "--minutes" => args.server.match_minutes = number::<f32>(&flag, value("minutes")?)?.max(0.5),
-            "--bots" => args.server.bots = number(&flag, value("count")?)?,
+            "--bots" => {
+                args.server.bots = number(&flag, value("count")?)?;
+                args.bots = Some(args.server.bots);
+            }
+            "--bots-hold-fire" => args.server.bots_hold_fire = true,
             "--mode" => {
                 let name = value("name")?;
                 args.server.mode = ["ffa", "teams", "hill", "conquest"]

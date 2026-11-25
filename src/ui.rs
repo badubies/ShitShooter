@@ -817,6 +817,8 @@ pub(crate) enum MatchChoice {
     Mode(u8),
     Map(u8),
     AirAccel(u16),
+    /// Whether the bots hold their fire.
+    BotsHoldFire(bool),
 }
 
 /// Under a map's name: whether it is the one picked.
@@ -895,6 +897,14 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
         (
             MatchChoice::AirAccel(value),
             small_button(&air_accel_name(value)),
+            Pickable::default(),
+            observe(send_choice),
+        )
+    });
+    let bot_fire = [(false, "Shoot"), (true, "Hold fire")].map(|(hold, name)| {
+        (
+            MatchChoice::BotsHoldFire(hold),
+            small_button(name),
             Pickable::default(),
             observe(send_choice),
         )
@@ -1014,18 +1024,23 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                             }
                                         });
                                     });
-                                    picker.spawn(Node { column_gap: px(28), ..default() }).with_children(|row| {
-                                        row.spawn(group()).with_children(|group| {
-                                            group.spawn(section("Air accel"));
-                                            group.spawn(Node { column_gap: px(6), ..default() }).with_children(|chips| {
-                                                for chip in accels {
-                                                    chips.spawn(chip);
-                                                }
-                                            });
+                                    picker.spawn(group()).with_children(|group| {
+                                        group.spawn(section("Air accel"));
+                                        group.spawn(Node { column_gap: px(6), ..default() }).with_children(|chips| {
+                                            for chip in accels {
+                                                chips.spawn(chip);
+                                            }
                                         });
-                                        row.spawn(group()).with_children(|group| {
-                                            group.spawn(section("Bots"));
-                                            group.spawn((
+                                    });
+                                    picker.spawn(group()).with_children(|group| {
+                                        group.spawn(section("Bots"));
+                                        group.spawn(Node {
+                                            column_gap: px(6),
+                                            align_items: AlignItems::Center,
+                                            ..default()
+                                        })
+                                        .with_children(|row| {
+                                            row.spawn((
                                                 Node {
                                                     align_self: AlignSelf::FlexStart,
                                                     align_items: AlignItems::Center,
@@ -1048,6 +1063,9 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                                     leader_button("+", ClientMsg::AddBot),
                                                 ],
                                             ));
+                                            for chip in bot_fire {
+                                                row.spawn(chip);
+                                            }
                                         });
                                     });
                                 });
@@ -1272,7 +1290,7 @@ fn leader_button(text: &str, msg: ClientMsg) -> impl Bundle + use<> {
     (small_button(text), LeaderOnly, observe(send_on_click(msg)))
 }
 
-/// Sends the leader's pick of a mode, map or air acceleration.
+/// Sends the leader's pick of a mode, map, air acceleration or bots' fire.
 fn send_choice(
     activate: On<Activate>,
     choices: Query<&MatchChoice>,
@@ -1289,6 +1307,7 @@ fn send_choice(
         MatchChoice::Mode(mode) => ClientMsg::SetMode(mode),
         MatchChoice::Map(id) => ClientMsg::SetMap(id),
         MatchChoice::AirAccel(value) => ClientMsg::SetAirAccel(value),
+        MatchChoice::BotsHoldFire(hold) => ClientMsg::SetBotsHoldFire(hold),
     });
 }
 
@@ -1329,7 +1348,10 @@ fn update_lobby(
             LobbyText::MatchHint if session.is_leader() => "MATCH  ·  CLICK TO CHANGE".to_string(),
             LobbyText::MatchHint => "MATCH  ·  CLICK TO SEE THE CHOICES".to_string(),
             LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_uppercase(),
-            LobbyText::MatchLine => format!("{map_name}  ·  air accel {}", session.air_accel() as u16),
+            LobbyText::MatchLine => {
+                let bots = if session.bots_hold_fire { "  ·  bots hold fire" } else { "" };
+                format!("{map_name}  ·  air accel {}{bots}", session.air_accel() as u16)
+            }
             LobbyText::PickerNote if session.is_leader() => "Everyone sees your changes".to_string(),
             LobbyText::PickerNote => format!("Only {leader} can change these"),
             LobbyText::Bots => session.roster.iter().filter(|player| player.is_bot).count().to_string(),
@@ -1368,7 +1390,7 @@ fn update_lobby(
     }
 }
 
-/// Marks the mode, map and air acceleration picked, hides the maps the mode
+/// Marks the mode, map, air acceleration and bots' fire picked, hides the maps the mode
 /// isn't played on, and lets only the leader click any of them.
 fn style_match_choices(
     session: Res<Session>,
@@ -1382,6 +1404,7 @@ fn style_match_choices(
             MatchChoice::Mode(mode) => (session.mode == mode, true, ButtonKind::Normal),
             MatchChoice::Map(id) => (map.0.id == id, crate::map::plays(id, session.mode), ButtonKind::Tile),
             MatchChoice::AirAccel(value) => (air_accel == value, true, ButtonKind::Normal),
+            MatchChoice::BotsHoldFire(hold) => (session.bots_hold_fire == hold, true, ButtonKind::Normal),
         };
         let wanted = if picked { ButtonKind::Picked } else { rest };
         if *kind != wanted {

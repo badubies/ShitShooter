@@ -68,6 +68,8 @@ pub struct Session {
     pub mode: u8,
     /// The host's air acceleration (see `AIR_ACCEL_CHOICES`); 0 until told.
     pub air_accel: u16,
+    /// The bots never shoot (see `ClientMsg::SetBotsHoldFire`).
+    pub bots_hold_fire: bool,
     /// The score that wins: kills, team kills or seconds on the hill.
     pub score_limit: u32,
     pub team_scores: [u32; 2],
@@ -344,11 +346,13 @@ fn update_session(
                 map,
                 mode,
                 air_accel,
+                bots_hold_fire,
             } => {
                 session.roster = players.clone();
                 session.leader = *leader;
                 session.mode = *mode;
                 session.air_accel = *air_accel;
+                session.bots_hold_fire = *bots_hold_fire;
                 // The host picked another map, or went into or out of conquest
                 // (the flagpoles): swap the scenery and the collision.
                 if game_map.0.id != *map || game_map.0.has_flagpoles() != (*mode == MODE_CONQUEST) {

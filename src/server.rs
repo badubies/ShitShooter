@@ -43,6 +43,8 @@ pub struct ServerSettings {
     pub mode: u8,
     /// See `AIR_ACCEL_CHOICES`.
     pub air_accel: u16,
+    /// The bots never shoot (see `ClientMsg::SetBotsHoldFire`).
+    pub bots_hold_fire: bool,
 }
 
 impl Default for ServerSettings {
@@ -56,6 +58,7 @@ impl Default for ServerSettings {
             map: 0,
             mode: MODE_FFA,
             air_accel: DEFAULT_AIR_ACCEL,
+            bots_hold_fire: false,
         }
     }
 }
@@ -809,6 +812,10 @@ impl Server {
                 self.settings.air_accel = air_accel;
                 self.roster_dirty = true;
             }
+            ClientMsg::SetBotsHoldFire(hold) if is_leader && self.phase == Phase::Lobby => {
+                self.settings.bots_hold_fire = hold;
+                self.roster_dirty = true;
+            }
             ClientMsg::SwitchTeam if self.phase == Phase::Lobby => {
                 // Not onto a team that is already full.
                 let Some(to) = self.players.get(&id).map(|player| player.team ^ 1) else {
@@ -1521,7 +1528,8 @@ impl Server {
                 hill.map(|hill| (hill, 5.5, false))
             };
             bot_move(&self.map, &self.nav, player, &mut bot, target, enemy, &mut rng, dt);
-            if let Some(shot) = bot_fight(*id, player, &mut bot, enemy, &mut rng, dt) {
+            let trigger = !self.settings.bots_hold_fire;
+            if let Some(shot) = bot_fight(*id, player, &mut bot, enemy, trigger, &mut rng, dt) {
                 shots.push(shot);
             }
             player.bot = Some(bot);
@@ -1668,6 +1676,7 @@ impl Server {
             map: self.settings.map,
             mode: self.settings.mode,
             air_accel: self.settings.air_accel,
+            bots_hold_fire: self.settings.bots_hold_fire,
         }
     }
 
@@ -1920,7 +1929,17 @@ fn bot_move(
 }
 
 /// Reloads, turns the bot towards its enemy, and fires once it is lined up.
-fn bot_fight(id: PlayerId, player: &mut Player, bot: &mut Bot, enemy: Option<Vec3>, rng: &mut u64, dt: f32) -> Option<BotShot> {
+/// Keeps a bot's gun loaded and aims it at `enemy`, and shoots when it is
+/// lined up, unless it may not pull the `trigger`.
+fn bot_fight(
+    id: PlayerId,
+    player: &mut Player,
+    bot: &mut Bot,
+    enemy: Option<Vec3>,
+    trigger: bool,
+    rng: &mut u64,
+    dt: f32,
+) -> Option<BotShot> {
     let stats = weapon(bot.gun);
     bot.cooldown = (bot.cooldown - dt).max(0.0);
     if bot.reload > 0.0 {
@@ -1961,7 +1980,7 @@ fn bot_fight(id: PlayerId, player: &mut Player, bot: &mut Bot, enemy: Option<Vec
     player.yaw = turn_towards(player.yaw, yaw, BOT_TURN_RATE * dt);
     player.pitch = turn_towards(player.pitch, pitch, BOT_TURN_RATE * dt);
     let lined_up = angle_between(player.yaw, yaw).abs() < 0.1 && (player.pitch - pitch).abs() < 0.1;
-    if !lined_up || bot.sight < BOT_REACTION || bot.reload > 0.0 || bot.cooldown > 0.0 || bot.ammo == 0 {
+    if !trigger || !lined_up || bot.sight < BOT_REACTION || bot.reload > 0.0 || bot.cooldown > 0.0 || bot.ammo == 0 {
         return None;
     }
 
@@ -2219,7 +2238,7 @@ mod tests {
         let mut loading_for = 0.0;
         // Empty: it starts loading, one shell per `reload` seconds, until full.
         loop {
-            bot_fight(1, &mut player, &mut bot, None, &mut rng, dt);
+            bot_fight(1, &mut player, &mut bot, None, true, &mut rng, dt);
             if bot.reload <= 0.0 {
                 break;
             }
@@ -2385,9 +2404,49 @@ mod tests {
 
     #[test]
     fn bots_shoot_a_person_standing_in_front_of_them() {
+        let (fired, hurt) = bot_in_front_of_a_person(false);
+        assert!(fired && hurt, "the bot never hit the person in front of it");
+    }
+
+    #[test]
+    fn bots_holding_fire_never_shoot() {
+        let (fired, hurt) = bot_in_front_of_a_person(true);
+        assert!(!fired && !hurt, "the bot fired anyway");
+    }
+
+    #[test]
+    fn only_the_leader_tells_the_bots_to_hold_fire() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        for id in [1, 2] {
+            server.join_counter += 1;
+            let player = server.new_player(format!("P{id}"), None);
+            server.players.insert(id, player);
+        }
+        let leader = server.leader().unwrap();
+        let other = if leader == 1 { 2 } else { 1 };
+        server.handle_message(other, ClientMsg::SetBotsHoldFire(true));
+        assert!(!server.settings.bots_hold_fire, "only the leader may");
+        server.handle_message(leader, ClientMsg::SetBotsHoldFire(true));
+        let ServerMsg::Roster { bots_hold_fire, .. } = server.roster_msg() else {
+            panic!("not a roster");
+        };
+        assert!(bots_hold_fire);
+        server.start_match();
+        server.handle_message(leader, ClientMsg::SetBotsHoldFire(false));
+        assert!(server.settings.bots_hold_fire, "not during a match");
+    }
+
+    /// Five seconds of a bot facing a person 12 m away across open ground,
+    /// both held in place: whether it fired, and whether it hurt them.
+    fn bot_in_front_of_a_person(hold_fire: bool) -> (bool, bool) {
         let settings = ServerSettings {
             port: 0,
             bots: 1,
+            bots_hold_fire: hold_fire,
             ..ServerSettings::default()
         };
         let mut server = Server::bind(settings).unwrap();
@@ -2417,16 +2476,17 @@ mod tests {
             .expect("no open line on the map");
         let to = target_pos - bot_pos;
         server.players.get_mut(&bot).unwrap().yaw = (-to.x).atan2(-to.z);
-        let mut hurt = false;
+        let (mut fired, mut hurt) = (false, false);
         for _ in 0..60 * 5 {
             // Both stay put: the bot may turn and shoot but not walk away.
             server.players.get_mut(&bot).unwrap().pos = bot_pos;
             server.players.get_mut(&1000).unwrap().pos = target_pos;
             server.update_match(1.0 / 60.0);
+            fired |= !server.bullets.is_empty();
             let target = &server.players[&1000];
             hurt |= target.armor < START_ARMOR || target.deaths > 0;
         }
-        assert!(hurt, "the bot never hit the person in front of it");
+        (fired, hurt)
     }
 
     /// A server with one person in a running match (the countdown over),
