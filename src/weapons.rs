@@ -168,15 +168,16 @@ pub const DRAW_TIME: f32 = 0.35;
 pub const RIFLE: WeaponId = 0;
 pub const SMG: WeaponId = 1;
 pub const SHOTGUN: WeaponId = 2;
-pub const SNIPER: WeaponId = 3;
-pub const PISTOL: WeaponId = 4;
-pub const KNIFE: WeaponId = 5;
+pub const DMR: WeaponId = 3;
+pub const SNIPER: WeaponId = 4;
+pub const PISTOL: WeaponId = 5;
+pub const KNIFE: WeaponId = 6;
 /// Not in the table: used only to label grenade kills.
-pub const GRENADE: WeaponId = 6;
+pub const GRENADE: WeaponId = 7;
 /// The weapons that can go in a gun slot are `0..GUN_COUNT`.
-pub const GUN_COUNT: WeaponId = 5;
+pub const GUN_COUNT: WeaponId = 6;
 
-pub const WEAPONS: [Weapon; 6] = [
+pub const WEAPONS: [Weapon; 7] = [
     Weapon {
         name: "Rifle",
         damage: 20,
@@ -257,6 +258,35 @@ pub const WEAPONS: [Weapon; 6] = [
             spread: 0.015,
             time: 0.5,
         }),
+    },
+    // A semi-automatic marksman's rifle, between the rifle and the sniper: a
+    // shot to the head and one to the body kill through the armor every
+    // life starts with. Steady aimed, loose from the hip.
+    Weapon {
+        name: "DMR",
+        damage: 45,
+        interval: 0.28,
+        auto: false,
+        pellets: 1,
+        magazine: 20,
+        reload: 2.0,
+        reload_per_round: false,
+        cycle: None,
+        speed: 320.0,
+        gravity: 3.5,
+        hip_spread: 0.035,
+        aim_spread: 0.0,
+        mobility: 0.95,
+        size: [0.035, 0.05, 0.38],
+        sight_relief: 0.08,
+        kick_up: 0.045,
+        kick_side: 0.01,
+        headshot: 2.0,
+        model: Some(Model {
+            path: "models/weapons/dmr.glb",
+            sights: &[RED_DOT, REFLEX, TWO_X],
+        }),
+        choke: None,
     },
     Weapon {
         name: "Sniper",

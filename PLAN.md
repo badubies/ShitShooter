@@ -39,6 +39,16 @@ sights were made here already. Each new gun gets:
   handle, and a solid stock with a rubber cheek pad (it was a skeleton at
   first; the user wanted more body). It takes the red dot, reflex and 2x. The
   downloaded M4A1 is gone.
+- `art/dmr.py` builds the DMR (`assets/models/weapons/dmr.glb`), a new gun
+  (id 3, between the shotgun and the sniper): semi-automatic, 45 damage
+  (a head and a body shot kill through the starting armor), 20 rounds,
+  steady aimed and loose from the hip. 1000 mm long at true size, built like
+  the rifle: a round slotted handguard under one full-length rail, a
+  straight magazine, a ported muzzle brake, a solid stock with an
+  adjustable cheek piece and a storage door. Its sights sit forward on the
+  rail as on the sniper, so the stock stays out of the aimed view. It takes
+  the red dot, reflex and 2x (the 2x by default), not the scope. Its own
+  gunshot and reload handling in `audio.rs`.
 - `art/sniper.py` builds the sniper (`assets/models/weapons/sniper.glb`), a
   bolt-action rifle 1200 mm long at true size: a black round receiver and
   heavy barrel in a dark aluminium chassis, a slotted handguard under one
@@ -119,6 +129,7 @@ replaces today, so the sights' look does not change:
 |---|---|---|---|---|
 | SMG | 200 mm | 410 mm | 0.488 | a compact PDW, stock folded |
 | Rifle | 300 mm | 840 mm | 0.357 | a carbine with a top rail |
+| DMR | 380 mm | 1000 mm | 0.380 | a semi-automatic marksman's rifle |
 | Sniper | 440 mm | 1200 mm | 0.367 | a bolt-action rifle |
 
 Size the iron sights by how they look from the eye, not by real sizes. The
@@ -255,8 +266,8 @@ players' guns only drop their magazine (`remote.rs`).
    axes: -Z is forward.
 3. In the game: `cargo run -- --selftest <dir> --host --bots-hold-fire`.
    The gallery is `gun_<name>_<hip|aimed|irons|reload>.png`, taken during
-   the countdown. It fits 6 frames for each of 20 views into 2.6 s, so do
-   not add views without making room.
+   the countdown. It fits 5 frames for each of 24 views (6 guns) into
+   2.6 s, so do not add views or guns without making room.
 4. `cargo build` without new warnings, then `cargo test --no-default-features`.
    Commit straight to `main` (do not push), one gun a commit.
 
@@ -269,7 +280,8 @@ players' guns only drop their magazine (`remote.rs`).
   `Screenshot::image(handle)` (scale 1) it reads a texture nothing drew
   into, and the picture is black.
 - Changing `ClientMsg` or `ServerMsg` means bumping the protocol id in
-  `protocol_id` (now `shitshooter-proto-15`).
+  `protocol_id` (now `shitshooter-proto-16`; 16 when the DMR moved the
+  sniper's, pistol's, knife's and grenade's ids).
 - `dropped magazines: []` at the end of the self-test is how `main` already
   was; it is not a regression.
 - The red dot and scope were built here, in Blender by hand

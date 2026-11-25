@@ -455,7 +455,7 @@ fn selftest_play(
         // aimed, aimed down its iron sights, and part way through a reload from
         // empty (a magazine coming out, or a shell going in), a few frames each.
         if session.countdown < 2.6 && player.alive && !session.team_mode() {
-            const FRAMES: u32 = 6;
+            const FRAMES: u32 = 5;
             const VIEWS: [&str; 4] = ["hip", "aimed", "irons", "reload"];
             let picture = (captured.gallery / FRAMES) as usize;
             let gun = (picture / VIEWS.len()) as WeaponId;

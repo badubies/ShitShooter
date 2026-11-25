@@ -1019,17 +1019,17 @@ fn picture_card(choice: Choice, name: &str, note: &str, blocked: bool, compact: 
                     Pickable::IGNORE,
                 )],
             ),
+            (ui::weighted(name.to_string(), 15.0, 700, if blocked { ui::FAINT } else { TEXT }), Pickable::IGNORE),
+            // In the top corner, so a row of narrow cards leaves the name room.
             (
+                label(note.to_string(), 12.0, DIM),
                 Node {
-                    justify_content: JustifyContent::SpaceBetween,
-                    align_items: AlignItems::Baseline,
+                    position_type: PositionType::Absolute,
+                    top: px(10),
+                    right: px(12),
                     ..default()
                 },
                 Pickable::IGNORE,
-                children![
-                    (ui::weighted(name.to_string(), 15.0, 700, if blocked { ui::FAINT } else { TEXT }), Pickable::IGNORE),
-                    (label(note.to_string(), 12.0, DIM), Pickable::IGNORE),
-                ],
             ),
         ],
     )

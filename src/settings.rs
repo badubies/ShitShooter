@@ -27,8 +27,8 @@ use crate::{
     player::Controls,
     protocol::{FRAG, GRENADE_KINDS, GRENADES, GrenadeKind},
     weapons::{
-        GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, WeaponId, next_gun, sight, step_gun,
-        sight_on, sights_for, takes_sights, weapon,
+        DMR, GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, TWO_X, WeaponId, next_gun,
+        sight, step_gun, sight_on, sights_for, takes_sights, weapon,
     },
     ui::{self, ACCENT, BUTTON, DIM, TEXT},
 };
@@ -646,11 +646,12 @@ impl Settings {
     }
 }
 
-/// The rifle comes with a red dot and the sniper with a scope; every other
-/// gun with its iron sights.
+/// The rifle comes with a red dot, the DMR with the 2x and the sniper with a
+/// scope; every other gun with its iron sights.
 fn default_sights() -> [SightId; GUN_COUNT as usize] {
     let mut sights = [IRON_SIGHTS; GUN_COUNT as usize];
     sights[RIFLE as usize] = RED_DOT;
+    sights[DMR as usize] = TWO_X;
     sights[SNIPER as usize] = SCOPE;
     sights
 }
@@ -1408,7 +1409,7 @@ mod tests {
             show_minimap: false,
             primary: 3,
             secondary: 1,
-            sights: [IRON_SIGHTS, RED_DOT, IRON_SIGHTS, RED_DOT, RED_DOT],
+            sights: [IRON_SIGHTS, RED_DOT, IRON_SIGHTS, TWO_X, RED_DOT, REFLEX],
             grenade: crate::protocol::SMOKE,
             ..default()
         };

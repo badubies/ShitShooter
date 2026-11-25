@@ -17,7 +17,7 @@ use crate::{
         PlayerSystems,
     },
     protocol::PlayerId,
-    weapons::{GUN_COUNT, PISTOL, RIFLE, SHOTGUN, SMG, SNIPER, WeaponId, weapon},
+    weapons::{DMR, GUN_COUNT, PISTOL, RIFLE, SHOTGUN, SMG, SNIPER, WeaponId, weapon},
     remote::{RemotePlayer, RemoteSystems},
     world::GameMap,
 };
@@ -908,6 +908,13 @@ fn handling(weapon_id: WeaponId) -> Handling {
             weight: 0.75,
             slap: true,
         },
+        // A bigger steel magazine than the rifle's, for a bigger cartridge.
+        DMR => Handling {
+            pitch: 0.92,
+            metal: 0.75,
+            weight: 1.15,
+            slap: true,
+        },
         SNIPER => Handling {
             pitch: 0.85,
             metal: 0.6,
@@ -1348,6 +1355,19 @@ fn report(weapon_id: WeaponId) -> Report {
             tail: (700.0, 4.0, 1.8),
             drive: 2.5,
             level: 0.8,
+        },
+        // A bigger cartridge than the rifle's through a muzzle brake: louder
+        // and deeper, with a heavier action, short of the sniper's boom.
+        DMR => Report {
+            length: 1.3,
+            blast: (0.0015, 1.05),
+            crack: (8200.0, 140.0, 3.0),
+            boom: (160.0, 60.0, 20.0, 0.75),
+            body: (2000.0, 34.0, 1.35),
+            action: Some((0.032, 1700.0, 0.3)),
+            tail: (850.0, 4.5, 1.7),
+            drive: 2.3,
+            level: 0.86,
         },
         SNIPER => Report {
             length: 1.8,
