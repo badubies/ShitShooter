@@ -2,42 +2,196 @@
 
 ## Round 4: original weapons
 
-Also in this round: a lobby setting, "Bots: Shoot / Hold fire" in the match
-picker (`ClientMsg::SetBotsHoldFire`, `--bots-hold-fire` on the command
-line). Bots holding fire still move and turn to their enemies. Protocol
-bumped to 15.
+Handoff for whoever picks this up next. The pistol is done; the SMG is next.
 
-Replace the downloaded guns (rifle, SMG, sniper; the shotgun and knife are
-already ours) with originals built by scripts in `art/`, one gun at a time.
-Each gets reload and cocking parts the code can move, iron sights that line
-up, and a mount for the sights we made (reflex, 2x).
+Replace the downloaded guns (rifle, SMG, sniper) with originals built by
+scripts in `art/`, one gun at a time. The shotgun, the knife and all four
+sights were made here already. Each new gun gets:
 
-How a gun is built (see `art/pistol.py`):
+- reload and cocking parts the code can move;
+- iron sights that line up and do not hide much of the view;
+- a mount for the sights we made;
+- a build at the right scale and facing, so that the code places it as it
+  is, with no turning or scaling (the user asked for this specifically).
 
-- Built for the game, so the code places it as it is (`Fit::AsBuilt`): in
-  metres, the weapon's `size` length in `src/weapons.rs`, origin in the middle
-  of its bounds. In Blender X is right, Y forward along the barrel, Z up,
-  which the Y-up export makes barrel along -Z, up +Y. `fit_models` warns when
-  the length or the centre is off.
-- Moving parts are their own nodes, origins at their pivots: `Slide` or `Bolt`,
-  `Magazine` (origin at its top), `Pump`, `Shell`, plus `Trigger` and the like
-  for later. Things that ride on a part are its children.
-- Iron sights: nodes named `IronSight...` (hidden under a sight) and an
-  `AimPoint` empty on the line along their tops, at the rear sight. Aiming
-  holds it `sight_relief` from the eye, like a sight's dot, and hides the
+### Done so far
+
+- `art/pistol.py` builds the pistol (`assets/models/weapons/pistol.glb`).
+  It is a compact striker-fired design, a black slide on a dark grey frame,
+  with three-dot iron sights. It takes the reflex and the 2x; the red dot is
+  too big for its slide. The downloaded M1911 is gone.
+- `Fit` in `src/weapons.rs`. `Fit::AsBuilt` places a model as it is;
+  `Fit::Scaled` keeps fitting the downloaded guns until they are replaced.
+  `fit_models` (`src/gun_model.rs`) warns when an as-built model's length or
+  centre is off.
+- Iron sights with an `AimPoint`. A gun's own `AimPoint` node (outside any
+  sight) becomes `Fitted::iron_aim`. Aiming down the irons holds it
+  `sight_relief` in front of the eye, as for a sight's dot, and hides the
   crosshair.
-- `SightMount` where a sight's base sits. The sights are built facing -Y, so
-  the mount turns them round (rotation Z 180 degrees). Once every gun is ours
-  the sights can be turned to face +Y and the turn dropped.
-- Check it: render it from a few sides and down the sights in Blender, then
-  run the self-test (`gun_<name>_<hip|aimed|irons|reload>.png`).
+- `art/preview.py` renders a gun in Blender: its sides, down its sights, its
+  reload pose, and each sight mounted and looked through. It also prints
+  where its nodes are. See "Checking a gun" below.
+- The self-test photographs every gun aimed down its irons too. It draws off
+  screen, so covering its window does not spoil the pictures. Its window
+  opens without taking focus.
+- A lobby setting, "Bots: Shoot / Hold fire", in the match picker
+  (`ClientMsg::SetBotsHoldFire`, and `--bots-hold-fire` on the command line).
+  Bots holding fire still move and turn to their enemies. Protocol bumped
+  to 15.
 
-1. [x] Pistol: a compact striker-fired pistol (`art/pistol.py`). Takes the
-   reflex and the 2x; the red dot was too big for its slide.
-2. [ ] SMG
-3. [ ] Rifle
-4. [ ] Sniper
-5. [ ] Turn the sights to face +Y, drop `Fit::Scaled` once nothing uses it.
+### What the user wants (learned on the pistol)
+
+- No tan or brown. Dark finishes: a black slide or receiver, dark grey
+  polymer.
+- Get the details right. The pistol's trigger first curled the wrong way:
+  its tip must curl forward, towards the muzzle.
+- Iron sights must not hide much of the view. The pistol's rear blade is
+  narrow and low, with its top corners cut away. Its notch is wide (7.2 mm),
+  with the edges close to the white dots, so little metal stands between the
+  dots and the front post. The front post is 4.4 mm wide with a big orange
+  dot. Show the user the sight picture before calling a gun done.
+- They keep using the computer while tests run. Use the self-test (it draws
+  off screen) and Blender in the background; never take focus.
+- Run the self-test with `--bots-hold-fire`, or with `--bots 0`, unless the
+  check needs bots that shoot (only the hurt and dead pictures do).
+
+### Decide before the SMG: scale of the long guns
+
+The pistol was easy: the game holds it 0.15 m long, which is the size of a
+real compact pistol. So it was built at true size and the sights (real
+metres) fit it 1:1. The long guns are held much smaller than real:
+
+| Gun | `size` length | A real one | Ratio |
+|---|---|---|---|
+| SMG | 0.20 m | about 0.45-0.6 m | about 0.4 |
+| Rifle | 0.30 m | about 0.85 m | about 0.35 |
+| Sniper | 0.44 m | about 1.1 m | about 0.4 |
+| Shotgun (ours, `Fit::Scaled`) | 0.34 m | its file is 1.07 m | 0.32 |
+
+A gun built at its `size` length would have the shared sights at about 2.5
+to 3 times their true size next to it. Today the old guns shrink them
+through their `SightMount` scale: about 0.36 on the rifle, 1.0 on the
+shotgun (whose whole file is scaled 0.32). Ask the user which way to go:
+
+- **Recommended:** build each gun at its `size` length, and give its
+  `SightMount` a scale equal to its ratio (e.g. 0.36). The scale is in the
+  file, not code, and the sights keep their true proportion to the gun.
+- Build at true size and raise `size` in `src/weapons.rs`. This makes the
+  first-person guns much bigger and moves them (`hip_position`, `aimed` in
+  `player.rs`, `REMOTE_GUN_SCALE` in `remote.rs`), which changes the feel.
+- Build at `size` length with sights 1:1, which would look oversized.
+
+Iron sights at game scale: a rifle's `sight_relief` is 0.08, so its
+`AimPoint` (put it at the rear aperture or notch) sits 8 cm from the eye,
+and the front post about 0.3 m away. Size the notch and post for that
+(angles as on the pistol: notch about 2.3 degrees wide, post about 0.8,
+from where the eye is). The camera's near plane is 0.01 m. `art/preview.py`
+takes the relief and renders the sight picture from there.
+
+### How a gun is built (follow `art/pistol.py`)
+
+- Lay it out in millimetres with whatever zero is handy (the pistol uses the
+  slide's rear bottom edge); `MM` turns every vertex into metres.
+- In Blender, X is right, Y forward along the barrel and Z up. The Y-up
+  export makes that the game's barrel along -Z, up +Y.
+- At the end, move everything so the middle of the bounds is the origin, and
+  assert the length equals `size[2]` (the pistol script does both).
+- Shapes are prisms of 2D outlines (`Part.prism`), bars along a line
+  (`Part.band`), lofts through rings (`Part.loft`, the grip), and tubes
+  (`Part.tube`, the barrel). Exact booleans (`boolean()`, baked at once) do
+  the cut-outs: serrations, the ejection port, the muzzle.
+- Materials are plain, not metallic, colours linear (`material()`).
+  Emission on the sight dots.
+- Parts that move are their own objects, origins at their pivots. Anything
+  that rides on a part is its child: the pistol's sights, `AimPoint` and
+  `SightMount` are children of `Slide`. `Part.to_object(name, origin=...,
+  parent=...)` takes the origin as (x, y, z) in layout millimetres. Getting
+  the order wrong once put the trigger's pivot 72 mm out to the side.
+- Node names the code looks for (`PART_NAMES` in `gun_model.rs`):
+  - `Magazine`, origin at its top, axes along its own slant.
+  - `Slide` or `Bolt`: kicked back `0.14 * length` by each shot, held back
+    when empty, sent home at `BOLT_HOME` of a reload from empty.
+  - `Pump`, and `Shell` for guns that load round by round.
+  - `IronSight...`: everything hidden while a sight is on.
+  - `AimPoint`: the iron sights' aim point.
+  - `SightMount`: where a sight's base sits, turned 180 degrees about Z
+    because the sights face -Y.
+  Name other parts too (`Trigger`, `SlideStop`, `MagRelease`, a charging
+  handle...), with sensible pivots, for animations to come.
+- `src/weapons.rs`: point the gun's `Model` at the new file, set
+  `fit: Fit::AsBuilt` and list its `sights`. Every gun must take `TWO_X`
+  (a test checks it). Then delete the downloaded model and its `.blend`
+  (`git rm`): git keeps them.
+- Build: `/Applications/Blender.app/Contents/MacOS/Blender --background
+  --factory-startup --python art/<gun>.py -- .` (from the repo root). It
+  saves `art/<gun>.blend` and exports `assets/models/weapons/<gun>.glb`.
+
+### What moves today, and what the new guns need
+
+`follow_camera` in `src/player.rs` drives the first-person parts; other
+players' guns only drop their magazine (`remote.rs`).
+
+- SMG and rifle: `Magazine` and a `Bolt` (the bolt carrier showing through
+  the ejection port, or the charging handle) work as they are.
+- Sniper: `Cycle::Bolt` is only heard today (`combat.rs`, `audio.rs`): the
+  old model has no `Bolt`. A bolt action needs code. After each shot,
+  lift the handle (turn about the bore axis), draw it back from `BOLT_BACK`,
+  push it home and lock it down by `interval - BOLT_LOCK`, as the pump does
+  with `PUMP_AFTER`/`PUMP_TIME`. Model it as `Bolt` with its origin on the
+  bore axis, the handle a child.
+- Not animated yet on any gun: the trigger, slide stop and magazine release.
+  A trigger pull per shot would be cheap.
+
+### Checking a gun
+
+1. Run the build script. It prints the size and asserts the length.
+2. Render it:
+   `Blender --background --factory-startup --python art/preview.py --
+   <gun.glb> <out dir> <sight_relief> assets/models/sights/reflex.glb
+   assets/models/sights/2x.glb`
+   Paths are absolute or from the repo root; the out dir goes in the
+   scratchpad. Look at `irons_zoom.png` (the sight picture), `reload.png`,
+   the sides, and `sight_*.png` for each sight on its mount. It prints
+   where `Slide`, `Magazine`, `AimPoint` and `SightMount` are in the game's
+   axes: -Z is forward.
+3. In the game: `cargo run -- --selftest <dir> --host --bots-hold-fire`.
+   The gallery is `gun_<name>_<hip|aimed|irons|reload>.png`, taken during
+   the countdown. It fits 6 frames for each of 20 views into 2.6 s, so do
+   not add views without making room.
+4. `cargo build` without new warnings, then `cargo test --no-default-features`.
+   Commit straight to `main` (do not push), one gun a commit.
+
+### Pitfalls met so far
+
+- Do not run `cargo fmt`: the repo is not formatted with it, so it would
+  touch every file. Indent by hand.
+- A `Screenshot` of an image must name the camera's target exactly, scale
+  factor and all (`Screenshot(RenderTarget::Image(...))`). With
+  `Screenshot::image(handle)` (scale 1) it reads a texture nothing drew
+  into, and the picture is black.
+- Changing `ClientMsg` or `ServerMsg` means bumping the protocol id in
+  `protocol_id` (now `shitshooter-proto-15`).
+- `dropped magazines: []` at the end of the self-test is how `main` already
+  was; it is not a regression.
+- The red dot and scope were built here, in Blender by hand
+  (`art/red_dot.blend`, `art/scope.blend`), with no scripts. The reflex and
+  2x come from `art/sights.py`.
+
+### Steps
+
+1. [x] Pistol (`art/pistol.py`).
+2. [ ] Decide the long guns' scale with the user (above).
+3. [ ] SMG: replaces `MP7.gltf`. Magazine, bolt or charging handle, irons,
+   mount for the red dot, reflex and 2x.
+4. [ ] Rifle: replaces `M4A1.gltf`. The same, on a top rail.
+5. [ ] Sniper: replaces `SCAR.gltf`. A bolt action with the bolt animation
+   above; the scope too.
+6. [ ] Once nothing uses them: turn the sights to face +Y (`art/sights.py`,
+   and the red dot and scope), drop the mounts' turn, and remove
+   `Fit::Scaled`. The shotgun and knife need re-exporting as built for the
+   game first.
+7. [ ] Maybe: a trigger pull per shot; other players' slides and bolts
+   moving.
 
 ## Round 3: Hamlet, a close-quarters map
 
