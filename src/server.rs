@@ -195,10 +195,10 @@ struct Player {
     deaths: u32,
     /// Kills somebody else finished after this player hurt the victim.
     assists: u32,
-    /// Who has hurt them this life since they last healed back to full
-    /// health: each but the killer gets an assist when they die. Armor never
-    /// comes back, so taking only armor still counts until then.
-    hurt_by: Vec<PlayerId>,
+    /// Who has hurt them this life, and how many seconds ago they last did.
+    /// When they die, each but the killer who hurt them within
+    /// `ASSIST_WINDOW` gets an assist, healed since or not.
+    hurt_by: Vec<(PlayerId, f32)>,
     join_order: u64,
     alive: bool,
     health: i32,
@@ -241,6 +241,8 @@ struct Player {
 }
 
 const MAX_FIRE_CREDIT: f32 = 1.5;
+/// Hurting somebody earns an assist if they die within this many seconds.
+const ASSIST_WINDOW: f32 = 10.0;
 const MAX_BULLETS_OUT: u32 = 40;
 
 struct Grenade {
@@ -517,6 +519,11 @@ impl Server {
             player.fire_credit = (player.fire_credit + dt).min(MAX_FIRE_CREDIT);
             let stats = grenade(player.grenade);
             player.grenades = (player.grenades + dt / stats.recharge).min(stats.max);
+            // Hurt from too long ago no longer helps anybody's kill.
+            player.hurt_by.retain_mut(|(_, ago)| {
+                *ago += dt;
+                *ago <= ASSIST_WINDOW
+            });
             // Health comes back after a while out of trouble.
             player.since_damage += dt;
             if player.alive && player.health < MAX_HEALTH && player.since_damage >= REGEN_DELAY {
@@ -524,10 +531,6 @@ impl Server {
                 let whole = player.regen.floor();
                 player.regen -= whole;
                 player.health = (player.health + whole as i32).min(MAX_HEALTH);
-                // Healed: what they took no longer helps anybody's kill.
-                if player.health == MAX_HEALTH {
-                    player.hurt_by.clear();
-                }
             }
             if !player.alive {
                 player.respawn_in -= dt;
@@ -1198,8 +1201,11 @@ impl Server {
         }
         victim.since_damage = 0.0;
         victim.regen = 0.0;
-        if attacker_id != victim_id && amount > 0 && !victim.hurt_by.contains(&attacker_id) {
-            victim.hurt_by.push(attacker_id);
+        if attacker_id != victim_id && amount > 0 {
+            match victim.hurt_by.iter_mut().find(|(id, _)| *id == attacker_id) {
+                Some((_, ago)) => *ago = 0.0,
+                None => victim.hurt_by.push((attacker_id, 0.0)),
+            }
         }
         if let Some(bot) = &mut victim.bot
             && attacker_id != victim_id
@@ -1236,7 +1242,7 @@ impl Server {
         }
 
         // Everybody else who hurt them helped.
-        for helper in helpers.into_iter().filter(|helper| *helper != attacker_id) {
+        for (helper, _) in helpers.into_iter().filter(|(helper, _)| *helper != attacker_id) {
             if let Some(helper) = self.players.get_mut(&helper) {
                 helper.assists += 1;
             }
@@ -2449,28 +2455,34 @@ mod tests {
         server.damage(1000, 1003, 500, 0);
         assert_eq!(server.players[&1003].kills, 1);
         assert_eq!(assists(&server), [0, 1, 1, 0]);
-        // Hurt, then healed back to full: no assist for that.
+        let wait = |server: &mut Server, seconds: f32| {
+            for _ in 0..(seconds * 60.0) as usize {
+                server.tick(Duration::from_secs_f32(1.0 / 60.0));
+            }
+        };
+        // Hurt 9 seconds before the kill, and healed back to full since: an
+        // assist all the same.
         server.spawn_player(1000);
         server.damage(1000, 1001, START_ARMOR + 20, 0);
-        server.players.get_mut(&1000).unwrap().since_damage = REGEN_DELAY;
-        for _ in 0..60 * 20 {
-            server.tick(Duration::from_secs_f32(1.0 / 60.0));
-        }
+        wait(&mut server, 9.0);
         assert_eq!(server.players[&1000].health, MAX_HEALTH);
         server.damage(1000, 1003, 500, 0);
-        assert_eq!(assists(&server), [0, 1, 1, 0]);
-        // Only their armor taken: that does not heal, so it still helps.
+        assert_eq!(assists(&server), [0, 2, 1, 0]);
+        // Hurt 11 seconds before: too long ago. Hurting them again restarts
+        // the clock.
         server.spawn_player(1000);
-        server.damage(1000, 1002, START_ARMOR, 0);
-        server.players.get_mut(&1000).unwrap().since_damage = REGEN_DELAY;
-        server.tick(Duration::from_secs_f32(1.0 / 60.0));
+        server.damage(1000, 1001, 10, 0);
+        server.damage(1000, 1002, 10, 0);
+        wait(&mut server, 6.0);
+        server.damage(1000, 1002, 10, 0);
+        wait(&mut server, 5.0);
         server.damage(1000, 1003, 500, 0);
-        assert_eq!(assists(&server), [0, 1, 2, 0]);
+        assert_eq!(assists(&server), [0, 2, 2, 0]);
         // Hurting yourself helps nobody, and is not an assist for you.
         server.spawn_player(1000);
         server.damage(1000, 1000, 10, 0);
         server.damage(1000, 1002, 500, 0);
-        assert_eq!(assists(&server), [0, 1, 2, 0]);
+        assert_eq!(assists(&server), [0, 2, 2, 0]);
     }
 
     /// No two living players stand in each other.
