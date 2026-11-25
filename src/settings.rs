@@ -1454,10 +1454,10 @@ sight.Pistol = Scope
             settings.set_sight(0, sight);
             assert_eq!(settings.sight_for(SNIPER), sight);
         }
-        settings.set_sight(1, RED_DOT);
-        assert_eq!(settings.sight_for(PISTOL), RED_DOT);
+        settings.set_sight(1, REFLEX);
+        assert_eq!(settings.sight_for(PISTOL), REFLEX);
         settings.set_sight(1, SCOPE);
-        assert_eq!(settings.sight_for(PISTOL), RED_DOT, "the pistol takes no scope");
+        assert_eq!(settings.sight_for(PISTOL), REFLEX, "the pistol takes no scope");
     }
 
     #[test]
