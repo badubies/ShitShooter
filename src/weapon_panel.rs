@@ -14,7 +14,7 @@ use bevy::prelude::*;
 
 use crate::{
     AppState,
-    loadout::{Preview, Thumbnails},
+    loadout::{Preview, THUMB_SIZE, Thumbnails},
     player::{KNIFE_SLOT, LocalPlayer},
     protocol::{MOST_GRENADES, grenade},
     settings::{Action, Settings},
@@ -384,7 +384,7 @@ struct PanelState {
 /// A thumbnail of a grenade is wide with the grenade in the middle: this is
 /// the middle, the shape of an icon.
 fn grenade_rect() -> Rect {
-    let (width, height) = (320.0, 120.0);
+    let (width, height) = (THUMB_SIZE.x as f32, THUMB_SIZE.y as f32);
     let across = height * GRENADE_ICON.x / GRENADE_ICON.y;
     Rect::new((width - across) / 2.0, 0.0, (width + across) / 2.0, height)
 }

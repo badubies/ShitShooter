@@ -41,7 +41,7 @@ use crate::{
 
 /// Thumbnails are this many pixels, larger than they are shown so they stay
 /// sharp on a big screen, where the interface is scaled up (see `ui::scale_ui`).
-const THUMB_SIZE: UVec2 = UVec2::new(640, 240);
+pub const THUMB_SIZE: UVec2 = UVec2::new(640, 240);
 const STAGE_SIZE: UVec2 = UVec2::new(960, 360);
 /// Width over height of both: the stage on the card keeps the same shape.
 const ASPECT: f32 = 8.0 / 3.0;
