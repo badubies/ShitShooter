@@ -2,9 +2,9 @@
 
 ## Round 4: original weapons
 
-Handoff for whoever picks this up next. The pistol and the SMG are done; the
-rifle is next, and how big to build it is decided (below), so start
-straight away.
+Handoff for whoever picks this up next. The pistol, the SMG and the rifle
+are done; the sniper is next, and how big to build it is decided (below),
+so start straight away.
 
 Replace the downloaded guns (rifle, SMG, sniper) with originals built by
 scripts in `art/`, one gun at a time. The shotgun, the knife and all four
@@ -31,6 +31,12 @@ sights were made here already. Each new gun gets:
   shows. Irons: a ghost ring (`APERTURE_RADIUS`, `RING_RADIUS`) and a post
   with an orange dot between guard ears. It takes the red dot, reflex and
   2x. The downloaded MP7 is gone.
+- `art/rifle.py` builds the rifle (`assets/models/weapons/rifle.glb`), a
+  carbine 840 mm long at true size, built like the SMG: one top rail over
+  the upper and an octagonal slotted handguard, a curved 30-round magazine
+  ahead of the trigger, a slotted flash hider, the same bolt and charging
+  handle, and a skeleton stock. It takes the red dot, reflex and 2x. The
+  downloaded M4A1 is gone.
 - Every magazine reload ends by cocking the gun (slide or bolt drawn back,
   slowly, then let go); see the node names below.
 - `Fit` in `src/weapons.rs`. `Fit::AsBuilt` places a model as it is;
@@ -118,6 +124,25 @@ comes to:
 Check with `art/preview.py`'s `irons_zoom.png` and show the user. Keep the
 rear sight's frame thin, as on the pistol. The camera's near plane is
 0.01 m, so nothing within 1 cm of the eye is drawn.
+
+### A long gun's stock
+
+Aimed, a gun's aim point is held `sight_relief` (0.08 m) from the eye, which
+for a long gun is further forward of the eye than a real one is held. So
+the front half of its stock is ahead of the eye, right under the sights,
+and shows as a wedge up the bottom of the view. A solid stock on a buffer
+tube in line with the bore filled the bottom of the screen on the rifle.
+What fixed it:
+
+- a skeleton stock of two narrow bars (14 mm wide), the comb dropping away
+  from the receiver towards the butt;
+- the rear sight well forward of the back of the rail (30 mm), which brings
+  the whole gun back towards the eye, so more of the stock is behind it;
+- the sight line high enough over the rail (80 mm above the bottom of the
+  upper on the rifle) that the front sight's base stays under the ring.
+
+If the sniper's stock still shows too much, a shorter `sight_relief` for
+the irons alone (a new field) would put the stock behind the eye.
 
 ### How a gun is built (follow `art/pistol.py`)
 
@@ -225,13 +250,10 @@ players' guns only drop their magazine (`remote.rs`).
 1. [x] Pistol (`art/pistol.py`).
 2. [x] The long guns' scale: decided, see above.
 3. [x] SMG (`art/smg.py`).
-4. [ ] Rifle (`art/rifle.py`, replaces `M4A1.gltf`). Start by copying
-   `art/smg.py` (closer to a rifle than the pistol is: a top rail with the
-   irons on it, a bolt with a charging handle) and setting `LENGTH`,
-   `TRUE_LENGTH`. Magazine, bolt or charging handle, irons, mount for the
-   red dot, reflex and 2x.
+4. [x] Rifle (`art/rifle.py`).
 5. [ ] Sniper (`art/sniper.py`, replaces `SCAR.gltf`). A bolt action with
-   the bolt animation above; the scope too.
+   the bolt animation above; the scope too. Start from `art/rifle.py`, and
+   mind its stock (see "A long gun's stock" above).
 6. [ ] Once nothing uses them: turn the sights to face +Y (`art/sights.py`,
    and the red dot and scope), drop the mounts' turn, and remove
    `Fit::Scaled`. The shotgun and knife need re-exporting as built for the
