@@ -272,8 +272,7 @@ fn spawn_minimap(mut commands: Commands, map: Res<GameMap>, picture: Option<Res<
             Node {
                 position_type: PositionType::Absolute,
                 left: px(20),
-                // Under the frame rate and ping box.
-                top: px(72),
+                top: px(14),
                 width: px(MINIMAP),
                 height: px(MINIMAP),
                 border: UiRect::all(px(2)),

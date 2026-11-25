@@ -2163,7 +2163,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
     commands.spawn((
         hud_anchor(Node {
-            left: px(20),
+            right: px(20),
             top: px(14),
             ..default()
         }),
@@ -2183,7 +2183,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         KillFeedPanel,
         hud_anchor(Node {
             right: px(20),
-            top: px(14),
+            top: px(68),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::End,
             row_gap: px(4),
