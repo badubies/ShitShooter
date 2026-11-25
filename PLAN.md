@@ -2,9 +2,9 @@
 
 ## Round 4: original weapons
 
-Handoff for whoever picks this up next. The pistol, the SMG and the rifle
-are done; the sniper is next, and how big to build it is decided (below),
-so start straight away.
+Handoff for whoever picks this up next. The pistol, the SMG, the rifle and
+the sniper are built; the sniper waits on the user's verdict. What is left
+is tidying up (steps 6 and 7 below).
 
 Replace the downloaded guns (rifle, SMG, sniper) with originals built by
 scripts in `art/`, one gun at a time. The shotgun, the knife and all four
@@ -38,6 +38,13 @@ sights were made here already. Each new gun gets:
   handle, and a solid stock with a rubber cheek pad (it was a skeleton at
   first; the user wanted more body). It takes the red dot, reflex and 2x. The
   downloaded M4A1 is gone.
+- `art/sniper.py` builds the sniper (`assets/models/weapons/sniper.glb`), a
+  bolt-action rifle 1200 mm long at true size: a black round receiver and
+  heavy barrel in a dark aluminium chassis, a slotted handguard under one
+  full-length rail, a folded bipod, a ported muzzle brake, a five-round box
+  magazine, and a solid stock with an adjustable cheek riser on posts. Its
+  bolt is worked by hand (see the node names below). It takes the red dot,
+  reflex, 2x and scope. The downloaded SCAR is gone.
 - Every magazine reload ends by cocking the gun (slide or bolt drawn back,
   slowly, then let go); see the node names below.
 - `Fit` in `src/weapons.rs`. `Fit::AsBuilt` places a model as it is;
@@ -146,8 +153,12 @@ What fixed it:
 - the sight line high enough over the rail (80 mm above the bottom of the
   upper on the rifle) that the front sight's base stays under the ring.
 
-If the sniper's stock still shows too much, a shorter `sight_relief` for
-the irons alone (a new field) would put the stock behind the eye.
+The sniper goes further: its sights sit well forward on the rail (the rear
+iron 150 mm and the mount 180 mm ahead of the back of the receiver), so the
+eye is over the back of the receiver and the stock is all behind it. Aimed,
+none of it shows. The scope still sits over the action, clear of the bolt
+handle. If a stock still showed too much, a shorter `sight_relief` for the
+irons alone (a new field) would put it behind the eye.
 
 ### How a gun is built (follow `art/pistol.py`)
 
@@ -206,12 +217,16 @@ players' guns only drop their magazine (`remote.rs`).
   the ejection port, or the charging handle) work as they are. On the SMG
   the handle is a child of the bolt; its slot is cut long enough for
   `BOLT_TRAVEL`.
-- Sniper: `Cycle::Bolt` is only heard today (`combat.rs`, `audio.rs`): the
-  old model has no `Bolt`. A bolt action needs code. After each shot,
-  lift the handle (turn about the bore axis), draw it back from `BOLT_BACK`,
-  push it home and lock it down by `interval - BOLT_LOCK`, as the pump does
-  with `PUMP_AFTER`/`PUMP_TIME`. Model it as `Bolt` with its origin on the
-  bore axis, the handle a child.
+- Sniper: a bolt action (`Cycle::Bolt`). Its `Bolt` has its origin on the
+  bore and the handle (on the right) as a child. After each shot it is
+  turned up about the bore by `BOLT_LIFT` and drawn back
+  `BOLT_ACTION_TRAVEL` from `BOLT_BACK`, stays open, and is pushed home and
+  turned down by `interval - BOLT_LOCK` (`bolt_cycle` in `player.rs`). A
+  magazine reload cocks it the same way, slowly (`bolt_cocking`), and ends
+  with `Sound::BoltHome`, not the slam of a bolt let go. It is not kicked by
+  a shot or held back when empty. `BOLT_LIFT_TIME`, `BOLT_DRAW_TIME` and
+  `BOLT_PUSH_TIME` are the beats `Sound::BoltBack` and `Sound::BoltHome`
+  keep to.
 - Not animated yet on any gun: the trigger, slide stop and magazine release.
   A trigger pull per shot would be cheap.
 
@@ -256,9 +271,7 @@ players' guns only drop their magazine (`remote.rs`).
 2. [x] The long guns' scale: decided, see above.
 3. [x] SMG (`art/smg.py`).
 4. [x] Rifle (`art/rifle.py`).
-5. [ ] Sniper (`art/sniper.py`, replaces `SCAR.gltf`). A bolt action with
-   the bolt animation above; the scope too. Start from `art/rifle.py`, and
-   mind its stock (see "A long gun's stock" above).
+5. [x] Sniper (`art/sniper.py`), with its bolt action.
 6. [ ] Once nothing uses them: turn the sights to face +Y (`art/sights.py`,
    and the red dot and scope), drop the mounts' turn, and remove
    `Fit::Scaled`. The shotgun and knife need re-exporting as built for the

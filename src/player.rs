@@ -14,14 +14,16 @@ use bevy::{
 
 use crate::{
     AppState,
-    audio::{Sound, SoundCue, surface_under},
+    audio::{BOLT_LOCK, Sound, SoundCue, surface_under},
     gun_model::{Fitted, FittedModels, GunHolder, GunPart, PartKind},
     map::{self, CROUCH_EYE, Map, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
     remote::RemotePlayer,
     settings::{Action, ActionInput, Settings, SettingsMenu},
-    weapons::{DRAW_TIME, IRON_SIGHTS, KNIFE, PISTOL, RIFLE, SightId, Weapon, WeaponId, sight, sight_on, weapon},
+    weapons::{
+        Cycle, DRAW_TIME, IRON_SIGHTS, KNIFE, PISTOL, RIFLE, SightId, Weapon, WeaponId, sight, sight_on, weapon,
+    },
     world::{GameMap, MainCamera, ViewModel, ViewModelPart},
 };
 
@@ -92,6 +94,16 @@ pub const PUMP_TIME: f32 = 0.45;
 /// After each shot a bolt is lifted and drawn back this many seconds after
 /// it. It goes home again in time for the next one (see `audio::BOLT_LOCK`).
 pub const BOLT_BACK: f32 = 0.4;
+/// Working a bolt action, in seconds (`Sound::BoltBack` and `Sound::BoltHome`
+/// keep to them): the handle is lifted, then the bolt drawn back; it is
+/// pushed home, then the handle turned down to lock it, by `BOLT_LOCK`.
+pub const BOLT_LIFT_TIME: f32 = 0.05;
+pub const BOLT_DRAW_TIME: f32 = 0.11;
+pub const BOLT_PUSH_TIME: f32 = 0.075;
+/// How far a bolt action's handle turns up about the bore to unlock it
+/// (radians), and how far its bolt is drawn back, times the gun's length.
+const BOLT_LIFT: f32 = 1.1;
+const BOLT_ACTION_TRAVEL: f32 = 0.085;
 /// How far through a magazine reload: the magazine is let go and slides
 /// out; it has dropped away (and falls to the floor); the new one latches;
 /// the slide or bolt is taken hold of and drawn back (cocked), slowly, all
@@ -121,6 +133,40 @@ pub fn magazine_out(progress: f32) -> f32 {
 /// magazine reload going from 0 to 1; 0 again once it is let go.
 pub fn cocking(progress: f32) -> f32 {
     if progress >= BOLT_HOME { 0.0 } else { smooth((progress - BOLT_PULL) / (BOLT_PULLED - BOLT_PULL)) }
+}
+
+/// A bolt action worked after a shot, `since` seconds after it, with the next
+/// shot ready `interval` after it: how far its handle is lifted and its bolt
+/// drawn back, each 0 -> 1. It stays open between the two.
+pub fn bolt_cycle(since: f32, interval: f32) -> (f32, f32) {
+    let home = since - (interval - BOLT_LOCK);
+    if home >= 0.0 {
+        return bolt_home(home);
+    }
+    let lifted = since - BOLT_BACK;
+    (smooth(lifted / BOLT_LIFT_TIME), smooth((lifted - BOLT_LIFT_TIME) / BOLT_DRAW_TIME))
+}
+
+/// A bolt action cocked at the end of a magazine reload `progress` through,
+/// taking `reload` seconds: lifted and drawn back slowly from `BOLT_PULL` to
+/// `BOLT_PULLED`, pushed home and locked from `BOLT_HOME`. As `bolt_cycle`.
+pub fn bolt_cocking(progress: f32, reload: f32) -> (f32, f32) {
+    if progress >= BOLT_HOME {
+        return bolt_home((progress - BOLT_HOME) * reload);
+    }
+    let lift = BOLT_LIFT_TIME / reload;
+    (
+        smooth((progress - BOLT_PULL) / lift),
+        smooth((progress - BOLT_PULL - lift) / (BOLT_PULLED - BOLT_PULL - lift)),
+    )
+}
+
+/// A bolt `home` seconds after it starts going home: pushed, then locked.
+fn bolt_home(home: f32) -> (f32, f32) {
+    (
+        1.0 - smooth((home - BOLT_PUSH_TIME) / (BOLT_LOCK - BOLT_PUSH_TIME)),
+        1.0 - smooth(home / BOLT_PUSH_TIME),
+    )
 }
 
 /// Eases 0 -> 1 in and out; clamped.
@@ -1149,6 +1195,17 @@ fn follow_camera(
     let caught = if held_back { BOLT_CAUGHT } else { 0.0 };
     let drawn = caught.max(cocking);
     let kicked = SHOT_KICK * player.recoil * player.recoil;
+    // A bolt action's bolt is locked when it fires, and worked by hand: lifted
+    // and drawn back after each shot, pushed home and locked for the next one,
+    // and cocked the same way at the end of a magazine reload. It is not held
+    // back when empty, so that reload starts with it closed.
+    let bolt_action = stats.cycle == Some(Cycle::Bolt);
+    let (lift, opened) = match in_hand {
+        _ if !bolt_action => (0.0, 0.0),
+        _ if player.reloading() && !per_round => bolt_cocking(reload, stats.reload),
+        Some(gun) if gun.cooldown > 0.0 && gun.ammo > 0 => bolt_cycle(stats.interval - gun.cooldown, stats.interval),
+        _ => (0.0, 0.0),
+    };
     // The pump: worked after each shot, and once more after loading it empty.
     let pump_cycle = match in_hand {
         _ if player.racking => player.reload_progress(),
@@ -1166,6 +1223,11 @@ fn follow_camera(
             PartKind::Magazine => {
                 part.pose_magazine(&mut transform, &mut visibility, magazine_out);
                 continue;
+            }
+            // Turned about the bore (its origin) to lift the handle on the right.
+            PartKind::Bolt if bolt_action => {
+                part.pose(&mut transform, Vec3::Z * length * BOLT_ACTION_TRAVEL * opened, Vec3::Z, BOLT_LIFT * lift);
+                true
             }
             PartKind::Slide | PartKind::Bolt => {
                 let travel = if part.kind == PartKind::Slide { SLIDE_TRAVEL } else { BOLT_TRAVEL };
@@ -1384,6 +1446,34 @@ fn send_state(player: Res<LocalPlayer>, mut connection: ResMut<Connection>) {
 mod tests {
     use super::*;
     use crate::map::Block;
+
+    /// A bolt action's (lift, drawn back), to within rounding.
+    fn bolt_is(got: (f32, f32), lift: f32, back: f32) {
+        assert!((got.0 - lift).abs() < 1e-3 && (got.1 - back).abs() < 1e-3, "{got:?}, not ({lift}, {back})");
+    }
+
+    #[test]
+    fn a_bolt_action_opens_after_a_shot_and_is_locked_for_the_next() {
+        let interval = weapon(crate::weapons::SNIPER).interval;
+        bolt_is(bolt_cycle(0.0, interval), 0.0, 0.0);
+        // Lifted before it is drawn back.
+        bolt_is(bolt_cycle(BOLT_BACK + BOLT_LIFT_TIME, interval), 1.0, 0.0);
+        bolt_is(bolt_cycle(BOLT_BACK + BOLT_LIFT_TIME + BOLT_DRAW_TIME, interval), 1.0, 1.0);
+        bolt_is(bolt_cycle(interval - BOLT_LOCK, interval), 1.0, 1.0);
+        // Pushed home before it is turned down.
+        bolt_is(bolt_cycle(interval - BOLT_LOCK + BOLT_PUSH_TIME, interval), 1.0, 0.0);
+        bolt_is(bolt_cycle(interval, interval), 0.0, 0.0);
+    }
+
+    #[test]
+    fn a_bolt_action_is_cocked_at_the_end_of_a_reload() {
+        let reload = weapon(crate::weapons::SNIPER).reload;
+        bolt_is(bolt_cocking(0.0, reload), 0.0, 0.0);
+        bolt_is(bolt_cocking(MAGAZINE_IN, reload), 0.0, 0.0);
+        bolt_is(bolt_cocking(BOLT_PULLED, reload), 1.0, 1.0);
+        bolt_is(bolt_cocking(BOLT_HOME, reload), 1.0, 1.0);
+        bolt_is(bolt_cocking(1.0, reload), 0.0, 0.0);
+    }
 
     /// A floor at y = 0 and nothing else.
     fn floor() -> Map {

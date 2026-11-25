@@ -12,7 +12,10 @@ use bevy::{
 use crate::{
     AppState,
     map::Map,
-    player::{BOLT_PULL, BOLT_PULLED, LANDING_AIR_TIME, LocalPlayer, PlayerSystems},
+    player::{
+        BOLT_DRAW_TIME, BOLT_LIFT_TIME, BOLT_PULL, BOLT_PULLED, BOLT_PUSH_TIME, LANDING_AIR_TIME, LocalPlayer,
+        PlayerSystems,
+    },
     protocol::PlayerId,
     weapons::{GUN_COUNT, PISTOL, RIFLE, SHOTGUN, SMG, SNIPER, WeaponId, weapon},
     remote::{RemotePlayer, RemoteSystems},
@@ -1459,13 +1462,14 @@ fn synth_bolt_back() -> Vec<f32> {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
         low_passed += (noise - low_passed) * 0.2;
         let lift = knock(t, 0.0, 300.0, 2600.0, noise) * 0.6 + knock(t, 0.012, 120.0, 700.0, low_passed * 1.5) * 0.5;
-        let drawing = if (0.05..0.16).contains(&t) {
-            let along = (t - 0.05) / 0.11;
+        let back = BOLT_LIFT_TIME + BOLT_DRAW_TIME;
+        let drawing = if (BOLT_LIFT_TIME..back).contains(&t) {
+            let along = (t - BOLT_LIFT_TIME) / BOLT_DRAW_TIME;
             scrape.run(noise) * (along * std::f32::consts::PI).sin() * 0.7
         } else {
             scrape.run(0.0)
         };
-        let stop = knock(t, 0.16, 150.0, 1500.0, noise);
+        let stop = knock(t, back, 150.0, 1500.0, noise);
         let ring: f32 = RINGS
             .iter()
             .filter(|(at, _)| t >= *at)
@@ -1491,12 +1495,12 @@ fn synth_bolt_home() -> Vec<f32> {
     samples(0.24, |t| {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
         low_passed += (noise - low_passed) * 0.2;
-        let pushing = if t < 0.075 {
-            scrape.run(noise) * (t / 0.075 * std::f32::consts::PI).sin() * 0.6
+        let pushing = if t < BOLT_PUSH_TIME {
+            scrape.run(noise) * (t / BOLT_PUSH_TIME * std::f32::consts::PI).sin() * 0.6
         } else {
             scrape.run(0.0)
         };
-        let chamber = knock(t, 0.075, 110.0, 800.0, low_passed * 1.5) * 0.8;
+        let chamber = knock(t, BOLT_PUSH_TIME, 110.0, 800.0, low_passed * 1.5) * 0.8;
         let lock = knock(t, BOLT_LOCK, 200.0, 2200.0, noise) + knock(t, BOLT_LOCK + 0.004, 160.0, 3300.0, 0.0) * 0.5;
         ((pushing + chamber + lock) * 1.6).tanh() * 0.9
     })

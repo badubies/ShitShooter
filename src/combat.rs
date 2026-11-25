@@ -233,7 +233,9 @@ fn fire(
                     own_sound(Sound::BoltPull(weapon_id));
                 }
                 if passed(BOLT_HOME) {
-                    own_sound(Sound::Bolt(weapon_id));
+                    // A bolt action's bolt is pushed home and locked by hand,
+                    // not let go to slam home.
+                    own_sound(if stats.cycle == Some(Cycle::Bolt) { Sound::BoltHome } else { Sound::Bolt(weapon_id) });
                 }
             }
             if player.reload <= 0.0 {
