@@ -284,13 +284,15 @@ fn play_cues(
                 sounds.last_footstep = take;
                 // The takes differ already: only a little more pitch and level.
                 let loudness = 0.85 + 0.15 * next_random(&mut sounds.rng);
-                (source, loudness * if own { 0.34 } else { 1.15 }, 0.95 + random * 0.1)
+                // Ours are much quieter than somebody else's close by: we
+                // hear ours all the time and need to hear theirs.
+                (source, loudness * if own { 0.11 } else { 0.5 }, 0.95 + random * 0.1)
             }
             Sound::Land(surface) => {
                 let takes = &sounds.landings[surface as usize];
                 (
                     takes[(random * 997.0) as usize % takes.len()].clone(),
-                    if own { 0.5 } else { 1.15 },
+                    if own { 0.16 } else { 0.5 },
                     0.95 + random * 0.1,
                 )
             }
@@ -1751,9 +1753,12 @@ fn synth_bolt_home() -> Vec<f32> {
 
 // ---------------------------------------------------------------- footsteps
 
-/// Footsteps keep little above this (grass and gravel a bit more, see
+/// Splashes keep little above this, and steps on dry ground less still (see
 /// `Tread::cutoff`): boots, clothes and the way to the ears soak up the top end.
 const FOOTSTEP_CUTOFF: f32 = 3200.0;
+/// And little below this: the rumble of a step goes through the ground, not
+/// the air.
+const FOOTSTEP_RUMBLE: f32 = 110.0;
 /// Different takes of each footstep, and of each landing.
 const FOOTSTEP_TAKES: u32 = 8;
 const LANDING_TAKES: u32 = 3;
@@ -1863,73 +1868,78 @@ struct Tread {
 }
 
 fn tread(surface: Surface) -> Tread {
+    // A boot's rubber sole, heard from head height: mostly a dull knock in
+    // the low middle, short and dry, with only a little grit on top. What
+    // would make a step sound wet is left out: no hiss trailing after the
+    // blow, and no grains that ring at a pitch like drops.
     match surface {
         Surface::Hard => Tread {
-            length: 0.22,
-            attack: 0.0005,
-            tap: (1700.0, 0.9, 320.0, 2.4),
-            thud: (900.0, 160.0, 1.3),
-            thump: (115.0, 65.0, 0.3),
-            grain_rate: 900.0,
-            grain_time: 0.014,
-            grain_pitch: (3500.0, 9000.0),
-            grain_q: 5.0,
-            grain_decay: 1800.0,
-            grain_gain: 0.8,
-            scuff: (4200.0, 0.08),
-            cutoff: FOOTSTEP_CUTOFF,
-            level: 0.98,
-        },
-        // Dry blades brushed and snapped: short ticks of noise, not
-        // ringing ones (which sound like bubbles), and brighter than the
-        // rest so it stays crisp.
-        Surface::Grass => Tread {
-            length: 0.22,
+            length: 0.16,
             attack: 0.002,
-            tap: (900.0, 0.8, 200.0, 0.5),
-            thud: (450.0, 55.0, 2.6),
-            thump: (70.0, 45.0, 0.3),
-            grain_rate: 6000.0,
-            grain_time: 0.04,
-            grain_pitch: (2500.0, 7000.0),
-            grain_q: 0.7,
-            grain_decay: 3000.0,
-            grain_gain: 1.6,
-            scuff: (3800.0, 0.18),
-            cutoff: 5000.0,
+            tap: (1050.0, 0.8, 330.0, 1.0),
+            thud: (600.0, 115.0, 2.0),
+            thump: (135.0, 85.0, 0.14),
+            grain_rate: 500.0,
+            grain_time: 0.012,
+            grain_pitch: (1400.0, 3000.0),
+            grain_q: 1.5,
+            grain_decay: 2500.0,
+            grain_gain: 0.5,
+            scuff: (1700.0, 0.04),
+            cutoff: 2400.0,
+            level: 0.8,
+        },
+        // Dry blades brushed and snapped: few enough short ticks of noise
+        // to be told apart (more of them run into a hiss), and not ringing
+        // ones (which sound like bubbles).
+        Surface::Grass => Tread {
+            length: 0.18,
+            attack: 0.006,
+            tap: (600.0, 0.8, 200.0, 0.2),
+            thud: (450.0, 75.0, 2.4),
+            thump: (95.0, 60.0, 0.14),
+            grain_rate: 1800.0,
+            grain_time: 0.032,
+            grain_pitch: (1300.0, 3600.0),
+            grain_q: 1.0,
+            grain_decay: 2600.0,
+            grain_gain: 1.0,
+            scuff: (2000.0, 0.07),
+            cutoff: 3400.0,
             level: 0.47,
         },
         Surface::Dirt => Tread {
-            length: 0.22,
-            attack: 0.002,
-            tap: (1300.0, 0.9, 240.0, 0.9),
-            thud: (550.0, 68.0, 2.8),
-            thump: (85.0, 50.0, 0.3),
-            grain_rate: 1800.0,
-            grain_time: 0.025,
-            grain_pitch: (1500.0, 6000.0),
-            grain_q: 4.0,
-            grain_decay: 1600.0,
-            grain_gain: 1.4,
-            scuff: (2600.0, 0.14),
-            cutoff: FOOTSTEP_CUTOFF,
-            level: 0.61,
-        },
-        Surface::Gravel => Tread {
-            length: 0.24,
-            attack: 0.0015,
-            tap: (1500.0, 1.0, 260.0, 0.5),
-            thud: (600.0, 68.0, 2.2),
-            thump: (85.0, 50.0, 0.3),
-            grain_rate: 2600.0,
-            grain_time: 0.04,
-            grain_pitch: (1100.0, 6500.0),
-            grain_q: 8.0,
-            grain_decay: 900.0,
-            grain_gain: 2.0,
-            scuff: (2400.0, 0.08),
-            cutoff: 3600.0,
+            length: 0.18,
+            attack: 0.004,
+            tap: (800.0, 0.8, 240.0, 0.4),
+            thud: (520.0, 85.0, 2.6),
+            thump: (105.0, 65.0, 0.14),
+            grain_rate: 900.0,
+            grain_time: 0.02,
+            grain_pitch: (1000.0, 2800.0),
+            grain_q: 1.5,
+            grain_decay: 2200.0,
+            grain_gain: 0.9,
+            scuff: (1600.0, 0.06),
+            cutoff: 2600.0,
             level: 0.55,
+        },
+        // Stones knocking together: the only grains with a little pitch.
+        Surface::Gravel => Tread {
+            length: 0.2,
+            attack: 0.003,
+            tap: (1000.0, 1.0, 260.0, 0.3),
+            thud: (560.0, 85.0, 2.0),
+            thump: (105.0, 65.0, 0.12),
+            grain_rate: 2000.0,
+            grain_time: 0.034,
+            grain_pitch: (600.0, 2200.0),
+            grain_q: 2.5,
+            grain_decay: 1500.0,
+            grain_gain: 1.3,
+            scuff: (1600.0, 0.05),
+            cutoff: 2800.0,
+            level: 0.5,
         },
         Surface::Water => unreachable!("water splashes instead"),
     }
@@ -1993,7 +2003,7 @@ fn synth_footstep(surface: Surface, take: u32, landing: bool) -> Vec<f32> {
             taps += gain * onset * (-since * tap_decay * brightness).exp();
             thuds += gain * onset * (-since * thud_decay / weight).exp();
             // The thump drops in pitch as the blow is taken up.
-            *phase += TAU * thump_frequency * (1.0 + 0.5 * (-since * 70.0).exp()) / SAMPLE_RATE as f32;
+            *phase += TAU * thump_frequency * (1.0 + 0.25 * (-since * 70.0).exp()) / SAMPLE_RATE as f32;
             thumps += gain * onset * phase.sin() * (-since * thump_decay / weight).exp();
             density += gain * (since / 0.004).min(1.0) * (-since / grain_time).exp();
         }
@@ -2012,7 +2022,8 @@ fn synth_footstep(surface: Surface, take: u32, landing: bool) -> Vec<f32> {
         }
         let scuffs = contacts.get(1).map_or(0.0, |(at, ..)| {
             let since = t - at;
-            if since < 0.0 { 0.0 } else { (since / 0.01).min(1.0) * (-since * 60.0).exp() }
+            // Brief: a scuff that lingers after the blow is a squelch.
+            if since < 0.0 { 0.0 } else { (since / 0.006).min(1.0) * (-since * 120.0).exp() }
         });
         tap.run(noise * taps) * tap_gain
             + thud.run(noise * thuds) * thud_gain
@@ -2022,6 +2033,7 @@ fn synth_footstep(surface: Surface, take: u32, landing: bool) -> Vec<f32> {
             + rattle.run(noise) * 3.0
     });
     muffle(&mut sound, tread.cutoff);
+    thin(&mut sound, FOOTSTEP_RUMBLE);
     finish(&mut sound, tread.level);
     sound
 }
@@ -2162,6 +2174,17 @@ fn muffle(sound: &mut [f32], cutoff: f32) {
         for filter in &mut filters {
             *sample = filter.run(*sample);
         }
+    }
+}
+
+/// Takes off the bottom end: a gentle high pass at `cutoff`.
+fn thin(sound: &mut [f32], cutoff: f32) {
+    let keep = 1.0 / (1.0 + TAU * cutoff / SAMPLE_RATE as f32);
+    let (mut last_in, mut last_out) = (0.0, 0.0);
+    for sample in sound.iter_mut() {
+        last_out = keep * (last_out + *sample - last_in);
+        last_in = *sample;
+        *sample = last_out;
     }
 }
 
