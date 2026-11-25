@@ -12,9 +12,9 @@ use bevy::{
 use crate::{
     AppState,
     map::Map,
-    player::{LANDING_AIR_TIME, LocalPlayer, PlayerSystems},
+    player::{BOLT_PULL, BOLT_PULLED, LANDING_AIR_TIME, LocalPlayer, PlayerSystems},
     protocol::PlayerId,
-    weapons::{GUN_COUNT, PISTOL, RIFLE, SHOTGUN, SMG, SNIPER, WeaponId},
+    weapons::{GUN_COUNT, PISTOL, RIFLE, SHOTGUN, SMG, SNIPER, WeaponId, weapon},
     remote::{RemotePlayer, RemoteSystems},
     world::GameMap,
 };
@@ -80,6 +80,8 @@ pub enum Sound {
     MagOut(WeaponId),
     /// That gun's magazine pushed in until it latches.
     MagIn(WeaponId),
+    /// That gun's bolt or slide drawn back to cock it, near the end of a reload.
+    BoltPull(WeaponId),
     /// That gun's bolt or slide snapping forward at the end of a reload.
     Bolt(WeaponId),
     /// A magazine of that gun, dropped in a reload, hitting the ground.
@@ -166,6 +168,7 @@ struct Sounds {
     /// These three indexed by weapon.
     mag_out: Vec<Handle<AudioSource>>,
     mag_in: Vec<Handle<AudioSource>>,
+    bolt_pull: Vec<Handle<AudioSource>>,
     bolt: Vec<Handle<AudioSource>>,
     /// Indexed by `Surface`.
     mag_drops: [Vec<Handle<AudioSource>>; Surface::COUNT],
@@ -219,6 +222,7 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         rustle: add(synth_handling(false)),
         mag_out: (0..GUN_COUNT).map(|weapon_id| add(synth_mag_out(weapon_id))).collect(),
         mag_in: (0..GUN_COUNT).map(|weapon_id| add(synth_mag_in(weapon_id))).collect(),
+        bolt_pull: (0..GUN_COUNT).map(|weapon_id| add(synth_bolt_pull(weapon_id))).collect(),
         bolt: (0..GUN_COUNT).map(|weapon_id| add(synth_bolt_release(weapon_id))).collect(),
         mag_drops: Surface::ALL.map(|surface| (0..MAG_DROP_TAKES).map(|take| add(synth_mag_drop(surface, take))).collect()),
         shell_in: add(synth_shell_in()),
@@ -309,6 +313,8 @@ fn play_cues(
             Sound::MagOut(weapon_id) => (by_weapon(&sounds.mag_out, weapon_id), 0.55, 0.97 + random * 0.06),
             // Hardly varied: it should seat as the magazine is seen to.
             Sound::MagIn(weapon_id) => (by_weapon(&sounds.mag_in, weapon_id), 0.6, 0.98 + random * 0.04),
+            // Not sped up or slowed: it hits the stop as the slide is seen to.
+            Sound::BoltPull(weapon_id) => (by_weapon(&sounds.bolt_pull, weapon_id), 0.5, 1.0),
             Sound::Bolt(weapon_id) => (by_weapon(&sounds.bolt, weapon_id), 0.6, 0.97 + random * 0.06),
             Sound::MagDrop(surface, weapon_id) => {
                 let takes = &sounds.mag_drops[surface as usize];
@@ -970,6 +976,28 @@ fn synth_mag_in(weapon_id: WeaponId) -> Vec<f32> {
         }
         let settling = rounds.run(noise) * 1.5;
         ((entering + seat + slapping + settling) * 1.5).tanh() * 0.62
+    })
+}
+
+/// A gun's bolt or slide drawn back to cock it: fingers take hold of it, it
+/// slides back against its spring over the time the view model takes, and
+/// knocks into its stop.
+fn synth_bolt_pull(weapon_id: WeaponId) -> Vec<f32> {
+    let Handling { pitch, metal, weight, .. } = handling(weapon_id);
+    let mut rng = 0x3a6_0302 ^ (weapon_id as u32 + 1).wrapping_mul(7919);
+    let mut rough = 0.5;
+    let mut rails = Biquad::new(Pass::Band, 2100.0 * pitch, 1.1);
+    let ringing = [(1700.0 * pitch, 50.0), (2900.0 * pitch, 70.0)];
+    let pull = (BOLT_PULLED - BOLT_PULL) * weapon(weapon_id).reload;
+    samples(pull + 0.15, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        let grab = knock(t, 0.0, 500.0, 1800.0 * pitch, noise) * 0.12;
+        // The spring gets stiffer as it goes back, so the rub gets louder.
+        let drawn = (t / pull).min(1.0);
+        let rub = rails.run(rubbing(noise, &mut rough, &mut rng) * sliding(t, 0.005, pull)) * (0.3 + 0.5 * drawn);
+        let stop = knock(t, pull, 260.0, 1500.0 * pitch, noise) * 0.45 * weight.min(1.0)
+            + ring(t, pull, &ringing) * metal * 0.5;
+        ((grab + rub + stop) * 1.5).tanh() * 0.5
     })
 }
 
@@ -2098,7 +2126,7 @@ mod tests {
     #[ignore]
     fn write_reloads() {
         use crate::{
-            player::{BOLT_HOME, MAGAZINE_DROPPED, MAGAZINE_IN, MAGAZINE_OUT, RACK_TIME},
+            player::{BOLT_HOME, BOLT_PULL, MAGAZINE_DROPPED, MAGAZINE_IN, MAGAZINE_OUT, RACK_TIME},
             weapons::weapon,
         };
         let dir = std::env::var("SOUND_DIR").unwrap_or_else(|_| "target/sounds".into());
@@ -2132,6 +2160,7 @@ mod tests {
                 // It falls about a metre and a half.
                 put(MAGAZINE_DROPPED * reload + 0.5, &synth_mag_drop(Surface::Hard, 0), 0.4);
                 put(MAGAZINE_IN * reload, &synth_mag_in(weapon_id), 0.6);
+                put(BOLT_PULL * reload, &synth_bolt_pull(weapon_id), 0.5);
                 put(BOLT_HOME * reload, &synth_bolt_release(weapon_id), 0.6);
             }
             let name = stats.name.to_lowercase();
@@ -2139,6 +2168,7 @@ mod tests {
             if !stats.reload_per_round {
                 std::fs::write(format!("{dir}/mag_out_{name}.wav"), wav_bytes(&synth_mag_out(weapon_id))).unwrap();
                 std::fs::write(format!("{dir}/mag_in_{name}.wav"), wav_bytes(&synth_mag_in(weapon_id))).unwrap();
+                std::fs::write(format!("{dir}/bolt_pull_{name}.wav"), wav_bytes(&synth_bolt_pull(weapon_id))).unwrap();
                 std::fs::write(format!("{dir}/bolt_{name}.wav"), wav_bytes(&synth_bolt_release(weapon_id))).unwrap();
             }
         }

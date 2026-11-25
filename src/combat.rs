@@ -12,7 +12,7 @@ use crate::{
     map,
     net::{Connection, NetMsg, Session},
     player::{
-        BOLT_BACK, BOLT_HOME, InHand, KNIFE_SLOT, LocalPlayer, MAGAZINE_IN, MAGAZINE_OUT, PUMP_AFTER, PUMP_TIME,
+        BOLT_BACK, BOLT_HOME, BOLT_PULL, InHand, KNIFE_SLOT, LocalPlayer, MAGAZINE_IN, MAGAZINE_OUT, PUMP_AFTER, PUMP_TIME,
         PlayerSystems, RACK_TIME,
     },
     protocol::*,
@@ -229,7 +229,10 @@ fn fire(
                 if passed(MAGAZINE_IN) {
                     own_sound(Sound::MagIn(weapon_id));
                 }
-                if passed(BOLT_HOME) && player.reload_empty {
+                if passed(BOLT_PULL) {
+                    own_sound(Sound::BoltPull(weapon_id));
+                }
+                if passed(BOLT_HOME) {
                     own_sound(Sound::Bolt(weapon_id));
                 }
             }

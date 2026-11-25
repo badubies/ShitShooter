@@ -131,7 +131,11 @@ rear sight's frame thin, as on the pistol. The camera's near plane is
 - Node names the code looks for (`PART_NAMES` in `gun_model.rs`):
   - `Magazine`, origin at its top, axes along its own slant.
   - `Slide` or `Bolt`: kicked back `0.14 * length` by each shot, held back
-    when empty, sent home at `BOLT_HOME` of a reload from empty.
+    by its catch (`BOLT_CAUGHT` of the way) when empty. Every magazine
+    reload cocks it: once the new magazine is in it is drawn all the way
+    back (`BOLT_PULL` to `BOLT_PULLED`) while the gun is pushed forward
+    against the pull, then let go at `BOLT_HOME`. Each step has its sound
+    (`Sound::BoltPull`, `Sound::Bolt`).
   - `Pump`, and `Shell` for guns that load round by round.
   - `IronSight...`: everything hidden while a sight is on.
   - `AimPoint`: the iron sights' aim point.

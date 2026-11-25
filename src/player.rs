@@ -94,15 +94,26 @@ pub const PUMP_TIME: f32 = 0.45;
 pub const BOLT_BACK: f32 = 0.4;
 /// How far through a magazine reload: the magazine is let go and slides
 /// out; it has dropped away (and falls to the floor); the new one latches;
-/// the bolt or slide goes home.
+/// the slide or bolt is taken hold of and drawn back (cocked), all the way
+/// by `BOLT_PULLED`; it is let go and goes home.
 pub const MAGAZINE_OUT: f32 = 0.2;
 pub const MAGAZINE_DROPPED: f32 = 0.35;
-pub const MAGAZINE_IN: f32 = 0.78;
+pub const MAGAZINE_IN: f32 = 0.72;
+pub const BOLT_PULL: f32 = 0.76;
+pub const BOLT_PULLED: f32 = 0.85;
 pub const BOLT_HOME: f32 = 0.88;
+/// How far back an empty gun's slide or bolt is held by its catch: a little
+/// short of where cocking draws it.
+const BOLT_CAUGHT: f32 = 0.9;
 /// 0 -> 1 as the magazine comes out, 1 -> 0 as the new one goes in, over a
 /// magazine reload going from 0 to 1.
 pub fn magazine_out(progress: f32) -> f32 {
-    smooth((progress - 0.15) / 0.2) * smooth((0.8 - progress) / 0.2)
+    smooth((progress - 0.15) / 0.2) * smooth((0.74 - progress) / 0.2)
+}
+/// 0 -> 1 as the slide or bolt is drawn back to cock the gun, over a
+/// magazine reload going from 0 to 1; 0 again once it is let go.
+pub fn cocking(progress: f32) -> f32 {
+    if progress >= BOLT_HOME { 0.0 } else { smooth((progress - BOLT_PULL) / (BOLT_PULLED - BOLT_PULL)) }
 }
 
 /// Eases 0 -> 1 in and out; clamped.
@@ -1026,6 +1037,10 @@ fn follow_camera(
         smooth(reload / 0.18) * smooth((1.0 - reload) / 0.18)
     };
     let magazine_out = magazine_out(reload);
+    // Cocking it: the hand on the grip pushes the gun forward against the
+    // pull on the slide or bolt, and it springs back once that is let go.
+    let cocking = cocking(reload);
+    let tug = if reload < BOLT_HOME { cocking } else { smooth((BOLT_HOME + 0.05 - reload) / 0.05) };
     let throw = (player.throw_anim * std::f32::consts::PI).sin();
     let hold = smooth(player.hold);
 
@@ -1063,6 +1078,7 @@ fn follow_camera(
     gun.translation = hip_position(length).lerp(aimed, player.aim)
         + kick
         + Vec3::new(-0.05, 0.035, -0.03) * tipped
+        + Vec3::new(0.005, 0.0, -0.018) * tug
         + Vec3::new(0.0, -0.16, 0.05) * throw
         + Vec3::new(0.04, -0.14, 0.06) * hold
         + Vec3::new(0.0, -0.3, 0.0) * drawing;
@@ -1070,7 +1086,7 @@ fn follow_camera(
     // towards us, so the magazine (or the loading port) is in view.
     gun.rotation = Quat::from_rotation_x(kick_pitch + tipped * 0.1 - throw * 0.5 - hold * 0.35 - drawing * 0.9)
         * Quat::from_rotation_y(kick_yaw)
-        * Quat::from_rotation_z(-tipped * 0.75);
+        * Quat::from_rotation_z(-tipped * 0.75 - tug * 0.12);
 
     // The same few boxes make every weapon; only their sizes differ.
     let rear = length / 2.0;
@@ -1119,10 +1135,12 @@ fn follow_camera(
     // The parts of the model that move.
     let in_hand = player.guns.get(player.slot).copied();
     let empty = in_hand.is_some_and(|gun| gun.ammo == 0);
-    // The slide or bolt: kicked back by each shot, held back while empty, and
-    // let go near the end of the reload.
+    // The slide or bolt: kicked back by each shot and held back while empty.
+    // Every magazine reload ends by cocking it: drawn back once the new
+    // magazine is in, and let go to go home.
     let held_back = (empty || player.reloading() && player.reload_empty) && !(reload >= BOLT_HOME);
-    let slide = if held_back { 1.0 } else { player.recoil * player.recoil };
+    let caught = if held_back { BOLT_CAUGHT } else { 0.0 };
+    let slide = (player.recoil * player.recoil).max(caught).max(cocking);
     // The pump: worked after each shot, and once more after loading it empty.
     let pump_cycle = match in_hand {
         _ if player.racking => player.reload_progress(),
