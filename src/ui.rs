@@ -2214,9 +2214,9 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         )],
     ));
 
-    // Kill feed, top right. Hidden on the death screen, which says who got us.
+    // Kill feed, top right. Kept on the death screen, over its tint.
     commands.spawn((
-        KillFeedPanel,
+        GlobalZIndex(1),
         hud_anchor(Node {
             right: px(20),
             top: px(68),
@@ -2616,9 +2616,6 @@ fn update_key_hints(
 /// hidden on the death screen.
 #[derive(Component)]
 pub struct HiddenWhenDead;
-
-#[derive(Component)]
-struct KillFeedPanel;
 
 /// The space the death screen leaves above it for the clock and scores (and
 /// conquest's flags), at a HUD size of 100%.
@@ -3199,7 +3196,6 @@ fn update_overlays(
         Query<&mut Node, With<LeaderOnly>>,
         Single<&mut Node, With<DeathScreen>>,
         Query<&mut Node, With<HiddenWhenDead>>,
-        Single<&mut Node, With<KillFeedPanel>>,
     )>,
 ) {
     // White ticks for a hit, yellow for a headshot; red, and held a little
@@ -3233,7 +3229,6 @@ fn update_overlays(
     for mut node in &mut nodes.p4() {
         set_shown(&mut node, !player.on_death_screen());
     }
-    set_shown(&mut nodes.p5(), !dead);
     // Clear of the clock and scores at the top, however big the HUD is.
     let top = px(DEATH_SCREEN_TOP * settings.ui_scale.max(1.0));
     let mut death = nodes.p3();
