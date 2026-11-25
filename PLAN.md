@@ -2,8 +2,9 @@
 
 ## Round 4: original weapons
 
-Handoff for whoever picks this up next. The pistol is done; the SMG is next,
-and how big to build it is decided (below), so start straight away.
+Handoff for whoever picks this up next. The pistol and the SMG are done; the
+rifle is next, and how big to build it is decided (below), so start
+straight away.
 
 Replace the downloaded guns (rifle, SMG, sniper) with originals built by
 scripts in `art/`, one gun at a time. The shotgun, the knife and all four
@@ -21,6 +22,17 @@ sights were made here already. Each new gun gets:
   It is a compact striker-fired design, a black slide on a dark grey frame,
   with three-dot iron sights. It takes the reflex and the 2x; the red dot is
   too big for its slide. The downloaded M1911 is gone.
+- `art/smg.py` builds the SMG (`assets/models/weapons/smg.glb`), a compact
+  PDW 410 mm long at true size: a black upper with a full-length rail on a
+  dark grey lower, the magazine (curved, 36 rounds) ahead of the trigger
+  guard, the stock folded along the right side, below the ejection port. Its
+  `Bolt` shows through the port and carries the charging handle, which
+  sticks out of a slot on the left, the side seen from the hip, so cocking
+  shows. Irons: a ghost ring (`APERTURE_RADIUS`, `RING_RADIUS`) and a post
+  with an orange dot between guard ears. It takes the red dot, reflex and
+  2x. The downloaded MP7 is gone.
+- Every magazine reload ends by cocking the gun (slide or bolt drawn back,
+  slowly, then let go); see the node names below.
 - `Fit` in `src/weapons.rs`. `Fit::AsBuilt` places a model as it is;
   `Fit::Scaled` keeps fitting the downloaded guns until they are replaced.
   `fit_models` (`src/gun_model.rs`) warns when an as-built model's length or
@@ -125,7 +137,8 @@ rear sight's frame thin, as on the pistol. The camera's near plane is
   Emission on the sight dots.
 - Parts that move are their own objects, origins at their pivots. Anything
   that rides on a part is its child: the pistol's sights, `AimPoint` and
-  `SightMount` are children of `Slide`. `Part.to_object(name, origin=...,
+  `SightMount` are children of `Slide`, the SMG's charging handle of
+  `Bolt`; the SMG's sights, on a fixed rail, have no parent. `Part.to_object(name, origin=...,
   parent=...)` takes the origin as (x, y, z) in layout millimetres. Getting
   the order wrong once put the trigger's pivot 72 mm out to the side.
 - Node names the code looks for (`PART_NAMES` in `gun_model.rs`):
@@ -160,7 +173,9 @@ rear sight's frame thin, as on the pistol. The camera's near plane is
 players' guns only drop their magazine (`remote.rs`).
 
 - SMG and rifle: `Magazine` and a `Bolt` (the bolt carrier showing through
-  the ejection port, or the charging handle) work as they are.
+  the ejection port, or the charging handle) work as they are. On the SMG
+  the handle is a child of the bolt; its slot is cut long enough for
+  `BOLT_TRAVEL`.
 - Sniper: `Cycle::Bolt` is only heard today (`combat.rs`, `audio.rs`): the
   old model has no `Bolt`. A bolt action needs code. After each shot,
   lift the handle (turn about the bore axis), draw it back from `BOLT_BACK`,
@@ -209,10 +224,12 @@ players' guns only drop their magazine (`remote.rs`).
 
 1. [x] Pistol (`art/pistol.py`).
 2. [x] The long guns' scale: decided, see above.
-3. [ ] SMG (`art/smg.py`, replaces `MP7.gltf`). Start by copying
-   `art/pistol.py` and setting `LENGTH`, `TRUE_LENGTH`. Magazine, bolt or
-   charging handle, irons, mount for the red dot, reflex and 2x.
-4. [ ] Rifle (`art/rifle.py`, replaces `M4A1.gltf`). The same, on a top rail.
+3. [x] SMG (`art/smg.py`).
+4. [ ] Rifle (`art/rifle.py`, replaces `M4A1.gltf`). Start by copying
+   `art/smg.py` (closer to a rifle than the pistol is: a top rail with the
+   irons on it, a bolt with a charging handle) and setting `LENGTH`,
+   `TRUE_LENGTH`. Magazine, bolt or charging handle, irons, mount for the
+   red dot, reflex and 2x.
 5. [ ] Sniper (`art/sniper.py`, replaces `SCAR.gltf`). A bolt action with
    the bolt animation above; the scope too.
 6. [ ] Once nothing uses them: turn the sights to face +Y (`art/sights.py`,

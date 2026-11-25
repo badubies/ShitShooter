@@ -24,8 +24,9 @@ os.makedirs(OUT, exist_ok=True)
 
 # The game's vertical field of view (settings.rs) and the iron sights' zoom (weapons.rs).
 FOV = math.radians(75.0 * 0.85)
-# How far back a slide or bolt goes, as a share of the gun's length (player.rs).
-SLIDE_TRAVEL = 0.14
+# How far back a slide or bolt goes when cocked, as a share of the gun's
+# length (SLIDE_TRAVEL and BOLT_TRAVEL in player.rs).
+TRAVEL = {"Slide": 0.25, "Bolt": 0.14}
 
 
 def import_glb(path):
@@ -130,7 +131,7 @@ moved = []
 for name in ("Slide", "Bolt"):
     if obj := node(name):
         moved.append((obj, obj.location.copy()))
-        obj.location.y -= SLIDE_TRAVEL * size.y
+        obj.location.y -= TRAVEL[name] * size.y
 if obj := node("Magazine"):
     moved.append((obj, obj.location.copy()))
     obj.location += obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0)) * size.y * 0.35

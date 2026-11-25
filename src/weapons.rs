@@ -236,8 +236,8 @@ pub const WEAPONS: [Weapon; 6] = [
         kick_side: 0.007,
         headshot: 1.6,
         model: Some(Model {
-            path: "models/weapons/MP7.gltf",
-            fit: Fit::Scaled { barrel_plus_z: true },
+            path: "models/weapons/smg.glb",
+            fit: Fit::AsBuilt,
             sights: &[RED_DOT, REFLEX, TWO_X],
         }),
         choke: None,
