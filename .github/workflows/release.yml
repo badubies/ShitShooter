@@ -59,8 +59,11 @@ jobs:
           Copy-Item target\release\shitshooter.exe out\
           Copy-Item target\release\ShitShooterLauncher.exe out\
           # Every platform's launcher is built from the same source, so one
-          # version number covers them all.
-          $launcher = (& target\release\ShitShooterLauncher.exe --version).Trim()
+          # version number covers them all. Read from Cargo.toml: the launcher
+          # is a windowed exe, whose output is not reliably captured.
+          $launcher = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object name -eq 'shitshooter-launcher').version
+          if (-not $launcher) { throw 'No launcher version' }
           Set-Content out\launcher-version.txt $launcher -NoNewline
           Get-ChildItem out
 
@@ -71,8 +74,9 @@ jobs:
           if-no-files-found: error
 
   # Apple Silicon Macs. The launcher downloads shitshooter-macos-arm64 and
-  # updates itself from ShitShooterLauncher-macos-arm64; new players download
-  # the .zip, which keeps the launcher's executable bit.
+  # updates itself from ShitShooterLauncher-macos-arm64 (the exe alone, also
+  # when it is inside ShitShooter.app). New players download the .zip, which
+  # holds ShitShooter.app: a .app opens without a Terminal window.
   macos:
     runs-on: macos-latest
     env:
@@ -95,7 +99,9 @@ jobs:
           cp target/release/ShitShooterLauncher out/ShitShooterLauncher-macos-arm64
           # Rust's linker signs arm64 exes ad hoc, which macOS requires.
           codesign --verify --verbose target/release/shitshooter target/release/ShitShooterLauncher
-          ditto -c -k target/release/ShitShooterLauncher out/ShitShooterLauncher-macos-arm64.zip
+          mkdir app
+          launcher/macos/make-app.sh target/release/ShitShooterLauncher app
+          ditto -c -k --keepParent app/ShitShooter.app out/ShitShooterLauncher-macos-arm64.zip
           ls -l out
 
       - uses: actions/upload-artifact@v4
@@ -239,7 +245,7 @@ jobs:
           **New player?** Download the launcher for your computer below. It installs the game and keeps it up to date.
 
           - **Windows:** **ShitShooterLauncher.exe**. Right-click it → Properties → tick **Unblock** → OK, then run it.
-          - **Mac (Apple Silicon):** **ShitShooterLauncher-macos-arm64.zip**. Unzip it and double-click **ShitShooterLauncher**. The first time, macOS refuses to open it: click **Done**, then go to System Settings → Privacy & Security, click **Open Anyway** next to ShitShooterLauncher, and double-click it again.
+          - **Mac (Apple Silicon):** **ShitShooterLauncher-macos-arm64.zip**. Unzip it, drag **ShitShooter** into Applications and double-click it there. The first time, macOS refuses to open it: click **Done**, then go to System Settings → Privacy & Security, click **Open Anyway** next to ShitShooter, and double-click it again.
           - **Linux (x86-64):** **ShitShooterLauncher-linux-x64.tar.gz**. In a terminal: ``tar xzf ShitShooterLauncher-linux-x64.tar.gz && ./ShitShooterLauncher``
 
           Commit: $env:GITHUB_SHA

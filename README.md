@@ -4,13 +4,13 @@ A fast free-for-all arena shooter with self-hosted lobbies.
 
 ## Playing
 
-Download the launcher for your computer from the [latest release](https://github.com/badubies/ShitShooter/releases/latest). It downloads the game, and on every start after that it checks for a new build and installs it before starting the game.
+Download the launcher for your computer from the [latest release](https://github.com/badubies/ShitShooter/releases/latest). It downloads the game, and on every start after that it checks for a new build and installs it before starting the game. Its window shows which build it is updating from and to and every file it downloads, and closes once the game starts.
 
 - **Windows:** download **ShitShooterLauncher.exe**, right-click it → **Properties** → tick **Unblock** → **OK**, then run it. (Windows blocks downloaded exes that aren't signed. Without this, double-clicking it does nothing.)
-- **Mac (Apple Silicon):** download **ShitShooterLauncher-macos-arm64.zip**, unzip it and double-click **ShitShooterLauncher**; it runs in a Terminal window. The first time, macOS refuses to open it because it isn't notarized: click **Done**, go to System Settings → **Privacy & Security**, click **Open Anyway** next to ShitShooterLauncher, then double-click it again.
-- **Linux (x86-64):** download **ShitShooterLauncher-linux-x64.tar.gz**, then in a terminal: `tar xzf ShitShooterLauncher-linux-x64.tar.gz && ./ShitShooterLauncher`. The game needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22 or newer). After that, ShitShooter is in your app menu too, which starts the launcher.
+- **Mac (Apple Silicon):** download **ShitShooterLauncher-macos-arm64.zip**, unzip it, drag **ShitShooter** into Applications and double-click it there. The first time, macOS refuses to open it because it isn't notarized: click **Done**, go to System Settings → **Privacy & Security**, click **Open Anyway** next to ShitShooter, then double-click it again. (Started from Downloads without moving it, macOS runs it from a read-only copy, so it can't update itself.) If you have the older bare **ShitShooterLauncher**, it keeps working but opens a Terminal window too; download the zip again to get the app.
+- **Linux (x86-64):** download **ShitShooterLauncher-linux-x64.tar.gz**, then in a terminal: `tar xzf ShitShooterLauncher-linux-x64.tar.gz && ./ShitShooterLauncher`. The game and the launcher's window need glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40, Mint 22 or newer). After that, ShitShooter is in your app menu too, which starts the launcher.
 
-The game is installed to `%LOCALAPPDATA%\ShitShooter` on Windows, `~/Library/Application Support/ShitShooter` on a Mac and `~/.local/share/ShitShooter` on Linux, so the launcher can live anywhere (desktop, downloads...). Without internet it starts the version already installed. Any arguments given to the launcher are passed on to the game, e.g. `ShitShooterLauncher.exe --join 1.2.3.4`.
+The game is installed to `%LOCALAPPDATA%\ShitShooter` on Windows, `~/Library/Application Support/ShitShooter` on a Mac and `~/.local/share/ShitShooter` on Linux, so the launcher can live anywhere (desktop, downloads...). Without internet it starts the version already installed. Any arguments given to the launcher are passed on to the game, e.g. `ShitShooterLauncher.exe --join 1.2.3.4`. If its window can't open (no display or no OpenGL), it prints its progress to a terminal instead.
 
 ## Running a lobby server (Raspberry Pi)
 
@@ -37,7 +37,9 @@ Every push to `main` is built by GitHub Actions ([.github/workflows/release.yml]
 
 Models, textures and sounds go in [assets/](assets/), and the game loads them with paths relative to that folder (e.g. `models/weapons/M4A1.gltf`). Each build lists its asset files with their hashes in `assets.txt`. The files themselves are uploaded once to a release tagged `assets`, named by hash, so an asset that doesn't change is never uploaded or downloaded again. The launcher downloads only the files that are new or changed. Don't delete the `assets` release.
 
-To ship a new launcher, bump `version` in [launcher/Cargo.toml](launcher/Cargo.toml). Launchers already installed see the new version in the next release and replace themselves.
+To ship a new launcher, bump `version` in [launcher/Cargo.toml](launcher/Cargo.toml). Launchers already installed see the new version in the next release and replace themselves. On a Mac the release also wraps the launcher in `ShitShooter.app` ([launcher/macos/make-app.sh](launcher/macos/make-app.sh)) for new players; self-updates replace the exe inside it.
+
+To try the launcher without touching your real install, run a debug build with `SHITSHOOTER_LAUNCHER_DIR` set to an empty folder (and `SHITSHOOTER_LAUNCHER_UPDATED=1`, so it doesn't replace itself with the released launcher).
 
 ## Building locally
 

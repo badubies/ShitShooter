@@ -1,6 +1,12 @@
 //! ShitShooter launcher: installs the newest game build from the GitHub
 //! releases, then starts it. Friends only ever download this once.
 //!
+//! It shows a window (window.rs) with the build it updates from and to and the
+//! files it downloads, then closes it once the game starts. The work happens on
+//! its own thread, which reports through `Progress` (progress.rs). Where no
+//! window can open (no display, no OpenGL) it prints to a terminal instead.
+//! On a Mac it ships as ShitShooter.app, so no Terminal window opens.
+//!
 //! The game lives in `%LOCALAPPDATA%\ShitShooter` (on a Mac in
 //! `~/Library/Application Support/ShitShooter`, on Linux in
 //! `~/.local/share/ShitShooter`), so the launcher itself can sit anywhere
@@ -16,12 +22,22 @@
 //! files that changed are downloaded. The files themselves live in one long-lived
 //! release (tag `assets`), named by their SHA-256 hash.
 
+// No console window on Windows. Where the window cannot open, `terminal`
+// makes one.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+mod progress;
+mod window;
+
+use progress::{Choice, Progress};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const REPO: &str = "badubies/ShitShooter";
@@ -49,21 +65,79 @@ type Result<T> = std::result::Result<T, String>;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--version") {
-        // The release workflow uses this to write launcher-version.txt.
         println!("{VERSION}");
         return;
     }
-    println!("ShitShooter launcher {VERSION}\n");
-    if let Err(message) = run(&args) {
-        println!("\n{message}");
-        pause();
-        close_terminal_window();
-        std::process::exit(1);
+    let started = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(AtomicBool::new(false));
+    let opened = {
+        let (started, failed, args) = (started.clone(), failed.clone(), args.clone());
+        window::run(
+            move |progress| {
+                started.store(true, Ordering::SeqCst);
+                if !work(&progress, &args) {
+                    failed.store(true, Ordering::SeqCst);
+                }
+            },
+            !test_install_dir_set(),
+        )
+    };
+    match opened {
+        Err(e) if !started.load(Ordering::SeqCst) => terminal(&args, &e.to_string()),
+        _ if failed.load(Ordering::SeqCst) => {
+            close_terminal_window();
+            std::process::exit(1);
+        }
+        _ => close_terminal_window(),
     }
-    close_terminal_window();
 }
 
-fn run(args: &[String]) -> Result<()> {
+/// Does the work without a window, printing to a terminal (a new console on
+/// Windows), for when the window could not be opened.
+fn terminal(args: &[String], why: &str) {
+    open_console();
+    println!("ShitShooter launcher {VERSION}\n(no window: {why})\n");
+    let ok = work(&Progress::terminal(), args);
+    close_terminal_window();
+    if !ok {
+        std::process::exit(1);
+    }
+}
+
+#[cfg(windows)]
+fn open_console() {
+    unsafe extern "system" {
+        fn AllocConsole() -> i32;
+    }
+    // Rust opens stdout and stdin lazily, so they go to the new console.
+    unsafe { AllocConsole() };
+}
+
+#[cfg(not(windows))]
+fn open_console() {}
+
+/// Updates and starts the game, offering to try again when that fails. Returns
+/// false when the player gave up. Closes the window either way.
+fn work(progress: &Progress, args: &[String]) -> bool {
+    loop {
+        match run(progress, args) {
+            Ok(()) => {
+                progress.close();
+                return true;
+            }
+            Err(message) => {
+                progress.headline("");
+                if progress.ask(&message, &[Choice::TryAgain, Choice::Close]) == Choice::Close {
+                    progress.close();
+                    return false;
+                }
+                progress.reset();
+            }
+        }
+    }
+}
+
+fn run(progress: &Progress, args: &[String]) -> Result<()> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .user_agent("ShitShooter-Launcher")
         .timeout_connect(Some(Duration::from_secs(10)))
@@ -71,10 +145,14 @@ fn run(args: &[String]) -> Result<()> {
         .build()
         .into();
 
-    if std::env::var_os(JUST_UPDATED_ENV).is_none()
-        && let Err(e) = update_launcher(&agent, args)
-    {
-        println!("Could not update the launcher ({e}). Carrying on.\n");
+    progress.headline("Checking for updates…");
+    if std::env::var_os(JUST_UPDATED_ENV).is_none() {
+        match update_launcher(&agent, progress, args) {
+            // The new launcher carries on from here.
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(e) => progress.warn(&format!("Could not update the launcher ({e}). Carrying on.")),
+        }
     }
     remove_old_launcher();
 
@@ -87,7 +165,7 @@ fn run(args: &[String]) -> Result<()> {
         .flatten()
         .map(|v| v.trim().to_string());
 
-    println!("Checking for updates...");
+    progress.headline("Checking for updates…");
     match fetch_text(&agent, GAME_VERSION_FILE) {
         // No asset list means the assets never finished installing (or an old
         // launcher installed this build), so that counts as out of date.
@@ -95,23 +173,20 @@ fn run(args: &[String]) -> Result<()> {
             if installed.as_deref() == Some(latest.as_str())
                 && dir.join(ASSETS_MANIFEST).exists() =>
         {
-            println!("Up to date ({latest}).");
+            progress.headline(&format!("Up to date ({latest})."));
         }
         Ok(latest) => {
-            match &installed {
-                Some(old) => println!("Updating {old} -> {latest}"),
-                None => println!("Installing {latest}"),
-            }
-            if let Err(e) = install_game(&agent, &dir, &latest) {
+            progress.builds(installed.as_deref(), &latest);
+            if let Err(e) = install_game(&agent, progress, &dir, &latest) {
                 if !game.exists() {
                     return Err(format!("Could not download the game: {e}"));
                 }
-                println!("\nCould not download the update: {e}\nStarting the installed version.");
+                progress.warn(&format!("Could not download the update: {e}\nStarting the installed version."));
                 std::thread::sleep(Duration::from_secs(3));
             }
         }
         Err(e) if game.exists() => {
-            println!("Could not check for updates ({e}). Starting the installed version.");
+            progress.warn(&format!("Could not check for updates ({e}). Starting the installed version."));
             std::thread::sleep(Duration::from_secs(2));
         }
         Err(e) => {
@@ -124,9 +199,22 @@ fn run(args: &[String]) -> Result<()> {
     if cfg!(target_os = "linux")
         && let Err(e) = install_menu_entry(&dir)
     {
-        println!("Could not add ShitShooter to the app menu ({e}).");
+        progress.warn(&format!("Could not add ShitShooter to the app menu ({e})."));
     }
+    progress.headline("Starting ShitShooter…");
     launch_game(&game, &dir, args)
+}
+
+/// Set in debug builds to install somewhere else than the real install folder,
+/// for trying the launcher out. The window then opens without taking focus.
+const TEST_INSTALL_DIR_ENV: &str = "SHITSHOOTER_LAUNCHER_DIR";
+
+fn test_install_dir() -> Option<PathBuf> {
+    if cfg!(debug_assertions) { std::env::var_os(TEST_INSTALL_DIR_ENV).map(PathBuf::from) } else { None }
+}
+
+fn test_install_dir_set() -> bool {
+    test_install_dir().is_some()
 }
 
 /// Where the game is installed: `%LOCALAPPDATA%\ShitShooter` on Windows,
@@ -134,6 +222,9 @@ fn run(args: &[String]) -> Result<()> {
 /// `$XDG_DATA_HOME/ShitShooter` (`~/.local/share/ShitShooter`) on Linux, or
 /// next to the launcher if those variables are somehow missing.
 fn install_dir() -> PathBuf {
+    if let Some(dir) = test_install_dir() {
+        return dir;
+    }
     let home = || std::env::var_os("HOME").map(PathBuf::from);
     let base = if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
@@ -179,8 +270,8 @@ fn install_menu_entry(dir: &Path) -> std::io::Result<()> {
     )
 }
 
-/// The `.desktop` file for `install_menu_entry`. The launcher runs in a terminal,
-/// so the download progress shows.
+/// The `.desktop` file for `install_menu_entry`. The launcher opens its own
+/// window, so it needs no terminal.
 fn menu_entry(launcher: &Path, icon: &Path) -> String {
     // Values escape backslashes. The command line also quotes its argument,
     // escaping ", `, $ and \ inside the quotes, and doubles %.
@@ -201,7 +292,7 @@ fn menu_entry(launcher: &Path, icon: &Path) -> String {
          Comment=Fast free-for-all arena shooter\n\
          Exec={}\n\
          Icon={}\n\
-         Terminal=true\n\
+         Terminal=false\n\
          Categories=Game;ActionGame;\n\
          StartupWMClass={APP_ID}\n",
         value(&quoted),
@@ -279,20 +370,27 @@ fn fetch_text(agent: &ureq::Agent, file: &str) -> Result<String> {
     Ok(text.trim().to_string())
 }
 
-/// Downloads `url` to `dest`, printing progress.
-fn download(agent: &ureq::Agent, url: &str, dest: &Path) -> Result<()> {
+fn content_length(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
+    response.headers().get("content-length")?.to_str().ok()?.parse().ok()
+}
+
+/// The size of the file at `url`, without downloading it.
+fn download_size(agent: &ureq::Agent, url: &str) -> Option<u64> {
+    content_length(&agent.head(url).call().ok()?)
+}
+
+/// Downloads `url` to `dest` as file `file` of the download plan in `progress`.
+fn download(agent: &ureq::Agent, progress: &Progress, file: usize, url: &str, dest: &Path) -> Result<()> {
+    progress.file_started(file);
     let mut response = agent.get(url).call().map_err(describe)?;
-    let total: Option<u64> = response
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok());
+    let total = content_length(&response);
+    progress.file_progress(file, 0, total);
     let mut reader = response.body_mut().as_reader();
     let mut out = fs::File::create(dest).map_err(|e| format!("could not write {}: {e}", dest.display()))?;
 
     let mut buffer = vec![0; 256 * 1024];
     let mut done: u64 = 0;
-    let mut last_print = Instant::now();
+    let mut last_report = Instant::now();
     loop {
         let n = reader.read(&mut buffer).map_err(|e| format!("download failed: {e}"))?;
         if n == 0 {
@@ -300,43 +398,39 @@ fn download(agent: &ureq::Agent, url: &str, dest: &Path) -> Result<()> {
         }
         out.write_all(&buffer[..n]).map_err(|e| format!("could not write {}: {e}", dest.display()))?;
         done += n as u64;
-        if last_print.elapsed() > Duration::from_millis(100) {
-            print_progress(done, total);
-            last_print = Instant::now();
+        if last_report.elapsed() > Duration::from_millis(50) {
+            progress.file_progress(file, done, total);
+            last_report = Instant::now();
         }
     }
-    print_progress(done, total);
-    println!();
+    progress.file_progress(file, done, total);
     out.flush().map_err(|e| format!("could not write {}: {e}", dest.display()))?;
     if total.is_some_and(|total| done != total) {
         return Err("the download was cut short".into());
     }
+    progress.file_done(file);
     Ok(())
 }
 
-fn mb(bytes: u64) -> f64 {
-    bytes as f64 / 1_048_576.0
-}
-
-fn print_progress(done: u64, total: Option<u64>) {
-    match total {
-        Some(total) if total > 0 => print!(
-            "\r  {:.1} / {:.1} MB ({}%)   ",
-            mb(done),
-            mb(total),
-            done * 100 / total
-        ),
-        _ => print!("\r  {:.1} MB   ", mb(done)),
-    }
-    let _ = std::io::stdout().flush();
-}
-
 /// Brings the assets up to date, then downloads the latest game next to the
-/// installed one and swaps it in.
-fn install_game(agent: &ureq::Agent, dir: &Path, version: &str) -> Result<()> {
-    sync_assets(agent, dir)?;
+/// installed one and swaps it in. The window lists all of these files first.
+fn install_game(agent: &ureq::Agent, progress: &Progress, dir: &Path, version: &str) -> Result<()> {
+    progress.headline("Checking the installed files…");
+    let assets = check_assets(agent, dir)?;
+    let game_url = download_url(&game_download());
+    let mut files: Vec<(String, Option<u64>)> =
+        assets.missing.iter().map(|entry| (entry.path.clone(), Some(entry.size))).collect();
+    files.push((format!("{GAME_EXE} (the game)"), download_size(agent, &game_url)));
+    progress.plan_files(files);
+    progress.headline(if dir.join(GAME_EXE).exists() { "Downloading the update…" } else { "Downloading the game…" });
+
+    for (index, entry) in assets.missing.iter().enumerate() {
+        install_asset(agent, progress, index, dir, entry)?;
+    }
+    finish_assets(dir, &assets)?;
+
     let partial = dir.join(format!("{GAME_EXE}.download"));
-    let result = download(agent, &download_url(&game_download()), &partial)
+    let result = download(agent, progress, assets.missing.len(), &game_url, &partial)
         .and_then(|()| make_executable(&partial));
     if let Err(e) = result {
         let _ = fs::remove_file(&partial);
@@ -345,13 +439,14 @@ fn install_game(agent: &ureq::Agent, dir: &Path, version: &str) -> Result<()> {
     let game = dir.join(GAME_EXE);
     // Fails on Windows while the game is running, since it locks a running exe.
     while let Err(e) = fs::rename(&partial, &game) {
-        println!("\nCould not replace the game ({e}).");
-        println!("If ShitShooter is still running, close it, then press Enter to try again.");
-        pause_quietly();
+        progress.ask(
+            &format!("Could not replace the game ({e}).\nIf ShitShooter is still running, close it, then try again."),
+            &[Choice::TryAgain],
+        );
     }
     // If this fails the next start just downloads the build again.
     let _ = fs::write(dir.join(GAME_VERSION_FILE), version);
-    println!("Done.");
+    progress.headline("Done.");
     Ok(())
 }
 
@@ -362,15 +457,22 @@ struct AssetEntry {
     path: String,
 }
 
-/// Makes `assets\` match the latest build's asset list: downloads files that
-/// are missing or changed, and deletes files an earlier build installed that
-/// this one no longer lists. Files the list does not know about are left alone.
-fn sync_assets(agent: &ureq::Agent, dir: &Path) -> Result<()> {
-    let text = fetch_text(agent, ASSETS_MANIFEST)
+/// What it takes to make `assets\` match the latest build's asset list.
+struct AssetUpdate {
+    /// The latest build's asset list, as downloaded.
+    list: String,
+    /// Files that are missing or changed.
+    missing: Vec<AssetEntry>,
+    /// Files an earlier build installed that this one no longer lists. Files no
+    /// list knows about are left alone.
+    removed: Vec<String>,
+}
+
+fn check_assets(agent: &ureq::Agent, dir: &Path) -> Result<AssetUpdate> {
+    let list = fetch_text(agent, ASSETS_MANIFEST)
         .map_err(|e| format!("could not get the asset list: {e}"))?;
-    let wanted = parse_manifest(&text)?;
-    let manifest_path = dir.join(ASSETS_MANIFEST);
-    let installed = fs::read_to_string(&manifest_path)
+    let wanted = parse_manifest(&list)?;
+    let installed = fs::read_to_string(dir.join(ASSETS_MANIFEST))
         .ok()
         .and_then(|old| parse_manifest(&old).ok())
         .unwrap_or_default();
@@ -378,24 +480,23 @@ fn sync_assets(agent: &ureq::Agent, dir: &Path) -> Result<()> {
         .iter()
         .map(|entry| (entry.path.as_str(), entry.hash.as_str()))
         .collect();
-
-    let missing: Vec<&AssetEntry> = wanted
-        .iter()
-        .filter(|entry| !is_installed(dir, entry, &known))
-        .collect();
-    if !missing.is_empty() {
-        let total: u64 = missing.iter().map(|entry| entry.size).sum();
-        println!("Downloading {} asset file(s), {:.1} MB", missing.len(), mb(total));
-        for entry in missing {
-            install_asset(agent, dir, entry)?;
-        }
-    }
-
     let kept: HashSet<&str> = wanted.iter().map(|entry| entry.path.as_str()).collect();
-    for old in installed.iter().filter(|entry| !kept.contains(entry.path.as_str())) {
-        let _ = fs::remove_file(asset_path(dir, &old.path));
+    let removed = installed
+        .iter()
+        .filter(|entry| !kept.contains(entry.path.as_str()))
+        .map(|entry| entry.path.clone())
+        .collect();
+    let missing = wanted.into_iter().filter(|entry| !is_installed(dir, entry, &known)).collect();
+    Ok(AssetUpdate { list, missing, removed })
+}
+
+/// Once the missing files are in: deletes the removed ones and records the list.
+fn finish_assets(dir: &Path, update: &AssetUpdate) -> Result<()> {
+    for path in &update.removed {
+        let _ = fs::remove_file(asset_path(dir, path));
     }
-    fs::write(&manifest_path, text)
+    let manifest_path = dir.join(ASSETS_MANIFEST);
+    fs::write(&manifest_path, &update.list)
         .map_err(|e| format!("could not write {}: {e}", manifest_path.display()))
 }
 
@@ -449,8 +550,7 @@ fn is_installed(dir: &Path, entry: &AssetEntry, known: &HashMap<&str, &str>) -> 
 }
 
 /// Downloads one asset next to its final place, checks its hash, then moves it in.
-fn install_asset(agent: &ureq::Agent, dir: &Path, entry: &AssetEntry) -> Result<()> {
-    println!("  {}", entry.path);
+fn install_asset(agent: &ureq::Agent, progress: &Progress, file: usize, dir: &Path, entry: &AssetEntry) -> Result<()> {
     let dest = asset_path(dir, &entry.path);
     let mut partial = dest.clone().into_os_string();
     partial.push(".download");
@@ -460,7 +560,7 @@ fn install_asset(agent: &ureq::Agent, dir: &Path, entry: &AssetEntry) -> Result<
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
         }
-        download(agent, &asset_url(&entry.hash), &partial)?;
+        download(agent, progress, file, &asset_url(&entry.hash), &partial)?;
         if file_sha256(&partial)? != entry.hash {
             return Err("the download was corrupted".to_string());
         }
@@ -489,7 +589,6 @@ fn file_sha256(path: &Path) -> Result<String> {
 }
 
 fn launch_game(game: &Path, dir: &Path, args: &[String]) -> Result<()> {
-    println!("Starting ShitShooter...");
     let mut command = Command::new(game);
     command.args(args).current_dir(dir);
     #[cfg(windows)]
@@ -521,21 +620,26 @@ fn launch_game(game: &Path, dir: &Path, args: &[String]) -> Result<()> {
 }
 
 /// Replaces this launcher with the one in the latest release if its version
-/// differs, then runs the new one in its place and exits with its exit code.
-/// Returns `Ok` when no update is needed.
-fn update_launcher(agent: &ureq::Agent, args: &[String]) -> Result<()> {
+/// differs, then starts the new one in its place. Returns true when it did, and
+/// this launcher should close; false when no update is needed.
+///
+/// On a Mac the launcher is the exe inside ShitShooter.app, and the exe alone is
+/// replaced.
+fn update_launcher(agent: &ureq::Agent, progress: &Progress, args: &[String]) -> Result<bool> {
     // Offline, or a release without the file: stay quiet, the game check reports it.
     let Ok(latest) = fetch_text(agent, LAUNCHER_VERSION_FILE) else {
-        return Ok(());
+        return Ok(false);
     };
     if latest == VERSION {
-        return Ok(());
+        return Ok(false);
     }
-    println!("Updating the launcher to {latest}...");
+    progress.headline(&format!("Updating the launcher to {latest}…"));
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let new = with_suffix(&me, ".new");
     let old = with_suffix(&me, ".old");
-    let result = download(agent, &download_url(&launcher_download()), &new)
+    let name = me.file_name().map_or_else(launcher_download, |name| name.to_string_lossy().into_owned());
+    progress.plan_files(vec![(name, None)]);
+    let result = download(agent, progress, 0, &download_url(&launcher_download()), &new)
         .and_then(|()| make_executable(&new));
     if let Err(e) = result {
         let _ = fs::remove_file(&new);
@@ -549,13 +653,37 @@ fn update_launcher(agent: &ureq::Agent, args: &[String]) -> Result<()> {
         let _ = fs::rename(&old, &me);
         return Err(e.to_string());
     }
+    if cfg!(target_os = "macos") {
+        // Unlike Windows, a Mac can delete a running exe. Gone before the
+        // signing, it is not counted as part of ShitShooter.app.
+        let _ = fs::remove_file(&old);
+        sign_app(&me);
+    }
+    let mut command = Command::new(&me);
+    command.args(args).env(JUST_UPDATED_ENV, "1");
+    if progress.in_window() {
+        // The new launcher opens its own window as this one closes.
+        command.spawn().map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
     println!();
-    let status = Command::new(&me)
-        .args(args)
-        .env(JUST_UPDATED_ENV, "1")
-        .status()
-        .map_err(|e| e.to_string())?;
+    let status = command.status().map_err(|e| e.to_string())?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// On a Mac, signs ShitShooter.app again (ad hoc, as the release does) after
+/// its exe was replaced, so the app's signature matches what is inside it.
+/// Nothing happens for a launcher that is not inside a .app.
+fn sign_app(exe: &Path) {
+    let Some(app) = exe.ancestors().nth(3).filter(|app| app.extension().is_some_and(|ext| ext == "app")) else {
+        return;
+    };
+    let _ = Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(app)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Finds this launcher's Terminal window: the one-tab window on our tty.
@@ -637,15 +765,6 @@ fn describe(error: ureq::Error) -> String {
         ureq::Error::StatusCode(code) => format!("GitHub answered with error {code}"),
         other => other.to_string(),
     }
-}
-
-fn pause() {
-    println!("\nPress Enter to close.");
-    pause_quietly();
-}
-
-fn pause_quietly() {
-    let _ = std::io::stdin().read_line(&mut String::new());
 }
 
 #[cfg(test)]
