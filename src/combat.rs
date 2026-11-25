@@ -9,6 +9,7 @@ use bevy::{light::NotShadowCaster, prelude::*};
 use crate::{
     AppState,
     audio::{BOLT_LOCK, PUMP_CLACK, Sound, SoundCue},
+    gun_model::FittedModels,
     map,
     net::{Connection, NetMsg, Session},
     player::{
@@ -19,12 +20,15 @@ use crate::{
     remote::{RemotePlayer, RemoteSystems},
     settings::{Action, ActionInput},
     weapons::{Cycle, DRAW_TIME, KNIFE, KNIFE_RANGE, WeaponId, weapon, weapon_name},
-    world::{GameMap, SharedAssets},
+    world::{GameMap, SharedAssets, ViewModel},
 };
 
 /// Bullets vanish after this many seconds in the air.
 const BULLET_LIFETIME: f32 = 1.5;
 const BULLET_WIDTH: f32 = 0.03;
+/// Seconds over which a bullet's streak closes from where it is drawn coming
+/// out of the gun onto its real path from the eyes.
+const BULLET_CONVERGE: f32 = 0.12;
 /// Seconds the hit marker stays up after a hit.
 pub const HIT_MARKER_TIME: f32 = 0.18;
 /// A click on a semi-automatic gun still counts if the gun becomes ready
@@ -101,8 +105,9 @@ struct Bullet {
     age: f32,
     weapon: WeaponId,
     shooter: PlayerId,
-    /// Drawn this far from where it really is at first, so that it seems to
-    /// leave the gun rather than the eyes. Fades out over the first metres.
+    /// Drawn this far from where it really is as it is fired, so that it seems
+    /// to leave the gun's muzzle rather than the eyes. Fades out over
+    /// `BULLET_CONVERGE`.
     offset: Vec3,
 }
 
@@ -122,6 +127,8 @@ fn fire(
     mut connection: ResMut<Connection>,
     mut sounds: MessageWriter<SoundCue>,
     remotes: Query<(&RemotePlayer, &Transform)>,
+    view_model: Query<&Transform, With<ViewModel>>,
+    fitted_models: Res<FittedModels>,
     mut rng: Local<u32>,
     mut trigger_buffer: Local<f32>,
     mut fire_held: Local<bool>,
@@ -437,7 +444,12 @@ fn fire(
     });
     own_sound(Sound::Gunshot(weapon_id));
 
-    let muzzle = Vec3::new(0.2, -0.16, -0.7).lerp(Vec3::new(0.0, -0.06, -0.7), player.aim);
+    // From the gun's muzzle where it is in the view, hip or aimed, kicked or
+    // not; for a gun whose model does not mark it, about where a gun's is.
+    let muzzle = match (fitted_models.get(weapon_id).and_then(|fitted| fitted.muzzle), view_model.single()) {
+        (Some(muzzle), Ok(view)) => view.transform_point(muzzle),
+        _ => Vec3::new(0.2, -0.16, -0.7).lerp(Vec3::new(0.0, -0.06, -0.7), player.aim),
+    };
     for dir in dirs {
         spawn_bullet(&mut commands, &assets, weapon_id, session.my_id, origin, dir, rotation * muzzle, true);
     }
@@ -571,15 +583,21 @@ fn fly_bullets(
         }
 
         // Drawn as a streak trailing behind the bullet, never longer than the
-        // distance it has covered.
+        // distance it has covered. Each end is drawn off its real path by
+        // what is left of the offset when the bullet was there, so the
+        // streak runs out of the muzzle and closes onto the real path.
         let speed = bullet.vel.length();
         let dir = bullet.vel / speed.max(1e-3);
         let length = (speed * 0.018).clamp(0.5, 5.0).min(speed * bullet.age);
-        let head = bullet.pos + bullet.offset * (1.0 - bullet.age / 0.12).max(0.0);
+        let drawn_off = |age: f32| bullet.offset * (1.0 - age / BULLET_CONVERGE).clamp(0.0, 1.0);
+        let head = bullet.pos + drawn_off(bullet.age);
+        let tail = bullet.pos - dir * length + drawn_off(bullet.age - length / speed.max(1e-3));
+        let along = head - tail;
+        let drawn_length = along.length();
         *transform = Transform {
-            translation: head - dir * length / 2.0,
-            rotation: Quat::from_rotation_arc(Vec3::NEG_Z, dir),
-            scale: Vec3::new(BULLET_WIDTH, BULLET_WIDTH, length),
+            translation: (head + tail) / 2.0,
+            rotation: Quat::from_rotation_arc(Vec3::NEG_Z, along.try_normalize().unwrap_or(dir)),
+            scale: Vec3::new(BULLET_WIDTH, BULLET_WIDTH, drawn_length),
         };
     }
 }

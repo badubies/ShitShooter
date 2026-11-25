@@ -27,6 +27,7 @@ The nodes the game looks for (see src/gun_model.rs):
 - IronSightRear, IronSightFront: hidden when a sight is mounted.
 - AimPoint: the middle of the rear aperture, on the line over the front
   post, which aiming puts on the crosshair.
+- MuzzlePoint: the middle of the muzzle, where the tracers start.
 - SightMount: where a sight's base goes, on the rail. The sights face +Y,
   as the gun does, so they go on as they are.
 - Magazine: its origin is the top of the magazine, its axes along its rake.
@@ -536,6 +537,8 @@ for side in (-1.0, 1.0):
                *sorted((side * EARS_X[0], side * EARS_X[1])), RECEIVER)
 part.to_object("IronSightFront", origin=(0.0, 440.0, RAIL_TOP))
 empty("AimPoint", (0.0, REAR_SIGHT_Y, SIGHT_LINE_Z), None)
+# The middle of the muzzle, where the shots come out.
+empty("MuzzlePoint", (0.0, MUZZLE_Y, BORE_Z), None)
 # Shrunk with the gun, so a sight on it keeps its true size next to it.
 empty("SightMount", (0.0, SIGHT_MOUNT_Y, RAIL_TOP), None, scale=SCALE)
 

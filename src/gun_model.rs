@@ -8,7 +8,8 @@
 //! origin. One that is not is measured once it has loaded, and warned about.
 //!
 //! A gun's own `AimPoint` node, if it has one, is on the line along its iron
-//! sights, and aiming without a sight puts that line through the eye.
+//! sights, and aiming without a sight puts that line through the eye. Its
+//! `MuzzlePoint` node is where its shots' tracers start.
 //!
 //! A gun with a `SightMount` node can carry the sights its `Model::sights`
 //! lists, each another glTF file in metres, facing forward as the guns do. All
@@ -78,6 +79,9 @@ pub struct Fitted {
     /// A point on the line along its iron sights, relative to the holder, if
     /// the model marks one.
     pub iron_aim: Option<Vec3>,
+    /// The middle of its muzzle, relative to the holder, if the model marks it:
+    /// where the tracers of its shots start.
+    pub muzzle: Option<Vec3>,
     /// Where each sight's dot is, relative to the holder, once that sight is in.
     aim_points: [Option<Vec3>; SIGHTS.len()],
 }
@@ -179,6 +183,7 @@ impl GunPart {
 
 const SIGHT_MOUNT: &str = "SightMount";
 const AIM_POINT: &str = "AimPoint";
+const MUZZLE_POINT: &str = "MuzzlePoint";
 const IRON_SIGHT_PREFIX: &str = "IronSight";
 
 fn load_models(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -317,15 +322,18 @@ fn fit_models(
                 if kind == PartKind::Shell { Visibility::Hidden } else { Visibility::Inherited },
             ));
         }
-        // Looked for before any sight is mounted, so it is the gun's own.
-        let iron_aim = descendants
-            .iter_descendants(scene)
-            .find(|&e| names.get(e).is_ok_and(|name| name.as_str() == AIM_POINT))
-            .and_then(|aim| globals.get(aim).ok())
-            .map(|aim| to_scene.transform_point3(aim.translation()));
+        // Looked for before any sight is mounted, so they are the gun's own.
+        let point = |wanted: &str| {
+            descendants
+                .iter_descendants(scene)
+                .find(|&e| names.get(e).is_ok_and(|name| name.as_str() == wanted))
+                .and_then(|node| globals.get(node).ok())
+                .map(|node| to_scene.transform_point3(node.translation()))
+        };
         fitted.0[model.weapon as usize] = Some(Fitted {
             size,
-            iron_aim,
+            iron_aim: point(AIM_POINT),
+            muzzle: point(MUZZLE_POINT),
             aim_points: [None; SIGHTS.len()],
         });
         if !model.shadows {
