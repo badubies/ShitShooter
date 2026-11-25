@@ -5,7 +5,7 @@
 use std::{collections::HashMap, f32::consts::TAU};
 
 use bevy::{
-    audio::{SpatialScale, Volume},
+    audio::{SpatialListener, SpatialScale, Volume},
     prelude::*,
 };
 
@@ -96,8 +96,8 @@ pub enum Sound {
     Pin,
     /// The swish of a grenade being thrown.
     Throw,
-    /// A grenade knocking against something.
-    Bounce,
+    /// A grenade hitting something at this speed (m/s).
+    Bounce(Surface, f32),
     Explosion,
     /// A flashbang's sharp bang.
     Flashbang,
@@ -141,14 +141,18 @@ struct Sounds {
     landings: [Vec<Handle<AudioSource>>; Surface::COUNT],
     /// The take of a footstep played last, not to be played again next.
     last_footstep: usize,
-    clack: Handle<AudioSource>,
-    swish: Handle<AudioSource>,
-    explosion: Handle<AudioSource>,
+    pin: Handle<AudioSource>,
+    throw: Handle<AudioSource>,
+    /// Indexed by `Surface`.
+    bounces: [Vec<Handle<AudioSource>>; Surface::COUNT],
+    /// Close by, and far off (see `NEAR_BLAST`).
+    explosions: [Vec<Handle<AudioSource>>; 2],
+    flashbangs: [Vec<Handle<AudioSource>>; 2],
     tick: Handle<AudioSource>,
     chime: Handle<AudioSource>,
     shatter: Handle<AudioSource>,
     charge: Handle<AudioSource>,
-    hiss: Handle<AudioSource>,
+    smoke: Handle<AudioSource>,
     ring: Handle<AudioSource>,
     beep: Handle<AudioSource>,
     blip: Handle<AudioSource>,
@@ -186,14 +190,16 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
             (0..LANDING_TAKES).map(|take| add(synth_footstep(surface, take, true))).collect()
         }),
         last_footstep: 0,
-        clack: add(synth_clack()),
-        swish: add(synth_swish()),
-        explosion: add(synth_explosion()),
+        pin: add(synth_pin()),
+        throw: add(synth_throw()),
+        bounces: Surface::ALL.map(|surface| (0..BOUNCE_TAKES).map(|take| add(synth_bounce(surface, take))).collect()),
+        explosions: [false, true].map(|far| (0..BLAST_TAKES).map(|take| add(synth_explosion(take, far))).collect()),
+        flashbangs: [false, true].map(|far| (0..BLAST_TAKES).map(|take| add(synth_flashbang(take, far))).collect()),
         tick: add(synth_tick()),
         chime: add(synth_chime()),
         shatter: add(synth_shatter()),
         charge: add(synth_charge()),
-        hiss: add(synth_hiss()),
+        smoke: add(synth_smoke()),
         ring: add(synth_ring()),
         beep: add(synth_beep()),
         blip: add(synth_blip()),
@@ -210,7 +216,12 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
     });
 }
 
-fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut sounds: ResMut<Sounds>) {
+fn play_cues(
+    mut commands: Commands,
+    mut cues: MessageReader<SoundCue>,
+    mut sounds: ResMut<Sounds>,
+    listener: Query<&GlobalTransform, With<SpatialListener>>,
+) {
     for cue in cues.read() {
         let random = next_random(&mut sounds.rng);
         let own = cue.at.is_none();
@@ -249,13 +260,20 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             }
             Sound::Draw => (sounds.draw.clone(), 0.5, 0.95 + random * 0.1),
             Sound::Rustle => (sounds.rustle.clone(), 0.35, 0.9 + random * 0.2),
-            Sound::Pin => (sounds.clack.clone(), 0.35, 2.4 + random * 0.2),
-            Sound::Throw => (sounds.swish.clone(), 0.5, 0.95 + random * 0.1),
-            Sound::Bounce => (sounds.clack.clone(), 0.8, 1.5 + random * 0.3),
-            Sound::Explosion => (sounds.explosion.clone(), 1.0, 0.92 + random * 0.16),
-            // Sped up, the explosion turns into a short, hard crack.
-            Sound::Flashbang => (sounds.explosion.clone(), 1.0, 1.9 + random * 0.1),
-            Sound::SmokePop => (sounds.hiss.clone(), 1.0, 0.95 + random * 0.1),
+            Sound::Pin => (sounds.pin.clone(), 0.45, 0.98 + random * 0.04),
+            Sound::Throw => (sounds.throw.clone(), 0.5, 0.92 + random * 0.16),
+            Sound::Bounce(surface, speed) => {
+                let takes = &sounds.bounces[surface as usize];
+                (
+                    takes[(random * 997.0) as usize % takes.len()].clone(),
+                    // The harder it hits, the louder.
+                    (speed / 12.0).clamp(0.25, 1.0) * 0.3,
+                    0.95 + random * 0.1,
+                )
+            }
+            Sound::Explosion => (pick(&sounds.explosions[0], random), 1.0, 0.95 + random * 0.1),
+            Sound::Flashbang => (pick(&sounds.flashbangs[0], random), 1.0, 0.97 + random * 0.06),
+            Sound::SmokePop => (sounds.smoke.clone(), 1.0, 0.95 + random * 0.1),
             Sound::Ringing => (sounds.ring.clone(), 0.35, 1.0),
             Sound::ArmorBreak => (sounds.shatter.clone(), 0.75, 1.2 + random * 0.06),
             // Played low and slow it sounds heavier: something of ours gave way.
@@ -285,30 +303,57 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             // Not sped up or slowed: the lock must land when the gun is ready.
             Sound::BoltHome => (sounds.bolt_home.clone(), 0.6, 1.0),
         };
-        let settings = PlaybackSettings::DESPAWN
-            .with_volume(Volume::Linear(volume))
-            .with_speed(speed);
-        match cue.at {
-            None => {
-                commands.spawn((AudioPlayer::new(source), settings));
-            }
-            Some(position) => {
-                let range = match cue.sound {
-                    Sound::Gunshot(_) => GUNSHOT_FULL_VOLUME_RANGE,
-                    Sound::Explosion | Sound::Flashbang => EXPLOSION_FULL_VOLUME_RANGE,
-                    Sound::SmokePop => GUNSHOT_FULL_VOLUME_RANGE,
-                    _ => FOOTSTEP_FULL_VOLUME_RANGE,
-                };
-                commands.spawn((
-                    AudioPlayer::new(source),
-                    settings
-                        .with_spatial(true)
-                        .with_spatial_scale(SpatialScale::new(1.0 / range)),
-                    Transform::from_translation(position),
-                ));
+        // A blast far off is heard as a sound of its own, duller and
+        // rolling, blended in with distance.
+        let distant = match cue.sound {
+            Sound::Explosion => Some(pick(&sounds.explosions[1], random)),
+            Sound::Flashbang => Some(pick(&sounds.flashbangs[1], random)),
+            _ => None,
+        };
+        let far = match (&distant, cue.at, listener.single()) {
+            (Some(_), Some(at), Ok(ears)) => smoothstep(NEAR_BLAST, FAR_BLAST, at.distance(ears.translation())),
+            _ => 0.0,
+        };
+        let range = match cue.sound {
+            Sound::Gunshot(_) => GUNSHOT_FULL_VOLUME_RANGE,
+            Sound::Explosion | Sound::Flashbang => EXPLOSION_FULL_VOLUME_RANGE,
+            Sound::SmokePop => GUNSHOT_FULL_VOLUME_RANGE,
+            _ => FOOTSTEP_FULL_VOLUME_RANGE,
+        };
+        for (source, volume) in [(Some(source), volume * (1.0 - far)), (distant, volume * far * DISTANT_BOOST)] {
+            let Some(source) = source.filter(|_| volume > 0.001) else {
+                continue;
+            };
+            let settings = PlaybackSettings::DESPAWN
+                .with_volume(Volume::Linear(volume))
+                .with_speed(speed);
+            match cue.at {
+                None => {
+                    commands.spawn((AudioPlayer::new(source), settings));
+                }
+                Some(position) => {
+                    commands.spawn((
+                        AudioPlayer::new(source),
+                        settings
+                            .with_spatial(true)
+                            .with_spatial_scale(SpatialScale::new(1.0 / range)),
+                        Transform::from_translation(position),
+                    ));
+                }
             }
         }
     }
+}
+
+/// One of a sound's takes, chosen by `random` (0..1).
+fn pick(takes: &[Handle<AudioSource>], random: f32) -> Handle<AudioSource> {
+    takes[(random * 997.0) as usize % takes.len()].clone()
+}
+
+/// 0 below `low`, 1 above `high`, easing in between.
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// The sound for `weapon_id` from a list of one per gun (the rifle's for
@@ -497,6 +542,241 @@ fn sliding(t: f32, from: f32, to: f32) -> f32 {
 fn rubbing(noise: f32, rough: &mut f32, rng: &mut u32) -> f32 {
     *rough += (next_random(rng) - *rough) * 0.02;
     noise * *rough * 2.0
+}
+
+// ---------------------------------------------------------------- grenades
+
+/// Takes of each blast, and of a grenade hitting each surface.
+const BLAST_TAKES: u32 = 2;
+const BOUNCE_TAKES: u32 = 3;
+/// A blast nearer than this (metres) is heard whole; one further than
+/// `FAR_BLAST` only as its dull, rolling distant sound; in between, both.
+const NEAR_BLAST: f32 = 20.0;
+const FAR_BLAST: f32 = 60.0;
+/// How much louder the distant sound is played: low rumble carries.
+const DISTANT_BOOST: f32 = 1.5;
+
+/// Friedlander's blast wave, `t` seconds after it leaves: the pressure
+/// jumps up, falls through zero at `duration` (a bigger charge pushes
+/// longer, and sounds deeper), and a longer, shallower suction follows.
+fn blast_wave(t: f32, duration: f32) -> f32 {
+    if t < 0.0 {
+        return 0.0;
+    }
+    (1.0 - t / duration) * (-2.0 * t / duration).exp() * (t * 20_000.0).min(1.0)
+}
+
+/// A frag's pin pulled: it scrapes out of the fuse and its ring jingles,
+/// the spoon flies off with a springy ping, the striker snaps down on the
+/// primer, and the fuse starts to fizz.
+fn synth_pin() -> Vec<f32> {
+    let mut rng = 0x6e_0001;
+    let mut rough = 0.5;
+    let mut low_passed = 0.0;
+    let mut pin = Biquad::new(Pass::Band, 3500.0, 2.0);
+    let mut fizz = Biquad::new(Pass::Band, 5000.0, 0.8);
+    samples(0.6, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let pulling = pin.run(rubbing(noise, &mut rough, &mut rng) * sliding(t, 0.0, 0.06)) * 0.5;
+        let jingle = ring(t, 0.06, &[(4200.0, 30.0), (6100.0, 38.0), (7900.0, 45.0)]) * 0.5;
+        let spoon = knock(t, 0.1, 350.0, 2400.0, noise) * 0.4
+            + ring(t, 0.1, &[(2700.0, 18.0), (3900.0, 22.0), (5600.0, 28.0)]) * 0.8;
+        let striker = knock(t, 0.115, 300.0, 1800.0, noise) * 0.6 + knock(t, 0.115, 120.0, 500.0, low_passed * 2.0) * 0.4;
+        let burning = if t > 0.12 { ((t - 0.12) / 0.05).min(1.0) * (-(t - 0.12) * 4.0).exp() } else { 0.0 };
+        let fizzing = fizz.run(noise * burning) * 0.25;
+        ((pulling + jingle + spoon + striker + fizzing) * 1.4).tanh() * 0.4
+    })
+}
+
+/// An arm swung hard: air rushing past, rising in pitch as it speeds up
+/// and falling as it slows, over a rustle of sleeve.
+fn synth_throw() -> Vec<f32> {
+    const LENGTH: f32 = 0.28;
+    let mut rng = 0x6e_0002;
+    let mut air = Biquad::new(Pass::Band, 400.0, 1.4);
+    let mut sleeve = Grains::new(2500.0);
+    samples(LENGTH, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        // Fastest a little past half way, as the arm whips through.
+        let speed = ((t / LENGTH).powf(0.8) * std::f32::consts::PI).sin().powi(2);
+        air.retune(Pass::Band, 400.0 + 1600.0 * speed, 1.4);
+        let whoosh = air.run(noise) * speed * 1.6;
+        if next_random(&mut rng) < 1500.0 * (1.0 - t / LENGTH) / SAMPLE_RATE as f32 {
+            let size = next_random(&mut rng).powi(2) * 0.6;
+            sleeve.add(1200.0 * 5.0_f32.powf(next_random(&mut rng)), 1.2, size);
+        }
+        ((whoosh + sleeve.run(noise) * 0.6) * 1.6).tanh() * 0.6
+    })
+}
+
+/// A grenade hitting something: on hard ground its thick metal body clanks
+/// and rings; grass and earth swallow it in a thud; gravel crunches;
+/// water plops.
+fn synth_bounce(surface: Surface, take: u32) -> Vec<f32> {
+    if surface == Surface::Water {
+        return synth_plop(take + 10);
+    }
+    let mut rng = 0x6e_0101 ^ (surface as u32 + 1).wrapping_mul(0x9e37_79b9) ^ (take + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+    // (how much it clanks, thud cutoff, grains per second, grain pitches,
+    // how sharply they ring, their gain)
+    let (clank, thud_cutoff, grain_rate, (low, high), grain_q, grain_gain): (f32, f32, f32, (f32, f32), f32, f32) =
+        match surface {
+            Surface::Hard => (1.0, 1200.0, 0.0, (3000.0, 6000.0), 8.0, 0.0),
+            Surface::Gravel => (0.4, 800.0, 3000.0, (1100.0, 6000.0), 8.0, 2.0),
+            Surface::Dirt => (0.15, 550.0, 1500.0, (1500.0, 5000.0), 4.0, 1.2),
+            _ => (0.05, 400.0, 4000.0, (2500.0, 6000.0), 0.7, 1.0),
+        };
+    let body = [
+        (vary(1850.0, 0.08), 25.0),
+        (vary(2930.0, 0.08), 35.0),
+        (vary(4370.0, 0.08), 45.0),
+        (vary(5600.0, 0.08), 60.0),
+    ];
+    let mut thud = Biquad::new(Pass::Low, thud_cutoff, 0.7);
+    let mut grains = Grains::new(if grain_q < 1.0 { 3000.0 } else { 900.0 });
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+    let mut sound = samples(0.35, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let blow = (-t * 70.0).exp() * (t / 0.0008).min(1.0);
+        let density = (-t / 0.025).exp();
+        if next_random(&mut noise_rng) < grain_rate * density / SAMPLE_RATE as f32 {
+            let size = next_random(&mut noise_rng).powi(3) * density;
+            grains.add(low * (high / low).powf(next_random(&mut noise_rng)), grain_q, size);
+        }
+        let out = ring(t, 0.0, &body) * clank * 2.5
+            + knock(t, 0.0, 300.0, 2500.0, noise) * clank * 0.5
+            + thud.run(noise * blow) * 2.0
+            + grains.run(noise) * grain_gain * grain_q.sqrt();
+        (out * 1.4).tanh()
+    });
+    muffle(&mut sound, 6000.0);
+    finish(&mut sound, 0.8);
+    sound
+}
+
+/// A frag going off. Close by: the blast wave's crack, a deep boom, the
+/// roar of the fireball darkening as it dies, then earth and fragments
+/// pattering down and the blast rolling back off everything around. Far
+/// off (`far`), the crack and roar are lost on the way, leaving a dull
+/// thump, a long rolling rumble, and echoes off the hills.
+fn synth_explosion(take: u32, far: bool) -> Vec<f32> {
+    let mut rng = 0x6e_0201 ^ (take * 2 + far as u32 + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+    let blast_time = vary(if far { 0.018 } else { 0.006 }, 0.1);
+    let (boom_from, boom_to) = if far { (vary(50.0, 0.08), vary(24.0, 0.08)) } else { (vary(75.0, 0.08), vary(30.0, 0.08)) };
+    // (seconds after, gain): the blast coming back off hills and buildings.
+    let echoes = if far { vec![(vary(0.45, 0.2), 0.5), (vary(0.95, 0.2), 0.3)] } else { Vec::new() };
+    let (roll_rate, roll_phase) = (vary(2.5, 0.3), random() * TAU);
+    let mut crack = Biquad::new(Pass::Low, 9000.0, 0.7);
+    let mut roar = Biquad::new(Pass::Low, 3000.0, 0.7);
+    let mut rumble = [Biquad::new(Pass::Low, if far { 350.0 } else { 220.0 }, 0.7); 2];
+    // What is left of the roar far off: a dull, short boom.
+    let mut dull = Biquad::new(Pass::Low, 700.0, 0.7);
+    let mut debris = Grains::new(900.0);
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+    let mut phase = 0.0_f32;
+    let mut sound = samples(if far { 3.5 } else { 3.0 }, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let thump = blast_wave(t, blast_time)
+            + echoes.iter().map(|(at, gain)| blast_wave(t - at, blast_time * 1.5) * gain).sum::<f32>();
+        phase += TAU * (boom_to + (boom_from - boom_to) * (-t * 12.0).exp()) / SAMPLE_RATE as f32;
+        let boom = phase.sin() * (-t * if far { 3.0 } else { 5.0 }).exp() * (t * 1000.0).min(1.0);
+        let rolling = rumble.iter_mut().fold(noise, |x, filter| filter.run(x));
+        let swell = 1.0 + 0.4 * (TAU * roll_rate * t + roll_phase).sin();
+        let tail = rolling * (t / 0.05).min(1.0) * (-t * if far { 1.1 } else { 1.5 }).exp() * swell;
+        let near = if far {
+            dull.run(noise) * (t / 0.01).min(1.0) * (-t * 7.0).exp() * 2.5
+        } else {
+            let cracking = crack.run(noise) * (-t * 40.0).exp();
+            roar.retune(Pass::Low, 250.0 + 2800.0 * (-t * 6.0).exp(), 0.7);
+            let roaring = roar.run(noise) * (-t * 4.5).exp() * (t / 0.004).min(1.0);
+            // Debris comes down from a moment after, thickest at about half a second.
+            let falling = if t > 0.12 { ((t - 0.12) / 0.35).min(1.0) * (-(t - 0.12) * 2.2).exp() } else { 0.0 };
+            if next_random(&mut noise_rng) < 2500.0 * falling / SAMPLE_RATE as f32 {
+                let size = next_random(&mut noise_rng).powi(3);
+                debris.add(700.0 * (6000.0_f32 / 700.0).powf(next_random(&mut noise_rng)), 6.0, size);
+            }
+            cracking * 3.0 + roaring * 1.4 + debris.run(noise) * 3.5
+        };
+        let boom_gain = if far { 1.2 } else { 0.9 };
+        ((thump * 1.2 + boom * boom_gain + tail * 4.0 + near) * 2.2).tanh()
+    });
+    finish(&mut sound, if far { 0.8 } else { 0.68 });
+    sound
+}
+
+/// A flashbang going off. Close by: a very sharp, very loud bang with
+/// little boom (the charge is small), its steel body ringing, and a short
+/// tail. Far off (`far`): a duller crack and its echoes.
+fn synth_flashbang(take: u32, far: bool) -> Vec<f32> {
+    let mut rng = 0x6e_0301 ^ (take * 2 + far as u32 + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+    let blast_time = vary(if far { 0.006 } else { 0.0012 }, 0.1);
+    let echoes = if far { vec![(vary(0.5, 0.2), 0.4)] } else { Vec::new() };
+    let canister = [
+        (vary(1450.0, 0.05), 9.0),
+        (vary(2380.0, 0.05), 12.0),
+        (vary(3720.0, 0.05), 16.0),
+        (vary(5100.0, 0.05), 20.0),
+    ];
+    let (roll_rate, roll_phase) = (vary(3.0, 0.3), random() * TAU);
+    let mut crack = Biquad::new(Pass::Low, if far { 1800.0 } else { 11_000.0 }, 0.7);
+    let mut roar = Biquad::new(Pass::Low, 2500.0, 0.7);
+    let mut rumble = [Biquad::new(Pass::Low, if far { 500.0 } else { 1200.0 }, 0.7); 2];
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+    let mut phase = 0.0_f32;
+    let mut sound = samples(if far { 2.5 } else { 2.2 }, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let bang = blast_wave(t, blast_time)
+            + echoes.iter().map(|(at, gain)| blast_wave(t - at, blast_time * 1.5) * gain).sum::<f32>();
+        let cracking = crack.run(noise) * (-t * if far { 40.0 } else { 90.0 }).exp();
+        phase += TAU * (60.0 + 80.0 * (-t * 30.0).exp()) / SAMPLE_RATE as f32;
+        let boom = phase.sin() * (-t * 22.0).exp() * (t * 1000.0).min(1.0);
+        let rolling = rumble.iter_mut().fold(noise, |x, filter| filter.run(x));
+        let swell = 1.0 + 0.4 * (TAU * roll_rate * t + roll_phase).sin();
+        let tail = rolling * (t / 0.03).min(1.0) * (-t * if far { 1.8 } else { 2.5 }).exp() * swell;
+        let near = if far {
+            0.0
+        } else {
+            let roaring = roar.run(noise) * (-t * 12.0).exp();
+            roaring + ring(t, 0.0, &canister) * 1.4
+        };
+        ((bang * 1.4 + cracking * 1.6 + boom * 0.5 + tail * 3.0 + near) * 3.0).tanh()
+    });
+    finish(&mut sound, if far { 0.75 } else { 0.66 });
+    sound
+}
+
+/// A smoke grenade going off: the cap pops, the filler crackles alight,
+/// then gas jets out with a sputtering hiss for several seconds and dies
+/// down.
+fn synth_smoke() -> Vec<f32> {
+    let mut rng = 0x6e_0401;
+    let mut low_passed = 0.0;
+    let mut sputter = 0.5;
+    let mut jet = Biquad::new(Pass::Band, 3200.0, 0.5);
+    let mut flow = Biquad::new(Pass::Low, 400.0, 0.7);
+    let mut crackle = Grains::new(1500.0);
+    samples(6.0, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let pop = knock(t, 0.0, 90.0, 380.0, low_passed * 2.0) * 0.9 + knock(t, 0.0, 250.0, 1600.0, noise) * 0.4;
+        let catching = (-t * 5.0).exp();
+        if next_random(&mut rng) < (2500.0 * catching + 6.0) / SAMPLE_RATE as f32 {
+            let size = next_random(&mut rng).powi(2) * (0.3 + catching);
+            crackle.add(800.0 * 6.0_f32.powf(next_random(&mut rng)), 3.0, size);
+        }
+        let blowing = (t / 0.5).min(1.0) * if t < 3.5 { 1.0 } else { (-(t - 3.5) * 1.3).exp() };
+        // The jet catches and chokes as it burns.
+        sputter += (next_random(&mut rng) - sputter) * 0.004;
+        let jetting = jet.run(noise) * blowing * (0.5 + sputter) * 0.9 + flow.run(noise) * blowing * 0.6;
+        ((pop + crackle.run(noise) * 1.5 + jetting) * 1.4).tanh() * 0.8
+    })
 }
 
 // ---------------------------------------------------------------- reloads
@@ -876,73 +1156,6 @@ fn synth_charge() -> Vec<f32> {
     })
 }
 
-/// Two hard little knocks: a magazine latch, or a grenade hitting concrete.
-fn synth_clack() -> Vec<f32> {
-    let mut rng = 0x0bad_cafe;
-    let mut low_passed = 0.0;
-    samples(0.09, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        low_passed += (noise - low_passed) * 0.45;
-        // The second knock follows 35 ms after the first.
-        let knock = |at: f32| if t >= at { (-(t - at) * 160.0).exp() } else { 0.0 };
-        let envelope = knock(0.0) + knock(0.035) * 0.7;
-        let ring = (TAU * 1900.0 * t).sin() * 0.35;
-        ((low_passed * 1.6 + ring) * envelope).tanh() * 0.8
-    })
-}
-
-/// A breath of noise that rises and falls.
-fn synth_swish() -> Vec<f32> {
-    let mut rng = 0x5eed_1234;
-    let mut low_passed = 0.0;
-    samples(0.22, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        let progress = t / 0.22;
-        // The filter opens up as the arm speeds up.
-        low_passed += (noise - low_passed) * (0.05 + 0.3 * progress);
-        let envelope = (progress * std::f32::consts::PI).sin().powi(2);
-        (low_passed * envelope * 2.4).tanh() * 0.7
-    })
-}
-
-/// A hard crack, then a long rumble that gets duller as it dies away.
-fn synth_explosion() -> Vec<f32> {
-    let mut rng = 0x00c0_ffee;
-    let mut low_passed = 0.0;
-    let mut rumble = 0.0;
-    let mut phase = 0.0_f32;
-    samples(1.3, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        let brightness = 0.02 + 0.7 * (-t * 18.0).exp();
-        low_passed += (noise - low_passed) * brightness;
-        let crack = low_passed * (-t * 9.0).exp() * 2.2;
-
-        rumble += (noise - rumble) * 0.012;
-        let tail = rumble * (-t * 3.2).exp() * 9.0;
-
-        let frequency = 38.0 + 70.0 * (-t * 14.0).exp();
-        phase += TAU * frequency / SAMPLE_RATE as f32;
-        let thump = phase.sin() * (-t * 5.5).exp() * 1.3;
-
-        (crack + tail + thump).tanh() * 0.95
-    })
-}
-
-/// A pop, then a long hiss of gas that slowly dies down.
-fn synth_hiss() -> Vec<f32> {
-    let mut rng = 0x0dd5_e0a1;
-    let mut low_passed = 0.0;
-    let mut band = 0.0;
-    samples(1.6, |t| {
-        let noise = next_random(&mut rng) * 2.0 - 1.0;
-        low_passed += (noise - low_passed) * 0.35;
-        band += (low_passed - band) * 0.08;
-        let pop = band * (-t * 30.0).exp() * 6.0;
-        let hiss = (noise - low_passed) * (t * 30.0).min(1.0) * (-t * 1.6).exp() * 1.4;
-        (pop + hiss).tanh() * 0.8
-    })
-}
-
 /// A high, thin whine that fades slowly: ears ringing.
 fn synth_ring() -> Vec<f32> {
     samples(3.5, |t| {
@@ -1060,9 +1273,7 @@ fn synth_gunshot(weapon_id: WeaponId, take: u32) -> Vec<f32> {
     let mut phase = 0.0_f32;
     let mut sound = samples(report.length, |t| {
         let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
-        // Friedlander's blast wave: the pressure jumps up, falls through
-        // zero at `blast_time`, and a longer, shallower suction follows.
-        let blast = (1.0 - t / blast_time) * (-2.0 * t / blast_time).exp() * (t * 20_000.0).min(1.0);
+        let blast = blast_wave(t, blast_time);
         let cracking = crack.run(noise) * (-t * crack_decay).exp();
         phase += TAU * (boom_to + (boom_from - boom_to) * (-t * 40.0).exp()) / SAMPLE_RATE as f32;
         let boom = phase.sin() * (-t * boom_decay).exp() * (t * 2000.0).min(1.0);
@@ -1497,6 +1708,12 @@ impl Biquad {
         }
     }
 
+    /// Moves the filter to `frequency`, keeping what it is ringing with.
+    fn retune(&mut self, pass: Pass, frequency: f32, q: f32) {
+        let fresh = Biquad::new(pass, frequency, q);
+        (self.b, self.a) = (fresh.b, fresh.a);
+    }
+
     fn run(&mut self, input: f32) -> f32 {
         let output = self.b[0] * input + self.b[1] * self.x[0] + self.b[2] * self.x[1]
             - self.a[0] * self.y[0]
@@ -1615,14 +1832,13 @@ mod tests {
         let mut all = vec![
             synth_bolt_back(),
             synth_bolt_home(),
-            synth_clack(),
-            synth_swish(),
-            synth_explosion(),
+            synth_pin(),
+            synth_throw(),
+            synth_smoke(),
             synth_tick(),
             synth_chime(),
             synth_shatter(),
             synth_charge(),
-            synth_hiss(),
             synth_ring(),
             synth_click(),
             synth_handling(true),
@@ -1636,6 +1852,11 @@ mod tests {
         }
         for surface in Surface::ALL {
             all.extend((0..MAG_DROP_TAKES).map(|take| synth_mag_drop(surface, take)));
+            all.extend((0..BOUNCE_TAKES).map(|take| synth_bounce(surface, take)));
+        }
+        for far in [false, true] {
+            all.extend((0..BLAST_TAKES).map(|take| synth_explosion(take, far)));
+            all.extend((0..BLAST_TAKES).map(|take| synth_flashbang(take, far)));
         }
         for surface in Surface::ALL {
             all.extend((0..FOOTSTEP_TAKES).map(|take| synth_footstep(surface, take, false)));
@@ -1783,6 +2004,52 @@ mod tests {
         }
         std::fs::write(format!("{dir}/shell_in.wav"), wav_bytes(&synth_shell_in())).unwrap();
         std::fs::write(format!("{dir}/pump.wav"), wav_bytes(&synth_pump())).unwrap();
+    }
+
+    /// Writes the grenades out to listen to: each sound, a frag cooked,
+    /// thrown, bouncing on concrete and going off, and an explosion heard
+    /// from 0, 40 and 80 metres (blended as in the game, without the fall
+    /// off in loudness). `cargo test write_grenades -- --ignored`, into
+    /// `target/sounds` (or `$SOUND_DIR`).
+    #[test]
+    #[ignore]
+    fn write_grenades() {
+        let dir = std::env::var("SOUND_DIR").unwrap_or_else(|_| "target/sounds".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let rate = SAMPLE_RATE as f32;
+        let write = |name: &str, sound: &[f32]| std::fs::write(format!("{dir}/{name}.wav"), wav_bytes(sound)).unwrap();
+        write("pin", &synth_pin());
+        write("throw", &synth_throw());
+        write("smoke", &synth_smoke());
+        for far in [false, true] {
+            let distance = if far { "far" } else { "near" };
+            write(&format!("explosion_{distance}"), &synth_explosion(0, far));
+            write(&format!("flashbang_{distance}"), &synth_flashbang(0, far));
+        }
+        for surface in Surface::ALL {
+            let name = format!("{surface:?}").to_lowercase();
+            write(&format!("bounce_{name}"), &synth_bounce(surface, 0));
+        }
+        let mut frag = vec![0.0; (6.0 * rate) as usize];
+        let put = |into: &mut Vec<f32>, at: f32, sound: &[f32], volume: f32| {
+            for (i, s) in sound.iter().enumerate() {
+                into[(at * rate) as usize + i] += s * volume;
+            }
+        };
+        put(&mut frag, 0.0, &synth_pin(), 0.45);
+        put(&mut frag, 0.9, &synth_throw(), 0.5);
+        for (n, (at, speed)) in [(1.6, 11.0), (1.95, 6.0), (2.15, 3.5)].into_iter().enumerate() {
+            put(&mut frag, at, &synth_bounce(Surface::Hard, n as u32), (speed / 12.0_f32).clamp(0.25, 1.0) * 0.3);
+        }
+        put(&mut frag, 2.9, &synth_explosion(0, false), 1.0);
+        write("frag", &frag);
+        for metres in [0.0, 40.0, 80.0] {
+            let far = smoothstep(NEAR_BLAST, FAR_BLAST, metres);
+            let mut heard = vec![0.0; (3.6 * rate) as usize];
+            put(&mut heard, 0.0, &synth_explosion(1, false), 1.0 - far);
+            put(&mut heard, 0.0, &synth_explosion(1, true), far * DISTANT_BOOST);
+            write(&format!("explosion_at_{metres}m"), &heard);
+        }
     }
 
     /// Writes the footsteps out to listen to: each take, and a run of

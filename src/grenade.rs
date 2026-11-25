@@ -13,7 +13,7 @@ use bevy::{light::NotShadowCaster, prelude::*};
 
 use crate::{
     AppState,
-    audio::{Sound, SoundCue},
+    audio::{Sound, SoundCue, surface_under},
     map::{self, BOUNCE_SOUND, GRENADE_HALF},
     net::NetMsg,
     player::LocalPlayer,
@@ -326,9 +326,11 @@ fn simulate(
             grenade.clock -= GRENADE_STEP;
             grenade.age += GRENADE_STEP;
             grenade.previous = grenade.pos;
-            if map.0.step_grenade(&mut grenade.pos, &mut grenade.vel, GRENADE_STEP) > BOUNCE_SOUND {
+            let hit = map.0.step_grenade(&mut grenade.pos, &mut grenade.vel, GRENADE_STEP);
+            if hit > BOUNCE_SOUND {
+                let below = grenade.pos - Vec3::Y * GRENADE_HALF;
                 sounds.write(SoundCue {
-                    sound: Sound::Bounce,
+                    sound: Sound::Bounce(surface_under(&map.0, below), hit),
                     at: Some(grenade.pos),
                 });
             }
