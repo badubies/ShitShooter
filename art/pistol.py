@@ -1,5 +1,5 @@
 """Builds the pistol: an original compact striker-fired pistol, a dark slide
-on a coyote polymer frame, with three-dot iron sights (two white dots on the
+on a dark grey polymer frame, with three-dot iron sights (two white dots on the
 rear, an orange one on the front post) and a mount on the slide for the reflex
 and the 2x sight.
 
@@ -77,7 +77,7 @@ def material(name, linear, roughness=0.5, emission=None, strength=1.0):
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 SLIDE = material("Pistol_Slide", (0.028, 0.030, 0.033), roughness=0.38)
-FRAME = material("Pistol_Frame", (0.13, 0.095, 0.058), roughness=0.75)
+FRAME = material("Pistol_Frame", (0.05, 0.051, 0.055), roughness=0.8)
 STEEL = material("Pistol_Steel", (0.075, 0.076, 0.08), roughness=0.32)
 BRASS = material("Pistol_Brass", (0.55, 0.36, 0.09), roughness=0.35)
 COPPER = material("Pistol_Copper", (0.45, 0.16, 0.06), roughness=0.35)
@@ -340,7 +340,8 @@ part.cylinder("x", 1.6, (86.0, -4.5), -11.4, 11.4, STEEL, segments=12)
 frame = part.to_object("Frame")
 
 part = Part()
-part.band([(72.0, -8.0), (72.6, -13.0), (71.8, -18.0), (70.0, -22.0), (67.5, -24.5)], 4.2, -3.0, 3.0, STEEL)
+# Down from its pin, its tip curling forward towards the muzzle.
+part.band([(72.0, -8.0), (71.4, -13.0), (72.2, -18.0), (74.0, -22.0), (76.5, -24.5)], 4.2, -3.0, 3.0, STEEL)
 part.to_object("Trigger", origin=(0.0, 72.0, -9.0))
 
 # The slide stop, on the left over the trigger, turning on its front pin.
