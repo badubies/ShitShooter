@@ -779,12 +779,12 @@ fn selftest_play(
     if test.reached(17, if conquest { 18.5 } else { 11.2 }) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
         println!(
-            "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me {:?} ping {:.1}ms",
+            "[selftest] pos {:.1?} top speed {:.1} health {} armor {} me (kills, assists, deaths) {:?} ping {:.1}ms",
             player.pos,
             test.top_speed,
             player.health,
             player.armor,
-            me.map(|p| (p.kills, p.deaths)),
+            me.map(|p| (p.kills, p.assists, p.deaths)),
             connection.ping_ms()
         );
         println!(

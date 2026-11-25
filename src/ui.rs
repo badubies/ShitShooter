@@ -670,6 +670,7 @@ fn roster_heading(title: String, color: Color) -> impl Bundle {
         children![
             (weighted(title, 11.0, 700, color), Node { flex_grow: 1.0, ..default() }),
             roster_stat("KILLS".into(), 11.0, DIM),
+            roster_stat("ASSISTS".into(), 11.0, DIM),
             roster_stat("DEATHS".into(), 11.0, DIM),
         ],
     )
@@ -703,13 +704,20 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey) -> impl Bundl
                 Node { flex_grow: 1.0, ..default() },
             ),
             roster_stat(player.kills.to_string(), 16.0, TEXT),
+            roster_stat(player.assists.to_string(), 16.0, DIM),
             roster_stat(player.deaths.to_string(), 16.0, DIM),
         ],
     )
 }
 
+/// Who goes higher on the scoreboard: the most kills, then the most assists,
+/// then the fewest deaths.
+fn ranking(a: &PlayerInfo, b: &PlayerInfo) -> std::cmp::Ordering {
+    b.kills.cmp(&a.kills).then(b.assists.cmp(&a.assists)).then(a.deaths.cmp(&b.deaths))
+}
+
 /// Rebuilds the rows of every player list whose players or scores changed.
-/// Best score first; one group per team in the team modes.
+/// Best score first (see `ranking`); one group per team in the team modes.
 fn update_rosters(
     mut commands: Commands,
     session: Res<Session>,
@@ -722,7 +730,7 @@ fn update_rosters(
     }
     let key_of = |roster: &[PlayerInfo], mode: u8, my_team: u8, team_scores: [u32; 2]| {
         let mut roster = roster.to_vec();
-        roster.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+        roster.sort_by(ranking);
         let colors = roster
             .iter()
             .map(|player| match &my_paint {
@@ -1901,6 +1909,7 @@ enum Hud {
     PauseInfo,
     PausePlace,
     PauseKills,
+    PauseAssists,
     PauseDeaths,
     /// The scoreboard's title: the map and what wins, the mode, and the time left.
     ScoreCaption,
@@ -2659,6 +2668,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                     children![
                         pause_fact("Place", Hud::PausePlace),
                         pause_fact("Kills", Hud::PauseKills),
+                        pause_fact("Assists", Hud::PauseAssists),
                         pause_fact("Deaths", Hud::PauseDeaths),
                     ],
                 ),
@@ -2691,7 +2701,8 @@ fn pause_fact(caption: &str, hud: Hud) -> impl Bundle + use<> {
         BackgroundColor(CARD),
         children![
             weighted(caption.to_uppercase(), 10.0, 700, DIM),
-            (weighted("", 18.0, 700, TEXT), hud),
+            // "2nd of 12" on one line: its card takes the room it needs.
+            (weighted("", 18.0, 700, TEXT), TextLayout::no_wrap(), hud),
         ],
     )
 }
@@ -2900,7 +2911,7 @@ fn update_hud(
     // Where we stand: best score first, as on the scoreboard.
     let place = {
         let mut order: Vec<_> = session.roster.iter().collect();
-        order.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+        order.sort_by(|a, b| ranking(a, b));
         let at = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
         let suffix = match (at % 10, at % 100) {
             (1, n) if n != 11 => "st",
@@ -3010,6 +3021,7 @@ fn update_hud(
             Hud::PauseInfo => (format!("{map_name}  ·  {mode_name}  ·  the match keeps going"), DIM),
             Hud::PausePlace => (place.clone(), TEXT),
             Hud::PauseKills => (me.map_or(0, |p| p.kills).to_string(), TEXT),
+            Hud::PauseAssists => (me.map_or(0, |p| p.assists).to_string(), TEXT),
             Hud::PauseDeaths => (me.map_or(0, |p| p.deaths).to_string(), TEXT),
             Hud::ScoreCaption => {
                 let wins = if session.mode == MODE_CONQUEST {

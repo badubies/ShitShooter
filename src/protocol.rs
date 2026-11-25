@@ -192,7 +192,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-17:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-18:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -210,6 +210,8 @@ pub struct PlayerInfo {
     pub team: u8,
     pub kills: u32,
     pub deaths: u32,
+    /// Kills somebody else finished after this player hurt the victim.
+    pub assists: u32,
     pub is_bot: bool,
 }
 

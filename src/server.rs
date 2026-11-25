@@ -193,6 +193,12 @@ struct Player {
     team: u8,
     kills: u32,
     deaths: u32,
+    /// Kills somebody else finished after this player hurt the victim.
+    assists: u32,
+    /// Who has hurt them this life since they last healed back to full
+    /// health: each but the killer gets an assist when they die. Armor never
+    /// comes back, so taking only armor still counts until then.
+    hurt_by: Vec<PlayerId>,
     join_order: u64,
     alive: bool,
     health: i32,
@@ -518,6 +524,10 @@ impl Server {
                 let whole = player.regen.floor();
                 player.regen -= whole;
                 player.health = (player.health + whole as i32).min(MAX_HEALTH);
+                // Healed: what they took no longer helps anybody's kill.
+                if player.health == MAX_HEALTH {
+                    player.hurt_by.clear();
+                }
             }
             if !player.alive {
                 player.respawn_in -= dt;
@@ -1188,6 +1198,9 @@ impl Server {
         }
         victim.since_damage = 0.0;
         victim.regen = 0.0;
+        if attacker_id != victim_id && amount > 0 && !victim.hurt_by.contains(&attacker_id) {
+            victim.hurt_by.push(attacker_id);
+        }
         if let Some(bot) = &mut victim.bot
             && attacker_id != victim_id
         {
@@ -1199,7 +1212,9 @@ impl Server {
         let (health, armor) = (victim.health, victim.armor);
         let armor_broken = had_armor && armor == 0;
         let mut dropped = None;
+        let mut helpers = Vec::new();
         if health == 0 {
+            helpers = std::mem::take(&mut victim.hurt_by);
             victim.alive = false;
             victim.deaths += 1;
             victim.respawn_in = RESPAWN_DELAY;
@@ -1220,6 +1235,12 @@ impl Server {
             self.launch_grenade(victim_id, FRAG, pos, Vec3::Y * 2.0, fuse);
         }
 
+        // Everybody else who hurt them helped.
+        for helper in helpers.into_iter().filter(|helper| *helper != attacker_id) {
+            if let Some(helper) = self.players.get_mut(&helper) {
+                helper.assists += 1;
+            }
+        }
         // Blowing yourself up does not score.
         let mut scorer = None;
         if attacker_id != victim_id
@@ -1281,6 +1302,8 @@ impl Server {
         for player in self.players.values_mut() {
             player.kills = 0;
             player.deaths = 0;
+            player.assists = 0;
+            player.hurt_by.clear();
             player.alive = false;
         }
         if is_team_mode(self.settings.mode) {
@@ -1411,6 +1434,7 @@ impl Server {
         player.cooking = None;
         player.fire_credit = MAX_FIRE_CREDIT;
         player.since_damage = 0.0;
+        player.hurt_by.clear();
         player.spawn_seq += 1;
         let spawn_seq = player.spawn_seq;
         let carried = player.grenade;
@@ -1643,6 +1667,8 @@ impl Server {
             team,
             kills: 0,
             deaths: 0,
+            assists: 0,
+            hurt_by: Vec::new(),
             join_order: self.join_counter,
             alive: false,
             health: 0,
@@ -1692,6 +1718,7 @@ impl Server {
                     team: p.team,
                     kills: p.kills,
                     deaths: p.deaths,
+                    assists: p.assists,
                     is_bot: p.bot.is_some(),
                 })
                 .collect(),
@@ -2402,6 +2429,48 @@ mod tests {
         server.team_scores[0] = 1;
         server.damage(1000, 1001, 500, 0);
         assert!(server.phase == Phase::Lobby);
+    }
+
+    #[test]
+    fn everybody_who_hurt_the_victim_but_the_killer_gets_an_assist() {
+        let mut server = Server::bind(ServerSettings { port: 0, ..ServerSettings::default() }).unwrap();
+        for k in 0..4 {
+            server.join_counter += 1;
+            let person = server.new_player(format!("P{k}"), None);
+            server.players.insert(1000 + k, person);
+        }
+        server.start_match();
+        server.countdown = 0.0;
+        let assists = |server: &Server| (1000..1004).map(|id| server.players[&id].assists).collect::<Vec<_>>();
+        // 1001 and 1002 hurt 1000, 1001 twice; 1003 finishes them.
+        server.damage(1000, 1001, 10, 0);
+        server.damage(1000, 1001, 10, 0);
+        server.damage(1000, 1002, 10, 0);
+        server.damage(1000, 1003, 500, 0);
+        assert_eq!(server.players[&1003].kills, 1);
+        assert_eq!(assists(&server), [0, 1, 1, 0]);
+        // Hurt, then healed back to full: no assist for that.
+        server.spawn_player(1000);
+        server.damage(1000, 1001, START_ARMOR + 20, 0);
+        server.players.get_mut(&1000).unwrap().since_damage = REGEN_DELAY;
+        for _ in 0..60 * 20 {
+            server.tick(Duration::from_secs_f32(1.0 / 60.0));
+        }
+        assert_eq!(server.players[&1000].health, MAX_HEALTH);
+        server.damage(1000, 1003, 500, 0);
+        assert_eq!(assists(&server), [0, 1, 1, 0]);
+        // Only their armor taken: that does not heal, so it still helps.
+        server.spawn_player(1000);
+        server.damage(1000, 1002, START_ARMOR, 0);
+        server.players.get_mut(&1000).unwrap().since_damage = REGEN_DELAY;
+        server.tick(Duration::from_secs_f32(1.0 / 60.0));
+        server.damage(1000, 1003, 500, 0);
+        assert_eq!(assists(&server), [0, 1, 2, 0]);
+        // Hurting yourself helps nobody, and is not an assist for you.
+        server.spawn_player(1000);
+        server.damage(1000, 1000, 10, 0);
+        server.damage(1000, 1002, 500, 0);
+        assert_eq!(assists(&server), [0, 1, 2, 0]);
     }
 
     /// No two living players stand in each other.
