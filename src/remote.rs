@@ -91,9 +91,10 @@ struct HeadPivot;
 #[derive(Component)]
 struct Body;
 
-/// Holds the gun: its model, or `GunBox` for weapons without one.
+/// Holds the gun of the player it names: its model, or `GunBox` for weapons
+/// without one.
 #[derive(Component)]
-struct Gun;
+pub struct Gun(pub PlayerId);
 
 #[derive(Component)]
 struct GunBox;
@@ -256,7 +257,7 @@ fn apply_snapshots(
                                         .with_scale(Vec3::new(0.36, 0.11, 0.2)),
                                 ),
                                 (
-                                    Gun,
+                                    Gun(snap.id),
                                     GunHolder {
                                         weapon: snap.weapon,
                                         sight: snap.sight,

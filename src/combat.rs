@@ -9,7 +9,7 @@ use bevy::{light::NotShadowCaster, prelude::*};
 use crate::{
     AppState,
     audio::{BOLT_LOCK, PUMP_CLACK, Sound, SoundCue},
-    gun_model::FittedModels,
+    gun_model::{FittedModels, GunHolder},
     map,
     net::{Connection, NetMsg, Session},
     player::{
@@ -17,7 +17,7 @@ use crate::{
         PlayerSystems, RACK_TIME,
     },
     protocol::*,
-    remote::{RemotePlayer, RemoteSystems},
+    remote::{Gun, RemotePlayer, RemoteSystems},
     settings::{Action, ActionInput},
     weapons::{Cycle, DRAW_TIME, KNIFE, KNIFE_RANGE, WeaponId, weapon, weapon_name},
     world::{GameMap, SharedAssets, ViewModel},
@@ -29,6 +29,10 @@ const BULLET_WIDTH: f32 = 0.03;
 /// Seconds over which a bullet's streak closes from where it is drawn coming
 /// out of the gun onto its real path from the eyes.
 const BULLET_CONVERGE: f32 = 0.12;
+/// Another player's tracer starts at the muzzle of the gun we draw in their
+/// hands only if that is at most this far from where they fired from (metres):
+/// further, and their model is too far behind to go by.
+const REMOTE_MUZZLE_REACH: f32 = 2.0;
 /// Seconds the hit marker stays up after a hit.
 pub const HIT_MARKER_TIME: f32 = 0.18;
 /// A click on a semi-automatic gun still counts if the gun becomes ready
@@ -612,6 +616,8 @@ fn handle_net(
     mut notices: ResMut<Notices>,
     mut player: ResMut<LocalPlayer>,
     mut sounds: MessageWriter<SoundCue>,
+    remote_guns: Query<(&Gun, &GunHolder, &GlobalTransform)>,
+    fitted_models: Res<FittedModels>,
 ) {
     for NetMsg(msg) in messages.read() {
         match msg {
@@ -631,8 +637,17 @@ fn handle_net(
                     at: Some(origin),
                 });
                 if let Some(assets) = &assets {
-                    // Their gun is roughly this far below their eyes.
-                    let offset = Vec3::Y * -0.25;
+                    // From the muzzle of the gun we draw in their hands; for a
+                    // gun without a model, from about where a gun is held.
+                    let offset = remote_guns
+                        .iter()
+                        .find(|(gun, ..)| gun.0 == *shooter)
+                        .and_then(|(_, holder, at)| {
+                            let muzzle = fitted_models.get(holder.weapon)?.muzzle?;
+                            Some(at.transform_point(muzzle) - origin)
+                        })
+                        .filter(|offset| offset.length() <= REMOTE_MUZZLE_REACH)
+                        .unwrap_or(Vec3::Y * -0.25);
                     for dir in dirs {
                         let dir = Vec3::from(*dir).normalize_or_zero();
                         spawn_bullet(&mut commands, assets, *weapon_id, *shooter, origin, dir, offset, false);

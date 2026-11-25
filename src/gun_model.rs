@@ -80,7 +80,7 @@ pub struct Fitted {
     /// the model marks one.
     pub iron_aim: Option<Vec3>,
     /// The middle of its muzzle, relative to the holder, if the model marks it:
-    /// where the tracers of its shots start.
+    /// where the tracers of its shots start, in our hands or another player's.
     pub muzzle: Option<Vec3>,
     /// Where each sight's dot is, relative to the holder, once that sight is in.
     aim_points: [Option<Vec3>; SIGHTS.len()],

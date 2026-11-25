@@ -204,7 +204,8 @@ irons alone (a new field) would put it behind the eye.
   - `IronSight...`: everything hidden while a sight is on.
   - `AimPoint`: the iron sights' aim point.
   - `MuzzlePoint`: the middle of the muzzle, where the tracers of the gun's
-    shots start (`Fitted::muzzle`; not on a part that moves).
+    shots start, ours and other players' (`Fitted::muzzle`; not on a part
+    that moves).
   - `SightMount`: where a sight's base sits, scaled by `SCALE`. Not turned:
     the sights face +Y like the gun.
   Name other parts too (`Trigger`, `SlideStop`, `MagRelease`, a charging
