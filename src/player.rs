@@ -94,21 +94,28 @@ pub const PUMP_TIME: f32 = 0.45;
 pub const BOLT_BACK: f32 = 0.4;
 /// How far through a magazine reload: the magazine is let go and slides
 /// out; it has dropped away (and falls to the floor); the new one latches;
-/// the slide or bolt is taken hold of and drawn back (cocked), all the way
-/// by `BOLT_PULLED`; it is let go and goes home.
-pub const MAGAZINE_OUT: f32 = 0.2;
-pub const MAGAZINE_DROPPED: f32 = 0.35;
-pub const MAGAZINE_IN: f32 = 0.72;
-pub const BOLT_PULL: f32 = 0.76;
-pub const BOLT_PULLED: f32 = 0.85;
-pub const BOLT_HOME: f32 = 0.88;
-/// How far back an empty gun's slide or bolt is held by its catch: a little
-/// short of where cocking draws it.
+/// the slide or bolt is taken hold of and drawn back (cocked), slowly, all
+/// the way by `BOLT_PULLED`; it is let go and goes home. The magazine is
+/// changed quickly to leave the cocking time.
+pub const MAGAZINE_OUT: f32 = 0.1;
+pub const MAGAZINE_DROPPED: f32 = 0.24;
+pub const MAGAZINE_IN: f32 = 0.5;
+pub const BOLT_PULL: f32 = 0.58;
+pub const BOLT_PULLED: f32 = 0.8;
+pub const BOLT_HOME: f32 = 0.84;
+/// How far back a slide or bolt goes when cocked, times the gun's length.
+/// A pistol's slide travels further for its size than a long gun's bolt.
+const SLIDE_TRAVEL: f32 = 0.25;
+const BOLT_TRAVEL: f32 = 0.14;
+/// How far back each shot kicks a slide or bolt, times the gun's length.
+const SHOT_KICK: f32 = 0.14;
+/// How far back an empty gun's slide or bolt is held by its catch, of the
+/// way it travels: a little short of where cocking draws it.
 const BOLT_CAUGHT: f32 = 0.9;
 /// 0 -> 1 as the magazine comes out, 1 -> 0 as the new one goes in, over a
 /// magazine reload going from 0 to 1.
 pub fn magazine_out(progress: f32) -> f32 {
-    smooth((progress - 0.15) / 0.2) * smooth((0.74 - progress) / 0.2)
+    smooth((progress - 0.08) / 0.16) * smooth((0.52 - progress) / 0.16)
 }
 /// 0 -> 1 as the slide or bolt is drawn back to cock the gun, over a
 /// magazine reload going from 0 to 1; 0 again once it is let go.
@@ -1140,7 +1147,8 @@ fn follow_camera(
     // magazine is in, and let go to go home.
     let held_back = (empty || player.reloading() && player.reload_empty) && !(reload >= BOLT_HOME);
     let caught = if held_back { BOLT_CAUGHT } else { 0.0 };
-    let slide = (player.recoil * player.recoil).max(caught).max(cocking);
+    let drawn = caught.max(cocking);
+    let kicked = SHOT_KICK * player.recoil * player.recoil;
     // The pump: worked after each shot, and once more after loading it empty.
     let pump_cycle = match in_hand {
         _ if player.racking => player.reload_progress(),
@@ -1160,7 +1168,8 @@ fn follow_camera(
                 continue;
             }
             PartKind::Slide | PartKind::Bolt => {
-                part.pose(&mut transform, Vec3::Z * 0.14 * length * slide, Vec3::X, 0.0);
+                let travel = if part.kind == PartKind::Slide { SLIDE_TRAVEL } else { BOLT_TRAVEL };
+                part.pose(&mut transform, Vec3::Z * length * kicked.max(travel * drawn), Vec3::X, 0.0);
                 true
             }
             PartKind::Pump => {

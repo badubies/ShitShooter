@@ -130,11 +130,13 @@ rear sight's frame thin, as on the pistol. The camera's near plane is
   the order wrong once put the trigger's pivot 72 mm out to the side.
 - Node names the code looks for (`PART_NAMES` in `gun_model.rs`):
   - `Magazine`, origin at its top, axes along its own slant.
-  - `Slide` or `Bolt`: kicked back `0.14 * length` by each shot, held back
-    by its catch (`BOLT_CAUGHT` of the way) when empty. Every magazine
-    reload cocks it: once the new magazine is in it is drawn all the way
-    back (`BOLT_PULL` to `BOLT_PULLED`) while the gun is pushed forward
-    against the pull, then let go at `BOLT_HOME`. Each step has its sound
+  - `Slide` or `Bolt`: kicked back `SHOT_KICK * length` by each shot, held
+    back by its catch (`BOLT_CAUGHT` of its travel) when empty. Its travel
+    is `SLIDE_TRAVEL` or `BOLT_TRAVEL` times the length (`src/player.rs`).
+    Every magazine reload cocks it: the magazine is changed quickly, then
+    it is drawn all the way back, slowly (`BOLT_PULL` to `BOLT_PULLED`),
+    while the gun is pushed forward against the pull, and let go at
+    `BOLT_HOME`. The user asked for a slow pull and a long travel. Each step has its sound
     (`Sound::BoltPull`, `Sound::Bolt`).
   - `Pump`, and `Shell` for guns that load round by round.
   - `IronSight...`: everything hidden while a sight is on.

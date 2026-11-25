@@ -468,7 +468,7 @@ fn selftest_play(
                 player.guns[0].sight = if view == "irons" { IRON_SIGHTS } else { TWO_X };
                 player.guns[0].ammo = if view == "reload" { 0 } else { stats.magazine };
                 player.aim = (view == "aimed" || view == "irons") as u8 as f32;
-                let progress = if stats.reload_per_round { 0.3 } else { 0.27 };
+                let progress = if stats.reload_per_round { 0.3 } else { 0.175 };
                 player.reload = if view == "reload" { stats.reload * (1.0 - progress) } else { 0.0 };
                 player.reload_empty = view == "reload";
                 if captured.gallery % FRAMES == FRAMES - 3 {
