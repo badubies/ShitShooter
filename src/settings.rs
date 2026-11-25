@@ -704,6 +704,11 @@ impl ActionInput<'_> {
             })
     }
 
+    /// Input is going to the game (not paused), whatever is pressed.
+    pub fn live(&self) -> bool {
+        self.controls.captured
+    }
+
     pub fn just_pressed(&self, action: Action) -> bool {
         self.controls.captured
             && self.settings.binds(action).any(|bind| match bind {

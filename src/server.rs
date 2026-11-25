@@ -2051,6 +2051,10 @@ fn bot_fight(
     player.weapon = bot.gun;
     player.flags = if bot.reload > 0.0 { FLAG_RELOAD } else { 0 };
     let enemy = enemy?;
+    // Aims down sights at whoever it is after, between reloads.
+    if bot.reload <= 0.0 && player.weapon != weapons::KNIFE {
+        player.flags |= FLAG_AIM;
+    }
 
     // The aim wobbles around the target: widely at first, then less.
     bot.wobble_in -= dt;

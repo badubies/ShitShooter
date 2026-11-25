@@ -9,7 +9,7 @@ use crate::{
     map::{CROUCH_HALF, PLAYER_HALF, STAND_EYE},
     net::{NetMsg, Session, SnapshotMsg},
     paint::{BODY_HEIGHT, BODY_RADIUS, BODY_Y, HEAD_RADIUS, HEAD_Y, NECK, PlayerModel, Skins},
-    player::{GRAVITY, LocalPlayer, PlayerSystems, magazine_out, smooth},
+    player::{GRAVITY, LocalPlayer, PlayerSystems, magazine_out},
     gun_model::{FittedModels, GunHolder, GunModelSystems, GunPart, PartKind},
     protocol::*,
     ui::BLUE,
@@ -45,7 +45,11 @@ impl Plugin for RemotePlugin {
                 (
                     size_gun_boxes.after(GunModelSystems::Show),
                     settle_corpses,
-                    (spectate, show_outlines, draw_ally_tags)
+                    spectate
+                        .after(RemoteSystems)
+                        .after(PlayerSystems::Simulate)
+                        .before(PlayerSystems::Camera),
+                    (show_outlines, draw_ally_tags)
                         .chain()
                         .after(RemoteSystems)
                         .after(PlayerSystems::Camera),
@@ -68,7 +72,13 @@ pub struct RemotePlayer {
     /// The weapon in their hands, and the sight on it.
     weapon: WeaponId,
     sight: SightId,
+    yaw: f32,
     pitch: f32,
+    /// Aiming down sights, and 0 -> 1 eased towards it.
+    aiming: bool,
+    aim: f32,
+    health: i32,
+    armor: i32,
     /// 0 = standing, 1 = crouched; eased so the model does not snap.
     crouch_pose: f32,
     /// 0 = gun up, 1 = gun lowered for a reload.
@@ -176,6 +186,9 @@ fn apply_snapshots(
             remote.alive = snap.alive;
             remote.crouching = snap.flags & FLAG_CROUCH != 0;
             remote.reloading = snap.flags & FLAG_RELOAD != 0;
+            remote.aiming = snap.flags & FLAG_AIM != 0;
+            remote.health = snap.health;
+            remote.armor = snap.armor;
             remote.weapon = snap.weapon;
             remote.sight = snap.sight;
             let wanted = if snap.alive {
@@ -216,7 +229,12 @@ fn apply_snapshots(
                         reloading: snap.flags & FLAG_RELOAD != 0,
                         weapon: snap.weapon,
                         sight: snap.sight,
+                        yaw: snap.yaw,
                         pitch: snap.pitch,
+                        aiming: snap.flags & FLAG_AIM != 0,
+                        aim: 0.0,
+                        health: snap.health,
+                        armor: snap.armor,
                         crouch_pose: 0.0,
                         reload_pose: 0.0,
                         reload_for: 0.0,
@@ -425,126 +443,150 @@ fn reset_on_spawn(
     }
 }
 
-/// Seconds after we die that the camera stays where we fell...
-const SPECTATE_AFTER: f32 = 0.6;
-/// ...before it takes this long to glide over to a teammate, from one
-/// teammate to the next, or back to where we fell.
-const SPECTATE_GLIDE: f32 = 0.7;
-/// Where it sits from a teammate's eyes: behind, above and off to the
-/// right, looking the way they aim.
-const SPECTATE_BACK: f32 = 2.4;
-const SPECTATE_UP: f32 = 0.45;
-const SPECTATE_SIDE: f32 = 0.55;
-/// How far it keeps off a wall that is in the way.
-const SPECTATE_WALL_GAP: f32 = 0.25;
+/// How fast the view through a teammate's eyes follows theirs (1/s): a
+/// little smoothing over the steps between snapshots.
+const POV_FOLLOW: f32 = 30.0;
 
-/// The teammate we watch while dead, if any (shown on the death screen).
+/// Who we watch while dead, and how they are doing (for the death screen).
 #[derive(Resource, Default)]
 pub struct Spectate {
     pub watching: Option<PlayerId>,
+    pub health: i32,
+    pub armor: i32,
+    pub weapon: WeaponId,
+    pub sight: SightId,
+    /// In a team mode with no teammate alive to watch.
+    pub alone: bool,
+    /// Steps to take through the teammates, asked for by clicks.
+    pub step: i32,
 }
 
-/// The camera while we are dead.
+/// The view while we are dead.
 #[derive(Default)]
-struct SpectateCamera {
-    /// Where we died, looking the way we were.
-    fell: Option<Transform>,
-    /// Who it is going to or with (`None`: where we died).
-    heading_for: Option<PlayerId>,
-    /// Where it set off from, and how far (0 -> 1) it has gone.
-    from: Option<Transform>,
-    glide: f32,
-    /// The view it last had. (`follow_camera` turns the camera back the way
-    /// we were looking each frame before this runs.)
-    view: Option<Transform>,
+struct PovState {
+    /// Where we died, and the way we were looking (yaw, pitch).
+    fell: Option<(Vec3, f32, f32)>,
+    /// The teammate seen through last frame, and their smoothed (eye, yaw, pitch).
+    seen: Option<(PlayerId, Vec3, f32, f32)>,
 }
 
-/// While we are dead in a team mode, the camera watches a living teammate
-/// from over their shoulder, looking where they aim; the scroll wheel steps
-/// to the next or the one before. When they die it moves on to another.
-/// With none left alive, or in free for all, it stays where we died.
+/// While we are dead in a team mode, we see through a living teammate's
+/// eyes, with their gun in hand. A click or the wheel steps to the next or
+/// the one before; when they die it cuts to another. With none left alive,
+/// or in free for all, the camera stays where we died.
+#[allow(clippy::too_many_arguments)]
 fn spectate(
     time: Res<Time>,
-    player: Res<LocalPlayer>,
     session: Res<Session>,
-    map: Res<GameMap>,
     wheel: Res<crate::settings::WheelSteps>,
-    remotes: Query<(&RemotePlayer, &Transform), Without<MainCamera>>,
+    mut messages: MessageReader<NetMsg>,
+    mut player: ResMut<LocalPlayer>,
+    mut remotes: Query<(&RemotePlayer, &Transform, &mut Visibility), Without<MainCamera>>,
     mut camera: Single<&mut Transform, With<MainCamera>>,
     mut spectate: ResMut<Spectate>,
-    mut state: Local<SpectateCamera>,
+    mut state: Local<PovState>,
 ) {
     if !player.on_death_screen() {
-        *state = SpectateCamera::default();
-        spectate.watching = None;
+        if state.fell.is_some() {
+            *state = PovState::default();
+            *spectate = Spectate::default();
+            player.pov = None;
+            for (remote, _, mut visibility) in &mut remotes {
+                visibility.set_if_neq(if remote.alive { Visibility::Inherited } else { Visibility::Hidden });
+            }
+        }
+        messages.clear();
         return;
     }
-    let fell = *state.fell.get_or_insert(**camera);
+    let (fell_at, fell_yaw, fell_pitch) = *state.fell.get_or_insert((camera.translation, player.yaw, player.pitch));
     // Living teammates, in a fixed order to step through.
     let mut team: Vec<_> = remotes
         .iter()
-        .filter(|(remote, _)| {
-            session.team_mode()
-                && player.dead_for >= SPECTATE_AFTER
-                && remote.alive
-                && remote.id != session.my_id
-                && !session.enemies(session.my_id, remote.id)
+        .filter(|(remote, ..)| {
+            session.team_mode() && remote.alive && remote.id != session.my_id && !session.enemies(session.my_id, remote.id)
         })
+        .map(|(remote, transform, _)| (remote.id, transform.translation))
         .collect();
-    team.sort_by_key(|(remote, _)| remote.id);
-    let at = spectate.watching.and_then(|id| team.iter().position(|(remote, _)| remote.id == id));
-    let step = match wheel.step() {
-        Some(crate::settings::Bind::WheelUp) => -1,
-        Some(crate::settings::Bind::WheelDown) => 1,
-        _ => 0,
-    };
+    team.sort_by_key(|(id, _)| *id);
+    let at = spectate.watching.and_then(|id| team.iter().position(|(mate, _)| *mate == id));
+    let step = spectate.step
+        + match wheel.step() {
+            Some(crate::settings::Bind::WheelUp) => -1,
+            Some(crate::settings::Bind::WheelDown) => 1,
+            _ => 0,
+        };
+    spectate.step = 0;
     let pick = match at {
         _ if team.is_empty() => None,
-        Some(i) => Some((i as isize + step).rem_euclid(team.len() as isize) as usize),
+        Some(i) => Some((i as isize + step as isize).rem_euclid(team.len() as isize) as usize),
         // The one we watched is gone: the next one after them, or the first.
         None => Some(
             spectate
                 .watching
-                .and_then(|id| team.iter().position(|(remote, _)| remote.id > id))
+                .and_then(|id| team.iter().position(|(mate, _)| *mate > id))
                 .unwrap_or(0),
         ),
     };
-    spectate.watching = pick.map(|i| team[i].0.id);
+    spectate.watching = pick.map(|i| team[i].0);
+    spectate.alone = session.team_mode() && team.is_empty();
 
-    let target = match pick.map(|i| team[i]) {
-        Some((remote, transform)) => {
-            // Their eyes, from the middle of their box (lower when they crouch).
-            let eye = transform.translation + Vec3::Y * (STAND_EYE - PLAYER_HALF.y);
-            let aim = transform.rotation * Quat::from_rotation_x(remote.pitch);
-            let wanted = aim * Vec3::new(SPECTATE_SIDE, 0.0, SPECTATE_BACK) + Vec3::Y * SPECTATE_UP;
-            // Pulled in short of a wall between their head and that spot.
-            let length = wanted.length();
-            let out = match map.0.raycast(eye, wanted / length, length + SPECTATE_WALL_GAP) {
-                Some(hit) => (hit - SPECTATE_WALL_GAP).max(0.0),
-                None => length,
-            };
-            Transform::from_translation(eye + wanted / length * out).with_rotation(aim)
-        }
-        None => fell,
-    };
-    // Off somewhere new: glide there from wherever the camera is now.
-    if state.from.is_none() || state.heading_for != spectate.watching {
-        state.heading_for = spectate.watching;
-        state.from = Some(state.view.unwrap_or(fell));
-        state.glide = 0.0;
+    // Their body is not in the way of their eyes; everybody else shows as usual.
+    for (remote, _, mut visibility) in &mut remotes {
+        let shown = remote.alive && spectate.watching != Some(remote.id);
+        visibility.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
     }
-    let from = state.from.unwrap_or(fell);
-    state.glide = (state.glide + time.delta_secs() / SPECTATE_GLIDE).min(1.0);
-    let t = smooth(state.glide);
-    let view = Transform::from_translation(from.translation.lerp(target.translation, t))
-        .with_rotation(from.rotation.slerp(target.rotation, t));
-    state.view = Some(view);
-    camera.translation = view.translation;
-    camera.rotation = view.rotation;
+
+    let watched = spectate.watching.and_then(|id| remotes.iter().find(|(remote, ..)| remote.id == id));
+    let Some((remote, transform, _)) = watched else {
+        state.seen = None;
+        if player.pov.is_some() {
+            player.stop_seeing_through(fell_yaw, fell_pitch);
+        }
+        camera.translation = fell_at;
+        messages.clear();
+        return;
+    };
+    // Their eyes, over the middle of their box (lower when they crouch).
+    let eye = transform.translation + Vec3::Y * (STAND_EYE - PLAYER_HALF.y);
+    let (eye, yaw, pitch) = match state.seen {
+        // Eased towards where they are; a new teammate is cut to at once.
+        Some((id, seen_eye, seen_yaw, seen_pitch)) if id == remote.id => {
+            let follow = 1.0 - (-time.delta_secs() * POV_FOLLOW).exp();
+            (
+                seen_eye.lerp(eye, follow),
+                lerp_angle(seen_yaw, remote.yaw, follow),
+                seen_pitch + (remote.pitch - seen_pitch) * follow,
+            )
+        }
+        _ => (eye, remote.yaw, remote.pitch),
+    };
+    state.seen = Some((remote.id, eye, yaw, pitch));
+    spectate.health = remote.health;
+    spectate.armor = remote.armor;
+    spectate.weapon = remote.weapon;
+    spectate.sight = remote.sight;
+    player.see_through(
+        eye,
+        yaw,
+        pitch,
+        remote.weapon,
+        remote.sight,
+        remote.aim,
+        remote.reloading.then_some(remote.reload_for),
+    );
+    for NetMsg(msg) in messages.read() {
+        if let ServerMsg::Fire { shooter, .. } = msg
+            && *shooter == remote.id
+        {
+            player.watched_fired();
+        }
+    }
 }
 
-/// Where the gun is held, relative to the head.
+/// Where the gun is held, relative to the head...
 const GUN_REST: Vec3 = Vec3::new(0.3, -0.3, -0.45);
+/// ...and where, aimed down its sights: under the eye.
+const GUN_AIMED: Vec3 = Vec3::new(0.0, -0.17, -0.5);
 /// Twice the size it has in first person, so it reads at a distance.
 const REMOTE_GUN_SCALE: f32 = 2.1;
 
@@ -593,7 +635,10 @@ fn interpolate(
         };
         transform.translation = pos;
         transform.rotation = Quat::from_rotation_y(yaw);
+        remote.yaw = yaw;
         remote.pitch = pitch;
+        let aiming = (remote.aiming && remote.weapon != crate::weapons::KNIFE) as u8 as f32;
+        remote.aim += (aiming - remote.aim) * ease;
         let (crouch, reload) = (remote.crouching as u8 as f32, remote.reloading as u8 as f32);
         remote.crouch_pose += (crouch - remote.crouch_pose) * ease;
         remote.reload_pose += (reload - remote.reload_pose) * ease;
@@ -623,7 +668,8 @@ fn interpolate(
                         magazines.push((part, remote.weapon, magazine_out));
                         holder.weapon = remote.weapon;
                         holder.sight = remote.sight;
-                        gun.translation = GUN_REST + Vec3::new(0.0, -0.12, 0.1) * remote.reload_pose;
+                        gun.translation = GUN_REST.lerp(GUN_AIMED, remote.aim * (1.0 - remote.reload_pose))
+                            + Vec3::new(0.0, -0.12, 0.1) * remote.reload_pose;
                         gun.rotation = Quat::from_rotation_x(-0.9 * remote.reload_pose);
                     }
                 }
@@ -673,6 +719,7 @@ fn draw_ally_tags(
     ui_scale: Res<UiScale>,
     camera: Single<(&Transform, &Projection), With<MainCamera>>,
     remotes: Query<(&RemotePlayer, &Transform), Without<MainCamera>>,
+    spectate: Res<Spectate>,
     mut tags: Query<(Entity, &AllyTag, &mut Node, &mut Visibility)>,
 ) {
     const WIDTH: f32 = 200.0;
@@ -686,7 +733,12 @@ fn draw_ally_tags(
 
     let mut shown = Vec::new();
     for (remote, transform) in &remotes {
-        if !remote.alive || !session.team_mode() || session.enemies(session.my_id, remote.id) {
+        // Not over the one whose eyes we see through.
+        if !remote.alive
+            || !session.team_mode()
+            || session.enemies(session.my_id, remote.id)
+            || spectate.watching == Some(remote.id)
+        {
             continue;
         }
         let above = transform.translation + Vec3::Y * TAG_HEIGHT;

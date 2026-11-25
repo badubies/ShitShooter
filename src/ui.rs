@@ -26,9 +26,10 @@ use crate::{
     menu::{Field, MenuPage},
     net::{self, Connection, Session},
     paint::{Skins, palette_color},
-    loadout::{DeathLoadout, Preview, Thumbnails, death_loadout, loadout_summary, on_open_loadout},
+    loadout::{DeathLoadout, DeathLoadoutOpen, Preview, Thumbnails, death_loadout, loadout_summary, on_open_loadout, summary_button},
     paint_editor::on_open_paint,
-    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, ask_respawn},
+    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer},
+    remote::Spectate,
     protocol::*,
     settings::{Action, ActionInput, Settings, on_open_settings},
     weapons::{GRENADE, IRON_SIGHTS},
@@ -141,7 +142,7 @@ impl Plugin for UiPlugin {
                         update_scope_view,
                         update_damage_arcs,
                         update_choke_ring,
-                        show_respawn_button,
+                        update_death_screen,
                     )
                         .run_if(in_state(AppState::Playing)),
                 ),
@@ -1898,8 +1899,12 @@ enum Hud {
     Killer,
     /// Under it: how many kills that makes for them.
     KillerNote,
-    /// The teammate the camera is on while we are dead.
+    /// The teammate we see through while we are dead: their name, health,
+    /// armor, and the gun in their hands.
     Watching,
+    WatchedHealth,
+    WatchedArmor,
+    WatchedGun,
     /// The seconds until we respawn.
     RespawnIn,
     /// How to respawn now.
@@ -1938,6 +1943,9 @@ enum Bar {
     HealthLag,
     Armor,
     Dash,
+    /// The teammate we see through while dead.
+    WatchedHealth,
+    WatchedArmor,
 }
 
 /// The box around one line of the kill feed.
@@ -2436,132 +2444,226 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ],
     ));
 
-    // The death screen: who got us, when we respawn, and the loadout we will
-    // respawn with, as on the loadout screen. The mouse is free while it
-    // shows, so the loadout can be changed; a click anywhere off the panel
-    // respawns us.
+    // The death screen, around the edges so the middle is clear for the
+    // teammate we see through: who got us (bottom left, over what we will
+    // respawn with), the teammate (bottom middle), when we respawn (bottom
+    // right) and, in conquest, the map to pick where (top left). The mouse
+    // is free: a click on the view steps to another teammate, and the
+    // loadout opens in a panel over it all.
     commands.spawn((
         DeathScreen,
         Node {
             position_type: PositionType::Absolute,
             width: percent(100),
             height: percent(100),
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            // Clear of the clock and scores at the top, and conquest's flags.
-            padding: UiRect::top(px(DEATH_SCREEN_TOP)),
-            row_gap: px(16),
             display: Display::None,
             ..default()
         },
-        BackgroundColor(Color::srgba(0.11, 0.03, 0.02, 0.45)),
         DespawnOnExit(AppState::Playing),
         observe(on_death_screen_click),
         children![
+            crate::minimap::deploy_map(),
+            // Bottom left: who killed us, and the next life.
             (
                 Node {
-                    width: px(760),
-                    justify_content: JustifyContent::SpaceBetween,
-                    align_items: AlignItems::Center,
+                    position_type: PositionType::Absolute,
+                    left: px(24),
+                    bottom: px(22),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Start,
+                    row_gap: px(14),
                     ..default()
                 },
                 children![
                     (
                         Node {
                             flex_direction: FlexDirection::Column,
-                            row_gap: px(4),
+                            row_gap: px(2),
                             ..default()
                         },
+                        Pickable::IGNORE,
                         children![
-                            weighted("FRAGGED BY", 12.0, 700, DANGER_TEXT),
-                            (heading("", 44.0, RED), Hud::Killer, hud_shadow()),
-                            (label("", 15.0, TEXT), Hud::KillerNote, hud_shadow()),
-                            (label("", 13.0, DIM), Hud::Watching, hud_shadow()),
+                            (weighted("FRAGGED BY", 12.0, 700, DANGER_TEXT), hud_shadow(), Pickable::IGNORE),
+                            (heading("", 34.0, RED), Hud::Killer, hud_shadow(), Pickable::IGNORE),
+                            (label("", 15.0, TEXT), Hud::KillerNote, hud_shadow(), Pickable::IGNORE),
                         ],
                     ),
                     (
                         Node {
-                            align_items: AlignItems::Center,
-                            column_gap: px(14),
+                            border_radius: BorderRadius::all(px(12)),
+                            max_width: px(420),
                             ..default()
                         },
+                        BackgroundColor(PANEL.with_alpha(0.85)),
+                        children![(
+                            summary_button("NEXT LIFE", "L  ·  change loadout"),
+                            DeathLoadoutSummary,
+                            observe(|_: On<Activate>, mut open: ResMut<DeathLoadoutOpen>| open.0 = true),
+                        )],
+                    ),
+                ],
+            ),
+            // Bottom middle: the teammate we see through.
+            (
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    bottom: px(26),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (
+                        WatchPanel,
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::Center,
+                            row_gap: px(6),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
                         children![
+                            (heading("", 26.0, BLUE), Hud::Watching, hud_shadow(), Pickable::IGNORE),
                             (
                                 Node {
-                                    flex_direction: FlexDirection::Column,
-                                    align_items: AlignItems::FlexEnd,
-                                    row_gap: px(3),
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(10),
                                     ..default()
                                 },
+                                Pickable::IGNORE,
                                 children![
-                                    (weighted("RESPAWN IN", 12.0, 700, TEXT), hud_shadow()),
-                                    (label("", 13.0, TEXT), Hud::RespawnHint, hud_shadow()),
+                                    (
+                                        Node {
+                                            flex_direction: FlexDirection::Column,
+                                            row_gap: px(4),
+                                            ..default()
+                                        },
+                                        Pickable::IGNORE,
+                                        children![
+                                            (bar_track(px(240), 5.0), Pickable::IGNORE, children![bar_fill(Bar::WatchedArmor, ARMOR)]),
+                                            (bar_track(px(240), 9.0), Pickable::IGNORE, children![bar_fill(Bar::WatchedHealth, GOOD)]),
+                                        ],
+                                    ),
+                                    (weighted("", 16.0, 700, TEXT), Hud::WatchedHealth, hud_shadow(), Pickable::IGNORE),
+                                    (weighted("", 13.0, 700, ARMOR), Hud::WatchedArmor, hud_shadow(), Pickable::IGNORE),
                                 ],
                             ),
-                            (
-                                Node {
-                                    width: px(76),
-                                    height: px(76),
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::Center,
-                                    border: UiRect::all(px(5)),
-                                    border_radius: BorderRadius::MAX,
-                                    ..default()
-                                },
-                                BackgroundColor(PANEL),
-                                BorderColor::all(ACCENT),
-                                children![(heading("", 30.0, TEXT), Hud::RespawnIn)],
-                            ),
+                            (label("", 14.0, TEXT), Hud::WatchedGun, hud_shadow(), Pickable::IGNORE),
+                            (label("click: next  ·  right-click: back", 12.0, DIM), hud_shadow(), Pickable::IGNORE),
+                        ],
+                    ),
+                    (AlonePanel, label("No teammates alive", 15.0, DIM), hud_shadow(), Pickable::IGNORE),
+                ],
+            ),
+            // Bottom right: when we come back.
+            (
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(24),
+                    bottom: px(22),
+                    align_items: AlignItems::Center,
+                    column_gap: px(14),
+                    ..default()
+                },
+                Pickable::IGNORE,
+                children![
+                    (
+                        Node {
+                            width: px(76),
+                            height: px(76),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(px(5)),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(PANEL),
+                        BorderColor::all(ACCENT),
+                        Pickable::IGNORE,
+                        children![(heading("", 30.0, TEXT), Hud::RespawnIn, Pickable::IGNORE)],
+                    ),
+                    (
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(3),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                        children![
+                            (weighted("RESPAWN IN", 12.0, 700, TEXT), hud_shadow(), Pickable::IGNORE),
+                            (label("", 13.0, TEXT), Hud::RespawnHint, hud_shadow(), Pickable::IGNORE),
                         ],
                     ),
                 ],
             ),
+            // The loadout, over everything while it is open.
             (
+                LoadoutOverlay,
                 Node {
-                    column_gap: px(16),
-                    align_items: AlignItems::Start,
-                    ..default()
-                },
-                children![crate::minimap::deploy_map(), death_loadout()],
-            ),
-            (
-                Node {
-                    width: px(760),
-                    justify_content: JustifyContent::SpaceBetween,
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    height: percent(100),
+                    flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
-                    column_gap: px(20),
+                    justify_content: JustifyContent::Center,
+                    row_gap: px(14),
+                    display: Display::None,
                     ..default()
                 },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
                 children![
+                    death_loadout(),
                     (
                         Node {
+                            width: px(760),
+                            justify_content: JustifyContent::SpaceBetween,
                             align_items: AlignItems::Center,
-                            column_gap: px(12),
-                            padding: UiRect::new(px(6), px(16), px(8), px(8)),
-                            border_radius: BorderRadius::all(px(12)),
-                            flex_shrink: 1.0,
+                            column_gap: px(20),
                             ..default()
                         },
-                        BackgroundColor(PANEL.with_alpha(0.85)),
                         children![
                             (
                                 Node {
-                                    padding: UiRect::axes(px(8), px(3)),
-                                    border_radius: BorderRadius::all(px(8)),
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(12),
+                                    padding: UiRect::new(px(6), px(16), px(8), px(8)),
+                                    border_radius: BorderRadius::all(px(12)),
+                                    flex_shrink: 1.0,
                                     ..default()
                                 },
-                                BackgroundColor(BUTTON_HOVER),
-                                children![weighted("TIP", 11.0, 700, TEXT)],
+                                BackgroundColor(PANEL.with_alpha(0.85)),
+                                children![
+                                    (
+                                        Node {
+                                            padding: UiRect::axes(px(8), px(3)),
+                                            border_radius: BorderRadius::all(px(8)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(BUTTON_HOVER),
+                                        children![weighted("TIP", 11.0, 700, TEXT)],
+                                    ),
+                                    (label("", 14.0, TEXT), Hud::Tip),
+                                ],
                             ),
-                            (label("", 14.0, TEXT), Hud::Tip),
+                            (
+                                Node {
+                                    flex_shrink: 0.0,
+                                    align_items: AlignItems::Center,
+                                    column_gap: px(12),
+                                    ..default()
+                                },
+                                children![
+                                    (label("L / Esc", 13.0, DIM), hud_shadow()),
+                                    (
+                                        button("Back to watching"),
+                                        LoadoutClose,
+                                        observe(|_: On<Activate>, mut open: ResMut<DeathLoadoutOpen>| open.0 = false),
+                                    ),
+                                ],
+                            ),
                         ],
-                    ),
-                    (
-                        Node {
-                            flex_shrink: 0.0,
-                            ..default()
-                        },
-                        children![(primary_button("Respawn now"), RespawnButton, observe(on_respawn_button))],
                     ),
                 ],
             ),
@@ -2761,52 +2863,82 @@ fn update_key_hints(
 #[derive(Component)]
 pub struct HiddenWhenDead;
 
-/// The space the death screen leaves above it for the clock and scores (and
-/// conquest's flags), at a HUD size of 100%.
-const DEATH_SCREEN_TOP: f32 = 118.0;
-
 /// The death screen (see `spawn_hud`).
 #[derive(Component)]
 struct DeathScreen;
 
+/// The death screen's line of what we respawn with, which opens the loadout.
 #[derive(Component)]
-struct RespawnButton;
+struct DeathLoadoutSummary;
 
-fn on_respawn_button(
-    _: On<Activate>,
-    session: Res<Session>,
-    mut player: ResMut<LocalPlayer>,
-    connection: Option<ResMut<Connection>>,
-) {
-    if let Some(mut connection) = connection {
-        ask_respawn(&mut player, &mut connection, session.mode);
-    }
-}
+/// The teammate we see through, at the bottom of the death screen...
+#[derive(Component)]
+struct WatchPanel;
 
-/// No respawn button where there is no respawning early (conquest).
-fn show_respawn_button(session: Res<Session>, mut button: Query<&mut Node, With<RespawnButton>>) {
-    for mut node in &mut button {
-        set_shown(&mut node, early_respawn(session.mode));
-    }
-}
+/// ...or, with none of them alive, a word that there is nobody to watch.
+#[derive(Component)]
+struct AlonePanel;
 
-/// A left click on the death screen respawns us, unless it is on the loadout
-/// (or on the button, which does that itself). The click bubbles up to the
-/// screen from whatever was under the pointer.
+/// The loadout over the death screen, and its button back to watching.
+#[derive(Component)]
+struct LoadoutOverlay;
+
+#[derive(Component)]
+struct LoadoutClose;
+
+/// A click that reaches the death screen (it bubbles up from whatever was
+/// under the pointer): on the view, the left button steps to the next
+/// teammate and the right one back; with the loadout open, off its panel,
+/// it shuts it. Clicks on the loadout, the map or their buttons are theirs.
 fn on_death_screen_click(
     click: On<PointerClick>,
     parents: Query<&ChildOf>,
-    keep: Query<(), Or<(With<DeathLoadout>, With<RespawnButton>, With<crate::minimap::DeployMap>)>>,
-    session: Res<Session>,
-    mut player: ResMut<LocalPlayer>,
-    connection: Option<ResMut<Connection>>,
+    keep: Query<
+        (),
+        Or<(
+            With<DeathLoadout>,
+            With<DeathLoadoutSummary>,
+            With<LoadoutClose>,
+            With<crate::minimap::DeployMap>,
+        )>,
+    >,
+    mut open: ResMut<DeathLoadoutOpen>,
+    mut spectate: ResMut<Spectate>,
 ) {
     let target = click.original_event_target();
-    let on_card = std::iter::once(target).chain(parents.iter_ancestors(target)).any(|entity| keep.contains(entity));
-    if click.button == PointerButton::Primary && !on_card {
-        if let Some(mut connection) = connection {
-            ask_respawn(&mut player, &mut connection, session.mode);
-        }
+    if std::iter::once(target).chain(parents.iter_ancestors(target)).any(|entity| keep.contains(entity)) {
+        return;
+    }
+    if open.0 {
+        open.0 = false;
+        return;
+    }
+    match click.button {
+        PointerButton::Primary => spectate.step += 1,
+        PointerButton::Secondary => spectate.step -= 1,
+        _ => {}
+    }
+}
+
+/// Shows the parts of the death screen that apply: the teammate or the word
+/// that there is none, and the loadout panel while it is open.
+fn update_death_screen(
+    spectate: Res<Spectate>,
+    open: Res<DeathLoadoutOpen>,
+    mut nodes: ParamSet<(
+        Query<&mut Node, With<WatchPanel>>,
+        Query<&mut Node, With<AlonePanel>>,
+        Query<&mut Node, With<LoadoutOverlay>>,
+    )>,
+) {
+    for mut node in &mut nodes.p0() {
+        set_shown(&mut node, spectate.watching.is_some());
+    }
+    for mut node in &mut nodes.p1() {
+        set_shown(&mut node, spectate.alone);
+    }
+    for mut node in &mut nodes.p2() {
+        set_shown(&mut node, open.0);
     }
 }
 
@@ -2902,7 +3034,8 @@ fn update_hud(
     connection: Option<Res<Connection>>,
     time: Res<Time>,
     mut fps: Local<FpsCounter>,
-    spectate: Res<crate::remote::Spectate>,
+    spectate: Res<Spectate>,
+    settings: Res<Settings>,
     mut texts: Query<(&Hud, &mut Text, &mut TextColor)>,
 ) {
     fps.tick(time.delta_secs());
@@ -3016,18 +3149,34 @@ fn update_hud(
                 match spectate.watching {
                     Some(id) => {
                         let name = session.name_of(id);
-                        format!("Watching {}  ·  scroll for another teammate", name.strip_prefix("[bot] ").unwrap_or(name))
+                        format!("‹   {}   ›", name.strip_prefix("[bot] ").unwrap_or(name).to_uppercase())
                     }
                     None => String::new(),
                 },
-                DIM,
+                BLUE,
             ),
+            Hud::WatchedHealth => (spectate.health.max(0).to_string(), TEXT),
+            Hud::WatchedArmor => (if spectate.armor > 0 { spectate.armor.to_string() } else { String::new() }, ARMOR),
+            Hud::WatchedGun => {
+                let gun = crate::weapons::weapon(spectate.weapon);
+                let on = crate::weapons::sight(spectate.sight);
+                let line = if spectate.sight == crate::weapons::IRON_SIGHTS || spectate.weapon == crate::weapons::KNIFE {
+                    gun.name.to_string()
+                } else {
+                    format!("{}  ·  {}", gun.name, on.name)
+                };
+                (line, TEXT)
+            }
             Hud::RespawnIn => {
                 let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
                 (if player.respawn_asked { "…".to_string() } else { format!("{left:.0}") }, TEXT)
             }
             Hud::RespawnHint => (
-                if early_respawn(session.mode) { "or click outside the panel" } else { "" }.to_string(),
+                if early_respawn(session.mode) {
+                    format!("{}: now", settings.key_name(Action::Jump).to_uppercase())
+                } else {
+                    String::new()
+                },
                 TEXT,
             ),
             Hud::Tip => (TIPS[me.map_or(0, |p| p.deaths as usize) % TIPS.len()].to_string(), TEXT),
@@ -3083,6 +3232,7 @@ fn update_hud(
 fn update_hud_shapes(
     time: Res<Time>,
     player: Res<LocalPlayer>,
+    spectate: Res<Spectate>,
     feed: Res<KillFeed>,
     mut health_lag: Local<f32>,
     mut bars: Query<(&Bar, &mut Node, &mut BackgroundColor)>,
@@ -3112,6 +3262,11 @@ fn update_hud_shapes(
             Bar::HealthLag => (*health_lag, Color::srgba(1.0, 1.0, 1.0, 0.75)),
             Bar::Armor => (armor_part, ARMOR),
             Bar::Dash => (dash_part, if dash_part >= 1.0 { ACCENT } else { DIM }),
+            Bar::WatchedHealth => {
+                let part = spectate.health.max(0) as f32 / MAX_HEALTH as f32;
+                (part, if spectate.health <= LOW_HEALTH { DANGER } else { GOOD })
+            }
+            Bar::WatchedArmor => (spectate.armor.max(0) as f32 / MAX_ARMOR as f32, ARMOR),
         };
         let width = percent(part.clamp(0.0, 1.0) * 100.0);
         if node.width != width {
@@ -3341,7 +3496,6 @@ fn update_choke_ring(
 fn update_overlays(
     input: ActionInput,
     session: Res<Session>,
-    settings: Res<Settings>,
     player: Res<LocalPlayer>,
     smoke_fog: Res<SmokeFog>,
     controls: Res<Controls>,
@@ -3384,12 +3538,6 @@ fn update_overlays(
     set_shown(&mut nodes.p3(), dead);
     for mut node in &mut nodes.p4() {
         set_shown(&mut node, !player.on_death_screen());
-    }
-    // Clear of the clock and scores at the top, however big the HUD is.
-    let top = px(DEATH_SCREEN_TOP * settings.ui_scale.max(1.0));
-    let mut death = nodes.p3();
-    if death.padding.top != top {
-        death.padding.top = top;
     }
     set_shown(&mut nodes.p0(), show_scores);
     set_shown(&mut nodes.p1(), paused);

@@ -42,6 +42,7 @@ impl Plugin for DevToolsPlugin {
         let add_bots = if launch.bots.is_some() { 0 } else { 3 };
         let bots_hold_fire = launch.server.bots_hold_fire;
         let mode = launch.server.mode;
+        let map = launch.map.unwrap_or(1);
         if let Some(dir) = selftest {
             let dir = PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
@@ -55,6 +56,7 @@ impl Plugin for DevToolsPlugin {
                 add_bots,
                 bots_hold_fire,
                 mode,
+                map,
             })
             .add_systems(First, draw_to_canvas)
             .add_systems(Last, take_picture)
@@ -113,6 +115,8 @@ struct SelfTest {
     bots_hold_fire: bool,
     /// The mode it leaves the lobby with (`--mode`).
     mode: u8,
+    /// The map it leaves the lobby with (`--map`, or Depot).
+    map: u8,
 }
 
 impl SelfTest {
@@ -317,7 +321,7 @@ fn selftest_lobby(
     picker.0 = (1.6..3.0).contains(&test.clock);
     // The lobby's chips and cards, clicked: team deathmatch on Arena with
     // the bots' fire the other way, then back to the mode asked for (free
-    // for all unless `--mode`) on Depot with the bots' fire as asked. Each click is checked once the server has answered.
+    // for all unless `--mode`) on Depot (unless `--map`) with the bots' fire as asked. Each click is checked once the server has answered.
     let scale = window.1.scale_factor();
     let card_at = |target: Choice| {
         choices.iter().find(|(choice, ..)| **choice == target).map(|(_, at, _)| at.translation / scale)
@@ -331,7 +335,7 @@ fn selftest_lobby(
         MatchChoice::Map(0),
         MatchChoice::BotsHoldFire(!hold),
         MatchChoice::Mode(test.mode),
-        MatchChoice::Map(1),
+        MatchChoice::Map(test.map),
         MatchChoice::BotsHoldFire(hold),
     ];
     for (index, target) in clicks.into_iter().enumerate() {
@@ -453,7 +457,12 @@ fn selftest_play(
     remotes: Query<(&RemotePlayer, &Transform)>,
     (corpses, dropped): (Query<(Entity, &Corpse, &Transform)>, Query<(&DroppedMagazine, &Transform)>),
     map: Res<GameMap>,
-    (cue_count, spectate, mut wheel): (Res<CueCount>, Res<Spectate>, MessageWriter<bevy::input::mouse::MouseWheel>),
+    (cue_count, spectate, death_loadout, mut wheel): (
+        Res<CueCount>,
+        Res<Spectate>,
+        Res<crate::loadout::DeathLoadoutOpen>,
+        MessageWriter<bevy::input::mouse::MouseWheel>,
+    ),
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut captured: Local<Captured>,
 ) {
@@ -532,7 +541,13 @@ fn selftest_play(
     {
         captured.dead = true;
         test.capture("dead.png");
-        println!("[selftest] dead, watching {:?}", spectate.watching.map(|id| session.name_of(id)));
+        println!(
+            "[selftest] dead, watching {:?} through their eyes {} with {} aim {:.2}",
+            spectate.watching.map(|id| session.name_of(id)),
+            player.pov.is_some(),
+            player.weapon().name,
+            player.aim
+        );
     }
     // A notch of the wheel moves the camera on to the next teammate.
     if captured.dead && player.on_death_screen() && spectate.watching.is_some() {
@@ -555,6 +570,33 @@ fn selftest_play(
                 captured.watched.map(|id| session.name_of(id))
             );
         }
+    }
+    // L opens the loadout over the death screen, and Escape shuts it.
+    if captured.scrolled && player.on_death_screen() {
+        let dead_for = player.dead_for;
+        match captured.loadout {
+            0 if dead_for > 3.4 => keys.press(KeyCode::KeyL),
+            1 if dead_for > 3.5 => keys.release(KeyCode::KeyL),
+            2 if dead_for > 3.9 => {
+                test.capture("dead_loadout.png");
+                println!("[selftest] after L, loadout open {}", death_loadout.0);
+                keys.press(KeyCode::Escape);
+            }
+            3 if dead_for > 4.0 => keys.release(KeyCode::Escape),
+            4 if dead_for > 4.3 => {
+                println!("[selftest] after Escape, loadout open {} paused {}", death_loadout.0, !controls.captured);
+            }
+            _ => {}
+        }
+        let step = match captured.loadout {
+            0 => dead_for > 3.4,
+            1 => dead_for > 3.5,
+            2 => dead_for > 3.9,
+            3 => dead_for > 4.0,
+            4 => dead_for > 4.3,
+            _ => false,
+        };
+        captured.loadout += step as u8;
     }
     if let Some(arc) = player.damage_arcs.first()
         && !captured.hurt
@@ -799,7 +841,7 @@ fn selftest_play(
     // In the other team modes, the camera going to a teammate and on to the
     // next with the wheel (above), if no bot has killed us yet.
     let teams = session.team_mode() && !conquest;
-    if test.reached(15, if conquest { 17.3 } else { 11.1 }) && (conquest || teams && !captured.scrolled) {
+    if test.reached(15, if conquest { 17.3 } else { 11.1 }) && (conquest || teams && captured.loadout < 5) {
         player.alive = false;
         player.killed_by = Some("[bot] Clanker".to_string());
         player.dead_for = 0.0;
@@ -809,7 +851,7 @@ fn selftest_play(
     }
     let end = match () {
         _ if conquest => 18.5,
-        _ if teams && player.on_death_screen() && !captured.scrolled => 15.0,
+        _ if teams && player.on_death_screen() && captured.loadout < 5 => 16.0,
         _ => 11.2,
     };
     if test.reached(17, end) {
@@ -847,6 +889,8 @@ struct Captured {
     /// Who the camera was on when the wheel turned while we were dead.
     watched: Option<crate::protocol::PlayerId>,
     scrolled: bool,
+    /// How far through opening and shutting the loadout on the death screen.
+    loadout: u8,
     switch: bool,
     reload: bool,
     drop: bool,

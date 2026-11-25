@@ -67,6 +67,7 @@ impl Plugin for LoadoutPlugin {
             )
             .init_resource::<LoadoutFocus>()
             .init_resource::<LoadoutScreen>()
+            .init_resource::<DeathLoadoutOpen>()
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
@@ -1236,6 +1237,12 @@ fn update_choice_texts(
 /// For the lobby's bottom bar: what you spawn with, in a line, on a button
 /// that opens the loadout screen.
 pub fn loadout_summary() -> impl Bundle {
+    (summary_button("YOU SPAWN WITH", "Change"), observe(on_open_loadout))
+}
+
+/// What you spawn with, in a line under `title` and `action`, on a button
+/// that does what it is given to.
+pub fn summary_button(title: &'static str, action: &'static str) -> impl Bundle {
     let kind = ui::ButtonKind::Tile;
     (
         Button,
@@ -1255,7 +1262,6 @@ pub fn loadout_summary() -> impl Bundle {
         },
         BackgroundColor(Color::NONE),
         BorderColor::all(kind.edge()),
-        observe(on_open_loadout),
         children![
             (
                 Node {
@@ -1264,14 +1270,19 @@ pub fn loadout_summary() -> impl Bundle {
                 },
                 Pickable::IGNORE,
                 children![
-                    (ui::weighted("YOU SPAWN WITH", 10.0, 700, DIM), Pickable::IGNORE),
-                    (ui::weighted("Change", 10.0, 800, ui::ACCENT), Pickable::IGNORE),
+                    (ui::weighted(title, 10.0, 700, DIM), Pickable::IGNORE),
+                    (ui::weighted(action, 10.0, 800, ui::ACCENT), Pickable::IGNORE),
                 ],
             ),
             (LoadoutLine, ui::weighted("", 15.0, 600, ui::TEXT), TextLayout::no_wrap(), Pickable::IGNORE),
         ],
     )
 }
+
+/// The death screen's loadout panel is open over it (L, or a click on the
+/// summary; L, Escape or "Close" shuts it).
+#[derive(Resource, Default)]
+pub struct DeathLoadoutOpen(pub bool);
 
 /// The loadout on the death screen: the same slots and cards as the loadout
 /// screen, smaller, for the next life.

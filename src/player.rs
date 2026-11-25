@@ -16,6 +16,7 @@ use crate::{
     AppState,
     audio::{BOLT_LOCK, Sound, SoundCue, surface_under},
     gun_model::{Fitted, FittedModels, GunHolder, GunPart, PartKind},
+    loadout::DeathLoadoutOpen,
     map::{self, CROUCH_EYE, Map, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
@@ -170,7 +171,7 @@ fn bolt_home(home: f32) -> (f32, f32) {
 }
 
 /// Eases 0 -> 1 in and out; clamped.
-pub fn smooth(t: f32) -> f32 {
+fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -291,6 +292,9 @@ pub struct LocalPlayer {
     pub dead_for: f32,
     /// We asked the server to respawn us early.
     pub respawn_asked: bool,
+    /// Dead and watching a teammate: the eyes we see through. Our view and
+    /// gun are theirs meanwhile (see `see_through`).
+    pub pov: Option<Vec3>,
     /// Seconds the hit marker stays visible.
     pub hit_marker: f32,
     /// Seconds the hit marker stays yellow, for a headshot.
@@ -377,6 +381,7 @@ impl Default for LocalPlayer {
             killed_with: None,
             dead_for: 0.0,
             respawn_asked: false,
+            pov: None,
             hit_marker: 0.0,
             headshot_marker: 0.0,
             kill_marker: 0.0,
@@ -521,7 +526,7 @@ impl LocalPlayer {
     /// 0 -> 1 as the view through a scope fades in, near the end of aiming.
     /// Always 0 with other sights.
     pub fn scope_view(&self) -> f32 {
-        if self.alive && sight(self.sight_id()).overlay {
+        if (self.alive || self.pov.is_some()) && sight(self.sight_id()).overlay {
             ((self.aim - 0.8) / 0.15).clamp(0.0, 1.0)
         } else {
             0.0
@@ -690,24 +695,104 @@ impl LocalPlayer {
     pub fn on_death_screen(&self) -> bool {
         !self.alive && self.killed_by.is_some()
     }
+
+    /// Dead, we see through a teammate's eyes: the view turns with theirs and
+    /// the gun in hand is theirs, aimed, reloaded and fired as they do. Nothing
+    /// of it outlasts the death: a spawn starts us afresh.
+    #[allow(clippy::too_many_arguments)]
+    pub fn see_through(
+        &mut self,
+        eye: Vec3,
+        yaw: f32,
+        pitch: f32,
+        weapon_id: WeaponId,
+        sight: SightId,
+        aim: f32,
+        reload_for: Option<f32>,
+    ) {
+        self.pov = Some(eye);
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.view_kick = Vec2::ZERO;
+        self.kick_hold = 0.0;
+        self.vel = Vec3::ZERO;
+        self.hand = None;
+        self.draw = 0.0;
+        if weapon_id == KNIFE {
+            self.slot = KNIFE_SLOT;
+        } else {
+            self.slot = 0;
+            if self.guns[0].weapon != weapon_id || self.guns[0].sight != sight {
+                self.guns[0] = GunSlot::full(weapon_id, sight);
+            }
+        }
+        self.aim = if weapon_id == KNIFE { 0.0 } else { aim };
+        // We are only told they are reloading: timed from when that started,
+        // round after round for a gun loaded that way.
+        let step = weapon(weapon_id).reload.max(0.01);
+        self.racking = false;
+        self.reload_empty = false;
+        self.reload = match reload_for {
+            Some(time) if weapon(weapon_id).reload_per_round => step - time % step,
+            Some(time) => (step - time).max(0.001),
+            None => 0.0,
+        };
+    }
+
+    /// The teammate we see through just fired.
+    pub fn watched_fired(&mut self) {
+        self.recoil = 1.0;
+        if let Some(gun) = self.guns.get_mut(self.slot) {
+            gun.cooldown = weapon(gun.weapon).interval;
+        }
+    }
+
+    /// Back to our own eyes, where we died, looking the way we were.
+    pub fn stop_seeing_through(&mut self, yaw: f32, pitch: f32) {
+        self.pov = None;
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.aim = 0.0;
+        self.reload = 0.0;
+        self.recoil = 0.0;
+    }
 }
 
-/// While dead the death screen shows (see `ui.rs`), and the weapon and
-/// grenade keys step through the loadout we will be handed when we respawn.
-fn while_dead(time: Res<Time>, mut player: ResMut<LocalPlayer>, mut input: ParamSet<(ActionInput, ResMut<Settings>)>) {
+/// While dead the death screen shows (see `ui.rs`). The weapon and grenade
+/// keys step through the loadout we will be handed when we respawn, L opens
+/// and closes the whole of it, and jump puts us back in early.
+#[allow(clippy::too_many_arguments)]
+fn while_dead(
+    time: Res<Time>,
+    session: Res<Session>,
+    keys: Res<ButtonInput<KeyCode>>,
+    connection: Option<ResMut<Connection>>,
+    mut player: ResMut<LocalPlayer>,
+    mut loadout_open: ResMut<DeathLoadoutOpen>,
+    mut input: ParamSet<(ActionInput, ResMut<Settings>)>,
+) {
     // Before our first spawn there is no death screen.
     if !player.on_death_screen() {
+        loadout_open.0 = false;
         return;
     }
     player.dead_for += time.delta_secs();
-    let (primary, secondary, grenade) = {
+    let (primary, secondary, grenade, jump, captured) = {
         let input = input.p0();
         (
             input.just_pressed(Action::Primary),
             input.just_pressed(Action::Secondary),
             input.just_pressed(Action::Grenade),
+            input.just_pressed(Action::Jump),
+            input.live(),
         )
     };
+    if captured && keys.just_pressed(KeyCode::KeyL) {
+        loadout_open.0 = !loadout_open.0;
+    }
+    if jump && let Some(mut connection) = connection {
+        ask_respawn(&mut player, &mut connection, session.mode);
+    }
     if primary || secondary || grenade {
         let mut settings = input.p1();
         if primary {
@@ -730,12 +815,15 @@ fn toggle_pause(
     mut controls: ResMut<Controls>,
     mut menu: ResMut<SettingsMenu>,
     mut loadout: ResMut<crate::loadout::LoadoutScreen>,
+    mut death_loadout: ResMut<DeathLoadoutOpen>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         if menu.open {
             menu.back();
         } else if loadout.open {
             loadout.open = false;
+        } else if death_loadout.0 && controls.captured {
+            death_loadout.0 = false;
         } else {
             controls.captured = !controls.captured;
         }
@@ -1060,9 +1148,11 @@ fn follow_camera(
     player.view_height += (eye_target - player.view_height) * (dt * 14.0).min(1.0);
 
     let (mut transform, mut projection) = camera.into_inner();
-    // When dead the camera stays where we died, unless it goes to watch a
-    // teammate (`remote::spectate`).
-    if player.alive {
+    // When dead the camera sees through a teammate's eyes (`remote::spectate`),
+    // or else stays where we died.
+    if let Some(eye) = player.pov {
+        transform.translation = eye;
+    } else if player.alive {
         transform.translation = player.eye();
     }
     transform.rotation = Quat::from_euler(EulerRot::YXZ, player.yaw, player.pitch, 0.0);
@@ -1262,7 +1352,7 @@ fn follow_camera(
     }
 
     // Looking through a scope, its lens fills the screen instead.
-    let wanted = if player.alive && player.scope_view() < 1.0 {
+    let wanted = if (player.alive || player.pov.is_some()) && player.scope_view() < 1.0 {
         Visibility::Inherited
     } else {
         Visibility::Hidden
@@ -1438,7 +1528,9 @@ fn send_state(player: Res<LocalPlayer>, mut connection: ResMut<Connection>) {
             pos: player.pos.to_array(),
             yaw: player.yaw,
             pitch: player.pitch,
-            flags: (player.crouching as u8 * FLAG_CROUCH) | (player.reloading() as u8 * FLAG_RELOAD),
+            flags: (player.crouching as u8 * FLAG_CROUCH)
+                | (player.reloading() as u8 * FLAG_RELOAD)
+                | ((player.aim > 0.5) as u8 * FLAG_AIM),
             weapon: player.weapon_id(),
             sight: player.sight_id(),
             spawn_seq: player.spawn_seq,

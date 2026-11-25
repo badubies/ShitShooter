@@ -185,6 +185,8 @@ pub const GRENADE_STEP: f32 = 1.0 / 60.0;
 /// Bits of `ClientState::flags` and `PlayerSnap::flags`.
 pub const FLAG_CROUCH: u8 = 1;
 pub const FLAG_RELOAD: u8 = 2;
+/// Aiming down sights (so a teammate watching through their eyes sees it).
+pub const FLAG_AIM: u8 = 4;
 
 pub type PlayerId = u64;
 
@@ -192,7 +194,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-18:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-19:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }

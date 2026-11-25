@@ -19,14 +19,14 @@ use crate::{
     protocol::{ClientMsg, FlagSnap, MODE_CONQUEST},
     remote::RemotePlayer,
     settings::{Action, ActionInput, Settings},
-    ui::{ACCENT, BLUE, DIM, TEXT, label, mask_image, set_text, team_color},
+    ui::{ACCENT, BLUE, TEXT, label, mask_image, set_text, team_color},
     world::GameMap,
 };
 
 /// Pixels across the picture of the map.
 const RES: usize = 256;
 const MINIMAP: f32 = 180.0;
-const DEPLOY: f32 = 320.0;
+const DEPLOY: f32 = 230.0;
 const NEUTRAL: Color = Color::srgb(0.86, 0.86, 0.82);
 
 pub struct MinimapPlugin;
@@ -404,20 +404,22 @@ fn update_minimap(
     }
 }
 
-/// The death screen's map, for the death screen to put beside the loadout:
+/// The death screen's map, in the corner where the minimap is in play:
 /// filled in once the map's picture is drawn.
 pub fn deploy_map() -> impl Bundle {
     (
         DeployMap,
         Node {
+            position_type: PositionType::Absolute,
+            left: px(20),
+            top: px(14),
             flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
+            align_items: AlignItems::Start,
             row_gap: px(6),
             display: Display::None,
             ..default()
         },
         children![
-            (DeployCaption, label("", 15.0, DIM)),
             (
                 DeployPicture,
                 Node {
@@ -429,6 +431,7 @@ pub fn deploy_map() -> impl Bundle {
                 BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
                 ImageNode::default(),
             ),
+            (DeployCaption, label("", 14.0, TEXT), crate::ui::hud_shadow()),
         ],
     )
 }
@@ -479,7 +482,7 @@ fn update_deploy_map(
         let mut spots = vec![(0u8, "HQ".to_string(), base)];
         spots.extend(map.0.flags.iter().enumerate().map(|(i, flag)| (i as u8 + 1, flag.name.to_string(), flag.pos)));
         for (point, name, at) in spots {
-            let size = if point == 0 { 34.0 } else { 26.0 };
+            let size = if point == 0 { 30.0 } else { 24.0 };
             let p = picture.place(at, inner).clamp(Vec2::splat(size / 2.0), Vec2::splat(inner - size / 2.0));
             commands.spawn((
                 DeployPoint(point),
@@ -524,14 +527,14 @@ fn update_deploy_map(
         background.set_if_neq(BackgroundColor(fill));
     }
     let words = match choice.point {
-        None => "Click your base or a flag you hold to spawn there".to_string(),
-        Some(0) => "Spawn: at your base".to_string(),
+        None => "Deploy: anywhere  ·  click a flag".to_string(),
+        Some(0) => "Deploy: base".to_string(),
         Some(point) => {
             let name = map.0.flags.get(point as usize - 1).map_or('?', |flag| flag.name);
             if held(point) {
-                format!("Spawn: at {name}")
+                format!("Deploy: {name}")
             } else {
-                format!("Spawn: {name} is lost, at your base")
+                format!("Deploy: base ({name} is lost)")
             }
         }
     };
