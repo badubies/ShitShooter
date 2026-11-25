@@ -23,7 +23,7 @@ use crate::{
     map::PLAYER_HALF,
     loadout::{Choice, LoadoutScreen},
     remote::{Corpse, RemotePlayer},
-    weapons::{GUN_COUNT, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
+    weapons::{GUN_COUNT, IRON_SIGHTS, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
     ui::{MatchChoice, PickerOpen},
     world::GameMap,
     settings::{Settings, SettingsMenu, SettingsTab},
@@ -341,11 +341,11 @@ fn selftest_play(
         }
         // Nothing can happen before the match starts: a look at every gun in
         // the first slot with the 2x sight (they all take it), from the hip,
-        // aimed, and part way through a reload from empty (a magazine coming
-        // out, or a shell going in), a few frames each.
+        // aimed, aimed down its iron sights, and part way through a reload from
+        // empty (a magazine coming out, or a shell going in), a few frames each.
         if session.countdown < 2.6 && player.alive && !session.team_mode() {
-            const FRAMES: u32 = 10;
-            const VIEWS: [&str; 3] = ["hip", "aimed", "reload"];
+            const FRAMES: u32 = 6;
+            const VIEWS: [&str; 4] = ["hip", "aimed", "irons", "reload"];
             let picture = (captured.gallery / FRAMES) as usize;
             let gun = (picture / VIEWS.len()) as WeaponId;
             let view = VIEWS[picture % VIEWS.len()];
@@ -354,9 +354,9 @@ fn selftest_play(
                 let stats = weapon(gun);
                 player.slot = 0;
                 player.guns[0].weapon = gun;
-                player.guns[0].sight = TWO_X;
+                player.guns[0].sight = if view == "irons" { IRON_SIGHTS } else { TWO_X };
                 player.guns[0].ammo = if view == "reload" { 0 } else { stats.magazine };
-                player.aim = (view == "aimed") as u8 as f32;
+                player.aim = (view == "aimed" || view == "irons") as u8 as f32;
                 let progress = if stats.reload_per_round { 0.3 } else { 0.27 };
                 player.reload = if view == "reload" { stats.reload * (1.0 - progress) } else { 0.0 };
                 player.reload_empty = view == "reload";

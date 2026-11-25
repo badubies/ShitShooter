@@ -1047,9 +1047,10 @@ fn follow_camera(
         )
     };
     // Aimed: centred. A sight's dot goes on the crosshair, close to the eye like
-    // a real one; otherwise a model's iron sights (its highest point) line up
-    // under it, or the box gun's sight sits just below it.
-    let dot = model.and_then(|fitted| fitted.aim_point(player.sight_id()));
+    // a real one, and so does the aim point of a model's iron sights (at the
+    // rear sight); without one marked, a model's highest point lines up under
+    // the crosshair, or the box gun's sight sits just below it.
+    let dot = model.and_then(|fitted| fitted.aim_point(player.sight_id()).or(fitted.iron_aim));
     let aimed = match (dot, model) {
         (Some(dot), _) => Vec3::new(-dot.x, -dot.y, -stats.sight_relief - dot.z),
         (None, Some(Fitted { size, .. })) => Vec3::new(0.0, -(size.y / 2.0 + 0.003), -0.31 - length / 2.0),

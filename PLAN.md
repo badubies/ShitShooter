@@ -1,5 +1,39 @@
 # Plan
 
+## Round 4: original weapons
+
+Replace the downloaded guns (rifle, SMG, sniper; the shotgun and knife are
+already ours) with originals built by scripts in `art/`, one gun at a time.
+Each gets reload and cocking parts the code can move, iron sights that line
+up, and a mount for the sights we made (reflex, 2x).
+
+How a gun is built (see `art/pistol.py`):
+
+- Built for the game, so the code places it as it is (`Fit::AsBuilt`): in
+  metres, the weapon's `size` length in `src/weapons.rs`, origin in the middle
+  of its bounds. In Blender X is right, Y forward along the barrel, Z up,
+  which the Y-up export makes barrel along -Z, up +Y. `fit_models` warns when
+  the length or the centre is off.
+- Moving parts are their own nodes, origins at their pivots: `Slide` or `Bolt`,
+  `Magazine` (origin at its top), `Pump`, `Shell`, plus `Trigger` and the like
+  for later. Things that ride on a part are its children.
+- Iron sights: nodes named `IronSight...` (hidden under a sight) and an
+  `AimPoint` empty on the line along their tops, at the rear sight. Aiming
+  holds it `sight_relief` from the eye, like a sight's dot, and hides the
+  crosshair.
+- `SightMount` where a sight's base sits. The sights are built facing -Y, so
+  the mount turns them round (rotation Z 180 degrees). Once every gun is ours
+  the sights can be turned to face +Y and the turn dropped.
+- Check it: render it from a few sides and down the sights in Blender, then
+  run the self-test (`gun_<name>_<hip|aimed|irons|reload>.png`).
+
+1. [x] Pistol: a compact striker-fired pistol (`art/pistol.py`). Takes the
+   reflex and the 2x; the red dot was too big for its slide.
+2. [ ] SMG
+3. [ ] Rifle
+4. [ ] Sniper
+5. [ ] Turn the sights to face +Y, drop `Fit::Scaled` once nothing uses it.
+
 ## Round 3: Hamlet, a close-quarters map
 
 A village about the size of Depot (68 m inside its town wall), for free for
@@ -112,12 +146,13 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 - **Commit messages:** look at `git log`. The subject is one plain sentence
   about what changes for the player; the body says why. End with the
   `Co-Authored-By` line the session gives you.
-- **Blender 5.3:** `C:/Program Files/Blender Foundation/Blender 5.3/blender.exe`.
+- **Blender 5.3:** `C:/Program Files/Blender Foundation/Blender 5.3/blender.exe`
+  (on the Mac, 5.2: `/Applications/Blender.app/Contents/MacOS/Blender`).
   Run scripts with `--background --factory-startup --python <script> -- <args>`;
   `art/grenades.py` is an example. Export with the settings it uses:
   `export_format="GLB", export_yup=True, export_apply=True`. Colours in
   scripts are sRGB and must be made linear for Blender (see `material()`).
-- **glTF guns** (`M4A1`, `MP7`, `SCAR`, `M1911Tactical`) are JSON with the
+- **glTF guns** (`M4A1`, `MP7`, `SCAR`) are JSON with the
   mesh data embedded as base64, so a node can be renamed with a text edit.
 - **Prototype branch:** steps 4 and 5 read REDXICAN's prototype. `pull/4/head`
   still works after the PR is closed.

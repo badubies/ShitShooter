@@ -3040,9 +3040,10 @@ fn update_crosshair(
     fitted: Res<FittedModels>,
     mut crosshair: Single<&mut Visibility, With<Crosshair>>,
 ) {
+    // Aimed down a sight, or iron sights that line up, the crosshair would only get in the way.
     let sight = fitted
         .get(player.weapon_id())
-        .is_some_and(|f| f.aim_point(player.sight_id()).is_some());
+        .is_some_and(|f| f.aim_point(player.sight_id()).or(f.iron_aim).is_some());
     crosshair.set_if_neq(if sight && player.aim > 0.9 {
         Visibility::Hidden
     } else {

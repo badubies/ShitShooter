@@ -2,9 +2,13 @@
 //! weapons that have one (see `Weapon::model`).
 //!
 //! Every gun holder (the first-person gun, and each remote player's gun) gets a
-//! child per model and shows the one for the weapon in hand. Once a model has
-//! loaded it is measured, turned barrel-forward, centred on the holder and
-//! scaled to its weapon's `size` length, so a new model drops in as it is.
+//! child per model and shows the one for the weapon in hand. A model built for
+//! the game (`Fit::AsBuilt`) is placed as it is. Any other is measured once it
+//! has loaded, turned barrel-forward, centred on the holder and scaled to its
+//! weapon's `size` length.
+//!
+//! A gun's own `AimPoint` node, if it has one, is on the line along its iron
+//! sights, and aiming without a sight puts that line through the eye.
 //!
 //! A gun with a `SightMount` node can carry the sights its `Model::sights`
 //! lists, each another glTF file in metres. All of them are mounted on it, and
@@ -21,7 +25,7 @@ use std::f32::consts::PI;
 
 use bevy::{camera::primitives::Aabb, light::NotShadowCaster, prelude::*};
 
-use crate::weapons::{IRON_SIGHTS, SIGHTS, SightId, WEAPONS, WeaponId, sight_on, weapon};
+use crate::weapons::{Fit, IRON_SIGHTS, SIGHTS, SightId, WEAPONS, WeaponId, sight_on, weapon};
 
 pub struct GunModelPlugin;
 
@@ -73,6 +77,9 @@ pub struct FittedModels([Option<Fitted>; WEAPONS.len()]);
 pub struct Fitted {
     /// Width, height and length in metres, centred on the holder.
     pub size: Vec3,
+    /// A point on the line along its iron sights, relative to the holder, if
+    /// the model marks one.
+    pub iron_aim: Option<Vec3>,
     /// Where each sight's dot is, relative to the holder, once that sight is in.
     aim_points: [Option<Vec3>; SIGHTS.len()],
 }
@@ -275,15 +282,27 @@ fn fit_models(
         if size.z <= 0.0 {
             continue;
         }
-        let scale = stats.size[2] / size.z;
-        let turn = if spec.barrel_plus_z {
-            Quat::from_rotation_y(PI)
-        } else {
-            Quat::IDENTITY
+        let middle = (low + high) / 2.0;
+        let scale = match spec.fit {
+            Fit::AsBuilt => {
+                // Placed as it is, so it should be built to the table.
+                if (size.z - stats.size[2]).abs() > 0.001 || middle.length() > 0.001 {
+                    warn!(
+                        "{} is {:.4} m long and centred {middle}; it should be {} m, centred on its origin",
+                        spec.path, size.z, stats.size[2]
+                    );
+                }
+                1.0
+            }
+            Fit::Scaled { barrel_plus_z } => {
+                let scale = stats.size[2] / size.z;
+                let turn = if barrel_plus_z { Quat::from_rotation_y(PI) } else { Quat::IDENTITY };
+                transform.rotation = turn;
+                transform.scale = Vec3::splat(scale);
+                transform.translation = -(turn * (middle * scale));
+                scale
+            }
         };
-        transform.rotation = turn;
-        transform.scale = Vec3::splat(scale);
-        transform.translation = -(turn * ((low + high) / 2.0 * scale));
         model.fitted = true;
         // The moving parts, and how the holder's space maps to their parents'.
         let holder = parent.parent();
@@ -314,8 +333,15 @@ fn fit_models(
                 if kind == PartKind::Shell { Visibility::Hidden } else { Visibility::Inherited },
             ));
         }
+        // Looked for before any sight is mounted, so it is the gun's own.
+        let iron_aim = descendants
+            .iter_descendants(scene)
+            .find(|&e| names.get(e).is_ok_and(|name| name.as_str() == AIM_POINT))
+            .and_then(|aim| globals.get(aim).ok())
+            .map(|aim| transform.transform_point(to_scene.transform_point3(aim.translation())));
         fitted.0[model.weapon as usize] = Some(Fitted {
             size: size * scale,
+            iron_aim,
             aim_points: [None; SIGHTS.len()],
         });
         if !model.shadows {
