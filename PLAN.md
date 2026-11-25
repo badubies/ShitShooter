@@ -61,6 +61,19 @@ sights were made here already. Each new gun gets:
   under a deeper hood, a rim round the eyepiece, elevation and windage
   turrets, a two-bolt clamp, and holdover dots under its chevron. Zoom
   0.34. The rifle, DMR and sniper take it.
+- `art/shotgun.py` builds the shotgun (`assets/models/weapons/Shotgun.glb`),
+  redone on 2026-11-25 at the user's request as a tactical pump (it was a
+  hand-made wood-stocked one): a black receiver with a full-length top rail
+  running out over a vented heat shield to the front sight, a heavy barrel
+  with a slotted muzzle device, a magazine tube clamped to it, a ribbed
+  polymer pump forend on twin action bars (`Pump`), a pistol grip with a
+  cross-bolt safety, and a solid stock like the rifle's. Spare shells on the
+  receiver's sides filled the sight picture, and on the stock the user did
+  not want them, so there are none. 800 mm at true size, held at 290 mm
+  (first 940 and 340; the user asked for it shorter). Ghost-ring rear
+  and orange post on the rail, laid out on the rifle's heights. It still
+  takes only the 2x (a settings test says so). `Shell` lies in the
+  receiver and is shown only while loading.
 - `art/sniper.py` builds the sniper (`assets/models/weapons/sniper.glb`), a
   bolt-action rifle 1200 mm long at true size: a black round receiver and
   heavy barrel in a dark aluminium chassis, a slotted handguard under one
@@ -73,8 +86,8 @@ sights were made here already. Each new gun gets:
 - Every weapon model is placed as it is (`Model` in `src/weapons.rs`):
   metres, `size[2]` long, barrel along -Z, centred. `fit_models`
   (`src/gun_model.rs`) warns when a model's length or centre is off. The
-  shotgun and knife (`art/shotgun.blend`, `art/knife.blend`, made by hand)
-  had the fit the game used to do for them (turned half round, scaled,
+  knife (`art/knife.blend`, made by hand) and the old
+  shotgun had the fit the game used to do for them (turned half round, scaled,
   centred) baked into their files, and `Fit` is gone.
 - The sights face forward (+Y in Blender) as the guns do, so a gun's
   `SightMount` puts them on as they are, with no turn. `art/sights.py`

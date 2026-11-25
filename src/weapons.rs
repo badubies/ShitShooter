@@ -254,7 +254,7 @@ pub const WEAPONS: [Weapon; 7] = [
         hip_spread: 0.06,
         aim_spread: 0.045,
         mobility: 1.0,
-        size: [0.05, 0.06, 0.34],
+        size: [0.05, 0.06, 0.29],
         sight_relief: 0.08,
         kick_up: 0.075,
         kick_side: 0.018,
