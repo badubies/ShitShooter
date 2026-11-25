@@ -272,7 +272,7 @@ fn show_hill(
         let shade = match session.hill {
             HILL_EMPTY => 0,
             HILL_CONTESTED => 3,
-            held => 1 + ((held - HILL_HELD) & 1) as usize,
+            held => 1 + ((held - HILL_HELD) ^ session.team_of(session.my_id)) as usize & 1,
         };
         let holder = &assets.hill_materials[shade];
         if material.0 != *holder {

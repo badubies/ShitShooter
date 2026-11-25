@@ -81,20 +81,21 @@ pub const HUD_PANEL: Color = Color::srgba(0.03, 0.04, 0.07, 0.6);
 pub const HUD_EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
 /// The empty part of a bar.
 pub const TRACK: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
-/// The two teams' colours, the same for everybody whichever team they are
-/// on: team 0 is blue, team 1 red. See `team_color`.
+/// The two colours, seen from the player's side: their own team is always
+/// blue and the enemy red, whichever team number they are. See `team_color`.
 pub const BLUE: Color = Color::srgb(0.30, 0.86, 1.0);
 pub const RED: Color = Color::srgb(1.0, 0.42, 0.38);
 
-/// The colour of team `team` (0 blue, 1 red), wherever it shows: the outline
+/// The colour of team `team` as seen by a player on team `mine`: blue for
+/// their own team, red for the other. Used wherever it shows: the outline
 /// around teammates, their names, the score, the flags they hold.
-pub fn team_color(team: u8) -> Color {
-    if team & 1 == 0 { BLUE } else { RED }
+pub fn team_color(mine: u8, team: u8) -> Color {
+    if (mine ^ team) & 1 == 0 { BLUE } else { RED }
 }
 
-/// The name of team `team`: "Blue" or "Red".
-pub fn team_name(team: u8) -> &'static str {
-    if team & 1 == 0 { "Blue" } else { "Red" }
+/// The name of team `team` as seen by a player on team `mine`: "Blue" or "Red".
+pub fn team_name(mine: u8, team: u8) -> &'static str {
+    if (mine ^ team) & 1 == 0 { "Blue" } else { "Red" }
 }
 /// At or below this, health is shown in red and the bar pulses.
 const LOW_HEALTH: i32 = 30;
@@ -748,12 +749,13 @@ fn update_rosters(
                 });
                 return;
             }
-            // Blue first, then red, whichever we are on.
-            for team in [0, 1] {
-                let color = team_color(team);
+            // Our team (blue) first, then the enemy (red).
+            let mine = key.my_team & 1;
+            for team in [mine, mine ^ 1] {
+                let color = team_color(mine, team);
                 groups.spawn(column()).with_children(|rows| {
                     let yours = if team == key.my_team & 1 { "  (YOURS)" } else { "" };
-                    let name = team_name(team).to_uppercase();
+                    let name = team_name(mine, team).to_uppercase();
                     let title = format!("{name} TEAM{yours}  -  {}", key.team_scores[team as usize]);
                     rows.spawn(roster_heading(title, color));
                     for player in key.roster.iter().filter(|player| player.team & 1 == team) {
@@ -923,8 +925,8 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
             DespawnOnExit(AppState::Lobby),
         ))
         .with_children(|screen| {
-            screen.spawn(team_tint(team_color(0), true));
-            screen.spawn(team_tint(team_color(1), false));
+            screen.spawn(team_tint(BLUE, true));
+            screen.spawn(team_tint(RED, false));
             screen.spawn((
                 PickerCatcher,
                 Node {
@@ -1517,17 +1519,18 @@ fn update_lobby_teams(
                 ..default()
             })
             .with_children(|row| {
-                // Blue on the left, red facing it on the right, whichever
-                // we are on. The other team's open slots take a click.
-                for team in [0, 1] {
-                    let color = team_color(team);
-                    let right = team == 1;
+                // Our team (blue) on the left, the enemy (red) facing it on
+                // the right. The other team's open slots take a click.
+                let mine = key.my_team & 1;
+                for team in [mine, mine ^ 1] {
+                    let color = team_color(mine, team);
+                    let right = team != mine;
                     if right {
                         row.spawn(team_seam());
                     }
                     let on_team = players(Some(team));
                     let join = (team != key.my_team & 1 && on_team.len() < TEAM_SIZE).then_some(color);
-                    let title = format!("{} team", team_name(team));
+                    let title = format!("{} team", team_name(mine, team));
                     row.spawn(Node {
                         flex_grow: 1.0,
                         flex_basis: px(0),
@@ -2711,7 +2714,7 @@ fn top_bar(session: &Session) -> TopBar {
     TopBar {
         labels: ["YOUR TEAM".to_string(), "ENEMY".to_string()],
         scores: [session.team_scores[mine], session.team_scores[mine ^ 1]],
-        colors: [team_color(mine as u8), team_color(mine as u8 ^ 1)],
+        colors: [BLUE, RED],
         info,
     }
 }

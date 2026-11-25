@@ -14,7 +14,7 @@ use crate::{
     player::{LocalPlayer, PlayerSystems},
     protocol::{FlagSnap, MODE_CONQUEST},
     remote::RemotePlayer,
-    ui::{DIM, TEXT, label, set_text, team_color},
+    ui::{BLUE, DIM, RED, TEXT, label, set_text},
     world::{GameMap, MainCamera},
 };
 
@@ -78,7 +78,7 @@ struct MarkerLetter(usize);
 struct MarkerDistance(usize);
 
 fn make_materials(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
-    let cloth = [NEUTRAL, team_color(0), team_color(1)].map(|color| {
+    let cloth = [NEUTRAL, BLUE, RED].map(|color| {
         materials.add(StandardMaterial {
             base_color: color,
             emissive: color.to_linear() * 0.25,
@@ -88,7 +88,7 @@ fn make_materials(mut commands: Commands, mut materials: ResMut<Assets<StandardM
             ..default()
         })
     });
-    let ring = [NEUTRAL, team_color(0), team_color(1)].map(|color| {
+    let ring = [NEUTRAL, BLUE, RED].map(|color| {
         materials.add(StandardMaterial {
             base_color: color.with_alpha(0.55),
             alpha_mode: AlphaMode::Blend,
@@ -132,10 +132,10 @@ fn build_flags(
     }
 }
 
-/// Which of `FlagMaterials` a flag wears (0 neutral, 1 blue, 2 red), and
+/// Which of `FlagMaterials` a flag wears (0 neutral, 1 ours and blue, 2 the enemy's and red), and
 /// how high its cloth is up the pole (0 to 1): a held flag at the top, one
 /// being taken rising in its taker's colour, a neutral one at the bottom.
-fn flag_look(flag: &FlagSnap) -> (usize, f32) {
+fn flag_look(flag: &FlagSnap, mine: u8) -> (usize, f32) {
     let control = flag.control();
     let leaning = if control < -0.01 {
         Some(0)
@@ -144,12 +144,13 @@ fn flag_look(flag: &FlagSnap) -> (usize, f32) {
     } else {
         None
     };
-    (team_shade(flag.owner.or(leaning)), control.abs())
+    (team_shade(flag.owner.or(leaning), mine), control.abs())
 }
 
-/// The shade of a flag held by `owner`: 0 neutral, 1 blue, 2 red.
-fn team_shade(owner: Option<u8>) -> usize {
-    owner.map_or(0, |team| 1 + (team & 1) as usize)
+/// The shade of a flag held by `owner`, seen from team `mine`: 0 neutral,
+/// 1 ours (blue), 2 the enemy's (red).
+fn team_shade(owner: Option<u8>, mine: u8) -> usize {
+    owner.map_or(0, |team| 1 + ((team ^ mine) & 1) as usize)
 }
 
 fn show_flags(
@@ -160,6 +161,7 @@ fn show_flags(
     mut cloths: Query<(&FlagCloth, &mut Transform, &mut Visibility, &mut MeshMaterial3d<StandardMaterial>), Without<FlagRing>>,
     mut rings: Query<(&FlagRing, &mut Visibility, &mut MeshMaterial3d<StandardMaterial>), Without<FlagCloth>>,
 ) {
+    let mine = session.team_of(session.my_id);
     let on = session.mode == MODE_CONQUEST && !session.flags.is_empty();
     let wanted = if on { Visibility::Inherited } else { Visibility::Hidden };
     let t = time.elapsed_secs();
@@ -168,7 +170,7 @@ fn show_flags(
         let (Some(flag), Some(point)) = (session.flags.get(cloth.0), map.0.flags.get(cloth.0)) else {
             continue;
         };
-        let (shade, height) = flag_look(flag);
+        let (shade, height) = flag_look(flag, mine);
         if material.0 != materials.cloth[shade] {
             material.0 = materials.cloth[shade].clone();
         }
@@ -184,7 +186,7 @@ fn show_flags(
         let Some(flag) = session.flags.get(ring.0) else {
             continue;
         };
-        let shade = team_shade(flag.owner);
+        let shade = team_shade(flag.owner, mine);
         if material.0 != materials.ring[shade] {
             material.0 = materials.ring[shade].clone();
         }
@@ -202,7 +204,8 @@ fn shadow() -> TextShadow {
 fn shade_color(shade: usize) -> Color {
     match shade {
         0 => NEUTRAL,
-        shade => team_color(shade as u8 - 1),
+        1 => BLUE,
+        _ => RED,
     }
 }
 
@@ -323,11 +326,12 @@ fn update_badges(
     mut badges: Query<(&FlagBadge, &mut BorderColor, &mut BackgroundColor), Without<BadgeFill>>,
     mut fills: Query<(&BadgeFill, &mut Node, &mut BackgroundColor), Without<FlagBadge>>,
 ) {
+    let mine = session.team_of(session.my_id);
     for (badge, mut border, mut background) in &mut badges {
         let Some(flag) = session.flags.get(badge.0) else {
             continue;
         };
-        let owner = team_shade(flag.owner);
+        let owner = team_shade(flag.owner, mine);
         let color = shade_color(owner);
         border.set_if_neq(BorderColor::all(color));
         let fill = if owner == 0 { Color::srgba(0.05, 0.06, 0.08, 0.6) } else { color.with_alpha(0.45) };
@@ -337,7 +341,7 @@ fn update_badges(
         let Some(flag) = session.flags.get(fill.0) else {
             continue;
         };
-        let (shade, amount) = flag_look(flag);
+        let (shade, amount) = flag_look(flag, mine);
         let width = percent(amount * 100.0);
         if node.width != width {
             node.width = width;
@@ -373,17 +377,17 @@ fn update_capture_bar(
     let (words, color) = if enemies_here {
         ("CONTESTED", TEXT)
     } else if state.owner == Some(mine) && ours >= 0.999 {
-        ("SECURED", team_color(mine))
+        ("SECURED", BLUE)
     } else if state.owner.is_some_and(|team| team != mine) {
-        ("NEUTRALIZING", team_color(mine))
+        ("NEUTRALIZING", BLUE)
     } else {
-        ("CAPTURING", team_color(mine))
+        ("CAPTURING", BLUE)
     };
     for (mut text, mut text_color) in &mut text {
         set_text(&mut text, format!("{words} {}", point.name));
         text_color.set_if_neq(TextColor(color));
     }
-    let (shade, amount) = flag_look(state);
+    let (shade, amount) = flag_look(state, mine);
     for (mut node, mut background) in &mut fill {
         let width = percent(amount * 100.0);
         if node.width != width {
@@ -431,7 +435,7 @@ fn update_markers(
     }
     for (letter, mut color) in &mut letters {
         if let Some(state) = session.flags.get(letter.0) {
-            color.set_if_neq(TextColor(shade_color(flag_look(state).0)));
+            color.set_if_neq(TextColor(shade_color(flag_look(state, session.team_of(session.my_id)).0)));
         }
     }
     for (text, mut value) in &mut distances {

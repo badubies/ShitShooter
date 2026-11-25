@@ -12,7 +12,7 @@ use crate::{
     player::{GRAVITY, LocalPlayer, PlayerSystems, magazine_out},
     gun_model::{FittedModels, GunHolder, GunModelSystems, GunPart, PartKind},
     protocol::*,
-    ui::team_color,
+    ui::BLUE,
     weapons::{SightId, WeaponId, weapon},
     world::{GameMap, MainCamera, SharedAssets},
 };
@@ -530,7 +530,7 @@ fn show_outlines(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut outlines: Query<(&AllyOutline, &mut Visibility)>,
 ) {
-    let color = team_color(session.team_of(session.my_id));
+    let color = BLUE;
     if materials.get(&assets.ally_outline).is_some_and(|material| material.base_color != color)
         && let Some(mut material) = materials.get_mut(&assets.ally_outline)
     {
@@ -563,7 +563,7 @@ fn draw_ally_tags(
         _ => 1.0,
     };
     let size = crate::ui::ui_size(&window, &ui_scale);
-    let color = team_color(session.team_of(session.my_id));
+    let color = BLUE;
 
     let mut shown = Vec::new();
     for (remote, transform) in &remotes {
