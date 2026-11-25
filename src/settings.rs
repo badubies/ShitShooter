@@ -27,7 +27,7 @@ use crate::{
     player::Controls,
     protocol::{FRAG, GRENADE_KINDS, GRENADES, GrenadeKind},
     weapons::{
-        DMR, GUN_COUNT, IRON_SIGHTS, PISTOL, RED_DOT, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, TWO_X, WeaponId, next_gun,
+        DMR, GUN_COUNT, IRON_SIGHTS, PISTOL, REFLEX, RIFLE, SCOPE, SIGHTS, SNIPER, SightId, TWO_X, WeaponId, next_gun,
         sight, step_gun, sight_on, sights_for, takes_sights, weapon,
     },
     ui::{self, ACCENT, BUTTON, DIM, TEXT},
@@ -646,11 +646,11 @@ impl Settings {
     }
 }
 
-/// The rifle comes with a red dot, the DMR with the 2x and the sniper with a
+/// The rifle comes with the reflex, the DMR with the 2x and the sniper with a
 /// scope; every other gun with its iron sights.
 fn default_sights() -> [SightId; GUN_COUNT as usize] {
     let mut sights = [IRON_SIGHTS; GUN_COUNT as usize];
-    sights[RIFLE as usize] = RED_DOT;
+    sights[RIFLE as usize] = REFLEX;
     sights[DMR as usize] = TWO_X;
     sights[SNIPER as usize] = SCOPE;
     sights
@@ -1409,7 +1409,7 @@ mod tests {
             show_minimap: false,
             primary: 3,
             secondary: 1,
-            sights: [IRON_SIGHTS, RED_DOT, IRON_SIGHTS, TWO_X, RED_DOT, REFLEX],
+            sights: [IRON_SIGHTS, REFLEX, IRON_SIGHTS, TWO_X, REFLEX, THREE_X],
             grenade: crate::protocol::SMOKE,
             ..default()
         };
@@ -1427,13 +1427,13 @@ mod tests {
     fn sights_go_only_on_guns_with_a_mount() {
         let shotgun = gun_named("Shotgun").unwrap();
         let smg = gun_named("SMG").unwrap();
-        let mut settings = Settings::parse("primary = Shotgun\nsecondary = SMG\nsight.Shotgun = Red dot\nsight.SMG = red DOT\n");
+        let mut settings = Settings::parse("primary = Shotgun\nsecondary = SMG\nsight.Shotgun = 3x sight\nsight.SMG = REFLEX\n");
         assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS);
-        assert_eq!(settings.sight_for(smg), RED_DOT);
+        assert_eq!(settings.sight_for(smg), REFLEX);
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
-        assert_eq!(settings.sight_for(RIFLE), RED_DOT, "the rifle's default");
-        settings.set_sight(0, RED_DOT);
-        assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS, "the shotgun takes only the 2x");
+        assert_eq!(settings.sight_for(RIFLE), REFLEX, "the rifle's default");
+        settings.set_sight(0, THREE_X);
+        assert_eq!(settings.sight_for(shotgun), IRON_SIGHTS, "the shotgun takes no 3x");
         settings.set_sight(0, TWO_X);
         assert_eq!(settings.sight_for(shotgun), TWO_X);
         settings.set_sight(0, IRON_SIGHTS);
@@ -1451,7 +1451,7 @@ sight.Pistol = Scope
 ");
         assert_eq!(settings.sight_for(PISTOL), IRON_SIGHTS);
         assert_eq!(settings.sight_for(SNIPER), SCOPE, "the sniper's default");
-        for sight in [IRON_SIGHTS, RED_DOT, REFLEX, TWO_X, THREE_X, SCOPE] {
+        for sight in [IRON_SIGHTS, REFLEX, TWO_X, THREE_X, SCOPE] {
             settings.set_sight(0, sight);
             assert_eq!(settings.sight_for(SNIPER), sight);
         }

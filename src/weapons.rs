@@ -77,11 +77,10 @@ pub struct Model {
 pub type SightId = u8;
 /// No sight: the gun's own iron sights.
 pub const IRON_SIGHTS: SightId = 0;
-pub const RED_DOT: SightId = 1;
-pub const SCOPE: SightId = 2;
-pub const REFLEX: SightId = 3;
-pub const TWO_X: SightId = 4;
-pub const THREE_X: SightId = 5;
+pub const SCOPE: SightId = 1;
+pub const REFLEX: SightId = 2;
+pub const TWO_X: SightId = 3;
+pub const THREE_X: SightId = 4;
 
 pub struct Sight {
     pub name: &'static str,
@@ -99,17 +98,11 @@ pub struct Sight {
     pub overlay: bool,
 }
 
-pub const SIGHTS: [Sight; 6] = [
+pub const SIGHTS: [Sight; 5] = [
     Sight {
         name: "Iron sights",
         path: None,
         zoom: 0.85,
-        overlay: false,
-    },
-    Sight {
-        name: "Red dot",
-        path: Some("models/sights/red_dot.glb"),
-        zoom: 0.75,
         overlay: false,
     },
     Sight {
@@ -209,7 +202,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 2.0,
         model: Some(Model {
             path: "models/weapons/rifle.glb",
-            sights: &[RED_DOT, REFLEX, TWO_X, THREE_X],
+            sights: &[REFLEX, TWO_X, THREE_X],
         }),
         choke: None,
     },
@@ -235,7 +228,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 1.6,
         model: Some(Model {
             path: "models/weapons/smg.glb",
-            sights: &[RED_DOT, REFLEX, TWO_X],
+            sights: &[REFLEX, TWO_X],
         }),
         choke: None,
     },
@@ -261,7 +254,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 1.5,
         model: Some(Model {
             path: "models/weapons/Shotgun.glb",
-            sights: &[TWO_X],
+            sights: &[REFLEX, TWO_X],
         }),
         choke: Some(Choke {
             spread: 0.015,
@@ -293,7 +286,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 2.0,
         model: Some(Model {
             path: "models/weapons/dmr.glb",
-            sights: &[RED_DOT, REFLEX, TWO_X, THREE_X, SCOPE],
+            sights: &[REFLEX, TWO_X, THREE_X, SCOPE],
         }),
         choke: None,
     },
@@ -319,7 +312,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 2.5,
         model: Some(Model {
             path: "models/weapons/sniper.glb",
-            sights: &[RED_DOT, REFLEX, TWO_X, THREE_X, SCOPE],
+            sights: &[REFLEX, TWO_X, THREE_X, SCOPE],
         }),
         choke: None,
     },
@@ -348,7 +341,7 @@ pub const WEAPONS: [Weapon; 7] = [
         headshot: 2.0,
         model: Some(Model {
             path: "models/weapons/pistol.glb",
-            // A red dot is too big for its slide.
+            // The 3x is too big for its slide.
             sights: &[REFLEX, TWO_X],
         }),
         choke: None,
