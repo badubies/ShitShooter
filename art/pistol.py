@@ -1,19 +1,19 @@
-"""Builds the pistol: an original compact striker-fired pistol, a dark slide
-on a dark grey polymer frame, with three-dot iron sights (two white dots on the
-rear, an orange one on the front post) and a mount on the slide for the reflex
-and the 2x sight.
+"""Builds the pistol: an original heavy hand cannon in the manner of a Desert
+Eagle, a big black slide with a slotted rib along its top over a wedge-shaped
+barrel shroud, a dark grey frame with a square trigger guard and a fat grip
+with ridged panels, and three-dot iron sights on the rib (two white dots on the
+rear, an orange one on the front post) and a mount on the rib for the reflex and
+the 2x sight.
 
 Built for the game, so it is placed in the hand as it is, with no turning or
 scaling in code:
 - Metres. X is right, Y forward along the barrel, Z up. It is exported Y-up,
   so in the file the barrel points along -Z and up is +Y, as the game holds it.
-- Its length is the pistol's `size` in src/weapons.rs (0.15 m), and its origin
+- Its length is the pistol's `size` in src/weapons.rs (0.19 m), and its origin
   is the middle of its bounding box (where the box gun's middle would be).
 - It is designed at true size (`TRUE_LENGTH`) and shrunk by `SCALE` to that
   length, and its `SightMount` is scaled by `SCALE` too, so a sight (built
-  in true metres) keeps its true size next to the gun. A real compact pistol
-  is the length the game holds this one, so here `SCALE` is 1; the long guns
-  are held at about a third of their true size (see PLAN.md, Round 4).
+  in true metres) keeps its true size next to the gun (see PLAN.md, Round 4).
 
 The nodes the game looks for (see src/gun_model.rs):
 - Slide: kicked back by each shot and held back when empty. It carries the
@@ -26,8 +26,8 @@ The nodes the game looks for (see src/gun_model.rs):
 - SightMount: where a sight's base goes. The sights face +Y, as the gun
   does, so they go on as they are.
 - Magazine: its origin is the top of the magazine, on the grip's slant.
-- Trigger, SlideStop and MagRelease pivot or slide about their origins for
-  animations to come.
+- Trigger, SlideStop, MagRelease and Safety pivot or slide about their
+  origins for animations to come.
 
 Saves art/pistol.blend and exports assets/models/weapons/pistol.glb. Run with:
 blender --background --factory-startup --python pistol.py -- <repo root>
@@ -42,34 +42,40 @@ from mathutils import Vector
 ROOT = sys.argv[sys.argv.index("--") + 1]
 
 # The pistol's length in src/weapons.rs, in millimetres: how long the game holds it.
-LENGTH = 150.0
-# How long it is at true size, which it is laid out at; everything is
-# shrunk by `SCALE` to `LENGTH`, sights on its mount included.
-TRUE_LENGTH = 150.0
+LENGTH = 190.0
+# How long it is at true size (a six inch barrel), which it is laid out at;
+# everything is shrunk by `SCALE` to `LENGTH`, sights on its mount included.
+TRUE_LENGTH = 270.0
 SCALE = LENGTH / TRUE_LENGTH
 # Laid out in true millimetres, the slide's rear bottom edge at y = 0, z = 0.
 # Every vertex and position is turned into game metres with `MM` as it is
 # made, and the whole gun is centred on its origin at the end.
 MM = 0.001 * SCALE
 # The tang of the frame over the web of the hand is the rearmost point.
-TANG_Y = -6.5
+TANG_Y = -10.0
 SLIDE_FRONT = TRUE_LENGTH + TANG_Y
-SLIDE_HALF_WIDTH = 12.5
-SLIDE_TOP = 27.0
-BORE_Z = 13.5
+SLIDE_HALF_WIDTH = 14.5
+SLIDE_TOP = 38.0
+# The rib along the slide's top, which the sights stand on.
+RIB_HALF_WIDTH = 6.5
+RIB_TOP = 42.0
+BORE_Z = 24.0
 # The top of the rear blade and of the front post: the line aimed along.
-SIGHT_LINE_Z = 32.0
-REAR_SIGHT_Y = (2.0, 10.0)
-FRONT_SIGHT_Y = (SLIDE_FRONT - 9.5, SLIDE_FRONT - 3.5)
+SIGHT_LINE_Z = 50.5
+REAR_SIGHT_Y = (8.0, 20.0)
+FRONT_SIGHT_Y = (SLIDE_FRONT - 24.0, SLIDE_FRONT - 15.0)
 # A wide notch, its edges close to the white dots, so little of the rear
-# blade stands between them and the front post.
-NOTCH_HALF_WIDTH = 3.6
-POST_HALF_WIDTH = 2.2
+# blade stands between them and the front post. About 2.2 degrees across
+# from the eye (0.18 m) and a post about 0.75 degrees: 7 and 4.4 mm in game
+# metres, so these are those over `SCALE`.
+NOTCH_HALF_WIDTH = 5.0
+POST_HALF_WIDTH = 3.1
 # The grip slants back by this much; the magazine follows it.
-GRIP_ANGLE = math.radians(17.0)
-MAGAZINE_TOP = (37.0, -3.0)
+GRIP_ANGLE = math.radians(15.0)
+MAGAZINE_TOP = (42.0, -4.0)
+GRIP_BOTTOM = -92.0
 # How far forward of the rear of the slide a sight's base is centred.
-SIGHT_MOUNT_Y = 20.0
+SIGHT_MOUNT_Y = 46.0
 
 
 def material(name, linear, roughness=0.5, emission=None, strength=1.0):
@@ -278,110 +284,142 @@ def boolean(obj, cutter, operation):
     bpy.data.objects.remove(cutter)
 
 
-# The slide: its side profile and its cross-section, which has its top edges
-# bevelled, cut out of each other; then serrations front and rear, the
-# ejection port on the right, and the hole the muzzle shows through.
+GRIP = material("Pistol_Grip", (0.018, 0.018, 0.02), roughness=0.9)
+
+# The slide: its side profile and its cross-section (a rib along the top, the
+# top edges bevelled) cut out of each other; then serrations at the back and
+# the front, the big ejection port on the right, and the hole the muzzle
+# shows through.
+SF = SLIDE_FRONT
 part = Part()
-part.prism("x", [(0.0, 0.0), (SLIDE_FRONT - 7.0, 0.0), (SLIDE_FRONT, 6.0), (SLIDE_FRONT, 23.0),
-                 (SLIDE_FRONT - 3.0, SLIDE_TOP), (1.5, SLIDE_TOP), (0.0, SLIDE_TOP - 1.5)], -14.0, 14.0, SLIDE)
+part.prism("x", [(0.0, 0.0), (SF - 6.0, 0.0), (SF, 6.0), (SF, RIB_TOP - 5.0),
+                 (SF - 4.0, RIB_TOP), (9.0, RIB_TOP), (0.0, SLIDE_TOP - 9.0)], -16.0, 16.0, SLIDE)
 slide = part.to_object("Slide")
 part = Part()
-w = SLIDE_HALF_WIDTH
-part.prism("y", [(-w, 0.0), (w, 0.0), (w, 20.0), (9.0, SLIDE_TOP), (-9.0, SLIDE_TOP), (-w, 20.0)],
-           -1.0, SLIDE_FRONT + 1.0, SLIDE)
+w, r = SLIDE_HALF_WIDTH, RIB_HALF_WIDTH
+part.prism("y", [(-w, 0.0), (w, 0.0), (w, SLIDE_TOP - 9.0), (w - 5.0, SLIDE_TOP), (r, SLIDE_TOP), (r, RIB_TOP),
+                 (-r, RIB_TOP), (-r, SLIDE_TOP), (-(w - 5.0), SLIDE_TOP), (-w, SLIDE_TOP - 9.0)],
+           -1.0, SF + 1.0, SLIDE)
 boolean(slide, part.to_object("SlideSection"), "INTERSECT")
 part = Part()
 for side in (-1.0, 1.0):
-    for y0, count in ((5.0, 7), (SLIDE_FRONT - 32.0, 5)):
+    for y0, count in ((8.0, 8), (SF - 40.0, 5)):
         for i in range(count):
-            y = y0 + i * 3.0
-            part.box(*sorted((side * 11.4, side * 14.0)), y, y + 1.3, 3.0, 26.0, SLIDE)
-part.box(-1.0, 14.0, 68.0, 96.0, 15.0, 30.0, SLIDE)
-part.cylinder("y", 7.2, (0.0, BORE_Z), SLIDE_FRONT - 10.0, SLIDE_FRONT + 2.0, SLIDE)
+            y = y0 + i * 5.0
+            part.box(*sorted((side * (w - 2.0), side * (w + 1.5))), y, y + 2.2, 5.0, SLIDE_TOP - 11.0, SLIDE)
+# Slots across the rib.
+for i in range(16):
+    y = 58.0 + i * 8.5
+    part.box(-r - 1.0, r + 1.0, y, y + 3.5, RIB_TOP - 2.0, RIB_TOP + 1.0, SLIDE)
+part.box(-1.0, w + 2.0, 100.0, 172.0, 10.0, 35.0, SLIDE)
+part.cylinder("y", 11.8, (0.0, BORE_Z), SF - 14.0, SF + 2.0, SLIDE, segments=24)
 boolean(slide, part.to_object("SlideCuts"), "DIFFERENCE")
 
-# The rear sight: a low blade, its sides drawn in and its top corners cut
-# away so it hides little round the notch, a white dot either side; the
-# front: a narrow post with an orange dot. Their tops are the sight line.
+# The rear sight: a low blade on the rib, its sides drawn in and its top
+# corners cut away so it hides little round the notch, a white dot either
+# side; the front: a narrow post on a ramp with an orange dot. Their tops are
+# the sight line.
 part = Part()
 y0, y1 = REAR_SIGHT_Y
 n, top = NOTCH_HALF_WIDTH, SIGHT_LINE_Z
-right = [(9.0, SLIDE_TOP - 0.5), (8.7, top - 1.2), (8.0, top), (n, top), (n, top - 2.8)]
+right = [(9.8, SLIDE_TOP - 0.5), (9.6, top - 2.0), (8.8, top), (n, top), (n, top - 4.0)]
 part.prism("y", right + [(-x, z) for x, z in reversed(right)], y0, y1, SLIDE)
-for x in (-6.1, 6.1):
-    part.cylinder("y", 0.9, (x, top - 1.7), y0 - 0.15, y0 + 0.2, REAR_DOT, segments=12)
+for x in (-7.3, 7.3):
+    part.cylinder("y", 1.5, (x, top - 2.4), y0 - 0.15, y0 + 0.2, REAR_DOT, segments=12)
 part.to_object("IronSightRear", origin=(0.0, y0, SLIDE_TOP), parent=slide)
 part = Part()
 y0, y1 = FRONT_SIGHT_Y
-part.prism("x", [(y0, SLIDE_TOP - 0.5), (y1, SLIDE_TOP - 0.5), (y1, SIGHT_LINE_Z - 3.0), (y1 - 2.0, SIGHT_LINE_Z),
+part.prism("x", [(y0 - 5.0, SLIDE_TOP - 0.5), (y1, SLIDE_TOP - 0.5), (y1, RIB_TOP + 2.0), (y0 - 5.0, RIB_TOP - 0.5)],
+           -8.0, 8.0, SLIDE)
+part.prism("x", [(y0, RIB_TOP), (y1, RIB_TOP), (y1, SIGHT_LINE_Z - 4.0), (y1 - 3.0, SIGHT_LINE_Z),
                  (y0, SIGHT_LINE_Z)], -POST_HALF_WIDTH, POST_HALF_WIDTH, SLIDE)
-part.cylinder("y", 1.3, (0.0, SIGHT_LINE_Z - 1.8), y0 - 0.15, y0 + 0.2, FRONT_DOT, segments=12)
+part.cylinder("y", 1.9, (0.0, SIGHT_LINE_Z - 2.6), y0 - 0.15, y0 + 0.2, FRONT_DOT, segments=12)
 part.to_object("IronSightFront", origin=(0.0, y0, SLIDE_TOP), parent=slide)
 empty("AimPoint", (0.0, REAR_SIGHT_Y[0], SIGHT_LINE_Z), slide)
 # The middle of the muzzle, where the shots come out.
-empty("MuzzlePoint", (0.0, SLIDE_FRONT, BORE_Z), None)
+empty("MuzzlePoint", (0.0, SF, BORE_Z), None)
 # Shrunk with the gun, so a sight on it keeps its true size next to it.
-empty("SightMount", (0.0, SIGHT_MOUNT_Y, SLIDE_TOP), slide, scale=SCALE)
+empty("SightMount", (0.0, SIGHT_MOUNT_Y, RIB_TOP), slide, scale=SCALE)
 # A plate over the striker at the back of the slide.
 part = Part()
-part.box(-6.5, 6.5, -0.5, 0.3, 6.0, 20.0, STEEL)
+part.box(-9.0, 9.0, -0.5, 0.3, 8.0, 30.0, STEEL)
 part.to_object("StrikerPlate", parent=slide)
 
 # The barrel: its chamber shows through the ejection port, its muzzle through
 # the front of the slide, and more of it when the slide is back.
 part = Part()
-part.box(-6.8, 6.8, 58.0, 100.0, 7.0, 25.5, STEEL)
-part.tube(6.5, 4.6, 98.0, SLIDE_FRONT - 0.3, 20.0, BORE_Z, STEEL)
+part.box(-9.5, 9.5, 96.0, 176.0, BORE_Z - 10.5, BORE_Z + 8.0, STEEL)
+part.tube(9.5, 6.4, 150.0, SF - 0.3, 26.0, BORE_Z, STEEL, segments=24)
 part.to_object("Barrel")
 
-# The frame: the rails under the slide, the dust cover with an accessory rail,
-# the trigger guard, the tang, and the grip (lofted round, on its slant, a
-# little fuller in the palm and flared at the magazine well).
+# The frame: the wedge round the barrel (a triangle seen from the front) with
+# a rail under it, the body under the slide, the square trigger guard, the
+# tang, and the grip (lofted round, on its slant, fat in the palm).
 part = Part()
-part.prism("x", [(-4.0, 0.0), (SLIDE_FRONT - 1.0, 0.0), (SLIDE_FRONT - 1.0, -10.0), (SLIDE_FRONT - 5.0, -14.0),
-                 (97.0, -14.0), (94.0, -9.0), (20.0, -9.0), (10.0, -10.0), (2.0, -8.5), (-4.5, -5.0),
-                 (TANG_Y, -2.5)], -11.0, 11.0, FRAME)
-part.box(-5.0, 5.0, 102.0, 138.0, -16.0, -13.5, FRAME)
-for i in range(5):
-    y = 102.0 + i * 8.0
-    part.box(-8.0, 8.0, y, y + 4.0, -17.5, -13.5, FRAME)
-part.band([(95.0, -8.0), (95.5, -26.0), (93.0, -31.0), (88.0, -33.0), (60.0, -33.0), (50.0, -30.0)], 4.5,
-          -5.5, 5.5, FRAME)
-sections = [(2.0, -21.0, 21.0, 10.5, 3.0), (-8.0, -21.5, 21.0, 13.5, 7.0), (-35.0, -22.0, 21.0, 14.2, 8.0),
-            (-66.0, -21.5, 20.5, 13.6, 7.5), (-73.0, -23.0, 22.0, 14.6, 7.0)]
+part.prism("y", [(-14.0, 0.5), (14.0, 0.5), (8.5, -10.0), (4.5, -18.0), (-4.5, -18.0), (-8.5, -10.0)],
+           112.0, SF - 1.5, FRAME)
+for i in range(6):
+    y = 122.0 + i * 20.0
+    part.box(-9.0, 9.0, y, y + 8.0, -20.0, -16.0, FRAME)
+part.prism("x", [(-4.0, 0.5), (124.0, 0.5), (124.0, -14.0), (66.0, -14.0), (44.0, -17.0), (22.0, -22.0),
+                 (6.0, -22.0), (-3.0, -15.0), (-8.5, -9.0), (TANG_Y, -3.0)], -14.0, 14.0, FRAME)
+part.band([(121.0, -13.0), (122.0, -34.0), (116.0, -43.0), (100.0, -46.0), (50.0, -46.0)], 7.0, -6.0, 6.0, FRAME)
+sections = [(2.0, -24.0, 24.0, 14.5, 5.0), (-10.0, -25.5, 25.5, 16.0, 8.0), (-50.0, -26.0, 25.5, 16.4, 8.5),
+            (-88.0, -25.5, 25.0, 16.0, 8.0), (GRIP_BOTTOM, -26.0, 25.5, 16.4, 8.5)]
 part.loft([[on_grip(x, u, v) for x, u in rounded_rect(-half, half, back, front, radius)]
            for v, back, front, half, radius in sections], FRAME)
+# Ridged rubber panels on both sides of the grip.
+for side in (-1.0, 1.0):
+    x0, x1 = (16.0, 17.3) if side > 0 else (-17.3, -16.0)
+    part.prism("x", [on_grip(0.0, u, v)[1:] for u, v in ((-19.0, -16.0), (19.0, -16.0), (19.0, -83.0), (-19.0, -83.0))],
+               x0, x1, GRIP)
+    for k in range(10):
+        v = -20.0 - k * 6.4
+        part.prism("x", [on_grip(0.0, u, vv)[1:] for u, vv in ((-17.0, v), (17.0, v), (17.0, v - 1.8), (-17.0, v - 1.8))],
+                   side * 16.2, side * 18.0, GRIP)
 # The takedown pin, through the frame over the trigger.
-part.cylinder("x", 1.6, (86.0, -4.5), -11.4, 11.4, STEEL, segments=12)
+part.cylinder("x", 2.2, (104.0, -6.0), -14.4, 14.4, STEEL, segments=12)
 frame = part.to_object("Frame")
 
 part = Part()
 # Down from its pin, its tip curling forward towards the muzzle.
-part.band([(72.0, -8.0), (71.4, -13.0), (72.2, -18.0), (74.0, -22.0), (76.5, -24.5)], 4.2, -3.0, 3.0, STEEL)
-part.to_object("Trigger", origin=(0.0, 72.0, -9.0))
+part.band([(92.0, -10.0), (91.4, -17.0), (92.4, -24.0), (94.6, -29.0), (98.0, -32.0)], 4.8, -3.5, 3.5, STEEL)
+part.to_object("Trigger", origin=(0.0, 92.0, -11.0))
 
 # The slide stop, on the left over the trigger, turning on its front pin.
 part = Part()
-part.prism("x", [(91.0, -6.5), (91.0, -2.5), (66.0, -2.0), (59.0, -1.0), (57.0, -3.0), (59.0, -7.0), (66.0, -6.5)],
-           -12.6, -10.8, STEEL)
-part.cylinder("x", 2.0, (88.0, -4.5), -13.0, -12.4, STEEL, segments=12)
-part.to_object("SlideStop", origin=(-11.0, 88.0, -4.5))
+part.prism("x", [(112.0, -8.0), (112.0, -3.5), (82.0, -3.0), (74.0, -1.5), (71.0, -4.0), (74.0, -8.5), (82.0, -8.0)],
+           -17.2, -14.8, STEEL)
+part.cylinder("x", 2.4, (108.0, -5.7), -17.6, -14.4, STEEL, segments=12)
+part.to_object("SlideStop", origin=(-16.0, 108.0, -5.7))
 
+# The magazine release, a button on the left behind the trigger guard.
 part = Part()
-part.box(-14.6, -12.0, 47.0, 54.0, -14.0, -9.5, STEEL)
-part.to_object("MagRelease", origin=(-12.0, 50.5, -11.75))
+part.box(-19.6, -15.8, 55.0, 64.0, -29.0, -20.0, STEEL)
+part.to_object("MagRelease", origin=(-16.0, 59.5, -24.5))
+
+# The safety: a lever on each side of the frame behind the slide stop, with a
+# knurled thumb pad.
+part = Part()
+for side in (-1.0, 1.0):
+    part.box(*sorted((side * 14.2, side * 19.0)), 8.0, 30.0, -9.0, -3.0, STEEL)
+    for k in range(4):
+        y = 10.0 + k * 5.0
+        part.box(*sorted((side * 19.0, side * 20.2)), y, y + 2.4, -9.0, -3.0, STEEL)
+part.to_object("Safety", origin=(0.0, 19.0, -6.0))
 
 # The magazine, built along its own axes (down the grip is -Z) and turned onto
 # the grip's slant: the body (hidden in the grip until it drops), the feed
-# lips with the top round in them, and the base plate under the grip.
+# lips with the top round (a fat .50 cartridge) in them, and the base plate
+# under the grip.
 part = Part()
-part.prism("z", rounded_rect(-10.5, 10.5, -15.0, 15.5, 2.5, per_corner=3), -72.5, -4.0, STEEL)
-part.prism("z", rounded_rect(-7.0, 7.0, -15.0, 12.0, 2.0, per_corner=3), -4.0, 0.0, STEEL)
-part.cylinder("y", 4.7, (0.0, -1.0), -14.0, 4.0, BRASS)
-part.prism("y", circle((0.0, -1.0), 4.5, 16), 4.0, 8.0, COPPER)
-part.prism("y", circle((0.0, -1.0), 3.0, 16), 8.0, 11.0, COPPER)
-part.prism("z", rounded_rect(-12.0, 12.0, -16.5, 17.5, 3.0, per_corner=3), -77.5, -72.5, FRAME)
-part.box(-9.0, 9.0, 15.0, 19.0, -77.5, -74.0, FRAME)
+part.prism("z", rounded_rect(-11.0, 11.0, -20.0, 21.0, 3.0, per_corner=3), GRIP_BOTTOM, -4.0, STEEL)
+part.prism("z", rounded_rect(-8.5, 8.5, -20.0, 17.0, 2.5, per_corner=3), -4.0, 0.0, STEEL)
+part.cylinder("y", 6.8, (0.0, -0.5), -20.0, 6.0, BRASS, segments=20)
+part.prism("y", circle((0.0, -0.5), 6.4, 20), 6.0, 15.0, COPPER)
+part.prism("y", circle((0.0, -0.5), 4.2, 20), 15.0, 20.0, COPPER)
+part.prism("z", rounded_rect(-14.0, 14.0, -24.0, 25.0, 3.5, per_corner=3), GRIP_BOTTOM - 5.5, GRIP_BOTTOM, FRAME)
+part.box(-10.0, 10.0, 23.0, 27.0, GRIP_BOTTOM - 5.5, GRIP_BOTTOM - 1.5, FRAME)
 magazine = part.to_object("Magazine")
 place(magazine, Vector((0.0, *MAGAZINE_TOP)) * MM, None, (-GRIP_ANGLE, 0.0, 0.0))
 

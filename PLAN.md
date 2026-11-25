@@ -20,9 +20,16 @@ sights were made here already. Each new gun gets:
 ### Done so far
 
 - `art/pistol.py` builds the pistol (`assets/models/weapons/pistol.glb`).
-  It is a compact striker-fired design, a black slide on a dark grey frame,
-  with three-dot iron sights. It takes the reflex and the 2x; the red dot is
-  too big for its slide. The downloaded M1911 is gone.
+  It was a compact striker-fired design, too weak to use; on 2026-11-25 the
+  user asked for a Desert Eagle instead. Now a hand cannon 270 mm long at
+  true size (held at 190 mm, `SCALE` 0.704): a big black slide with a slotted
+  rib along its top and a big ejection port on the right, over a wedge-shaped
+  barrel shroud with an accessory rail, a dark grey frame with a square
+  trigger guard, and a fat grip with ridged rubber panels. Three-dot irons
+  stand on the rib. It takes the reflex and the 2x (the red dot is too big
+  for its slide). Stats to match: 55 damage (a head shot kills outright),
+  0.4 s between shots, seven rounds, hard kick, a deeper report in
+  `audio.rs`. The downloaded M1911 is gone.
 - `art/smg.py` builds the SMG (`assets/models/weapons/smg.glb`), a compact
   PDW 410 mm long at true size: a black upper with a full-length rail on a
   dark grey lower, the magazine (curved, 36 rounds) ahead of the trigger
@@ -111,8 +118,7 @@ The user chose this; do not ask again. Every gun is designed at true size and
 shrunk, as a whole, to the length the game holds it (`size[2]` in
 `src/weapons.rs`). Its `SightMount` is shrunk by the same factor, so a sight
 (built in true metres) keeps its true size next to the gun. The scale lives
-in the model file, never in code. `art/pistol.py` shows how; there
-`SCALE` is 1, because the game holds the pistol at a real compact's length.
+in the model file, never in code. `art/pistol.py` shows how.
 
 In the gun's script:
 

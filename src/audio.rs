@@ -921,11 +921,11 @@ fn handling(weapon_id: WeaponId) -> Handling {
             weight: 1.3,
             slap: true,
         },
-        // A small steel magazine and a heavy slide.
+        // A fat steel magazine and a very heavy slide.
         PISTOL => Handling {
-            pitch: 1.45,
+            pitch: 1.1,
             metal: 0.9,
-            weight: 0.6,
+            weight: 0.95,
             slap: false,
         },
         // Aluminium.
@@ -1381,15 +1381,15 @@ fn report(weapon_id: WeaponId) -> Report {
             level: 0.83,
         },
         PISTOL => Report {
-            length: 0.7,
-            blast: (0.001, 0.9),
-            crack: (5500.0, 200.0, 2.0),
-            boom: (260.0, 110.0, 40.0, 0.7),
-            body: (2000.0, 60.0, 1.2),
-            action: Some((0.028, 2800.0, 0.3)),
-            tail: (900.0, 8.0, 1.0),
-            drive: 1.8,
-            level: 0.78,
+            length: 0.95,
+            blast: (0.0012, 1.0),
+            crack: (6500.0, 170.0, 2.8),
+            boom: (170.0, 70.0, 28.0, 0.8),
+            body: (1500.0, 40.0, 1.4),
+            action: Some((0.03, 2200.0, 0.3)),
+            tail: (700.0, 5.0, 1.4),
+            drive: 2.3,
+            level: 0.85,
         },
         _ => Report {
             length: 0.9,
