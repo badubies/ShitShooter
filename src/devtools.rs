@@ -738,7 +738,7 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
                 &mut count.reloads
             }
             Sound::Pin | Sound::Throw => &mut count.throws,
-            Sound::Bounce(..) => &mut count.bounces,
+            Sound::Bounce(..) | Sound::Roll(..) => &mut count.bounces,
             Sound::Explosion | Sound::Flashbang | Sound::SmokePop => &mut count.explosions,
             Sound::Ringing => &mut count.explosions,
             Sound::ArmorBreak | Sound::ArmorBroken | Sound::ArmorPickup => &mut count.armor,

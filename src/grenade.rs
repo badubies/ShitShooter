@@ -46,6 +46,9 @@ const THROWN_DROP: f32 = GRENADE_HALF - 0.05;
 /// Slower than this, in metres a second, a grenade has come to rest and rolls
 /// over onto its side.
 const RESTING_SPEED: f32 = 0.5;
+/// Slower than this along the ground when it stops bouncing, a grenade is
+/// not heard rolling.
+const ROLL_SOUND: f32 = 1.0;
 
 pub struct GrenadePlugin;
 
@@ -102,6 +105,8 @@ struct Grenade {
     clock: f32,
     age: f32,
     fuse: f32,
+    /// Its roll along the ground since it last bounced has been heard.
+    rolled: bool,
 }
 
 /// A fireball or flash: a glowing sphere that swells and shrinks away, or the
@@ -150,6 +155,7 @@ fn handle_net(
                         clock: 0.0,
                         age: 0.0,
                         fuse: *fuse,
+                        rolled: false,
                     },
                     Transform::from_translation(pos),
                     Visibility::default(),
@@ -327,12 +333,23 @@ fn simulate(
             grenade.age += GRENADE_STEP;
             grenade.previous = grenade.pos;
             let hit = map.0.step_grenade(&mut grenade.pos, &mut grenade.vel, GRENADE_STEP);
+            let below = grenade.pos - Vec3::Y * GRENADE_HALF;
             if hit > BOUNCE_SOUND {
-                let below = grenade.pos - Vec3::Y * GRENADE_HALF;
                 sounds.write(SoundCue {
                     sound: Sound::Bounce(surface_under(&map.0, below), hit),
                     at: Some(grenade.pos),
                 });
+                grenade.rolled = false;
+            } else if hit > 0.0 && grenade.vel.y.abs() < 0.5 && !grenade.rolled {
+                // Down for good, but still moving along: it rolls and skids.
+                let speed = Vec2::new(grenade.vel.x, grenade.vel.z).length();
+                if speed > ROLL_SOUND {
+                    sounds.write(SoundCue {
+                        sound: Sound::Roll(surface_under(&map.0, below), speed),
+                        at: Some(grenade.pos),
+                    });
+                }
+                grenade.rolled = true;
             }
         }
         transform.translation = grenade.previous.lerp(grenade.pos, grenade.clock / GRENADE_STEP);
