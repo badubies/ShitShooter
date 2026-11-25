@@ -3,7 +3,7 @@ octagonal handguard under one full-length top rail, on a dark grey polymer
 lower with a flared magazine well, a curved 30-round magazine, and a
 solid polymer stock with a rubber cheek pad on the back of the receiver. A ghost-ring rear sight and a post
 with an orange dot between guard ears, both on the rail; a mount on the
-rail for the red dot, reflex and 2x.
+rail for the reflex, 2x and 3x.
 
 Built for the game, so it is placed in the hand as it is, with no turning or
 scaling in code:

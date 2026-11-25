@@ -26,8 +26,7 @@ sights were made here already. Each new gun gets:
   rib along its top and a big ejection port on the right, over a wedge-shaped
   barrel shroud with an accessory rail, a dark grey frame with a square
   trigger guard, and a fat grip with ridged rubber panels. Three-dot irons
-  stand on the rib. It takes the reflex and the 2x (the red dot is too big
-  for its slide). Stats to match: 55 damage (a head shot kills outright),
+  stand on the rib. It takes the reflex and the 2x. Stats to match: 55 damage (a head shot kills outright),
   0.4 s between shots, seven rounds, hard kick, a deeper report in
   `audio.rs`. The downloaded M1911 is gone.
 - `art/smg.py` builds the SMG (`assets/models/weapons/smg.glb`), a compact
@@ -37,15 +36,15 @@ sights were made here already. Each new gun gets:
   `Bolt` shows through the port and carries the charging handle, which
   sticks out of a slot on the left, the side seen from the hip, so cocking
   shows. Irons: a ghost ring (`APERTURE_RADIUS`, `RING_RADIUS`) and a post
-  with an orange dot between guard ears. It takes the red dot, reflex and
-  2x. The downloaded MP7 is gone.
+  with an orange dot between guard ears. It takes the reflex and 2x. The
+  downloaded MP7 is gone.
 - `art/rifle.py` builds the rifle (`assets/models/weapons/rifle.glb`), a
   carbine 840 mm long at true size, built like the SMG: one top rail over
   the upper and an octagonal slotted handguard, a curved 30-round magazine
   ahead of the trigger, a slotted flash hider, the same bolt and charging
   handle, and a solid stock with a rubber cheek pad (it was a skeleton at
-  first; the user wanted more body). It takes the red dot, reflex and 2x. The
-  downloaded M4A1 is gone.
+  first; the user wanted more body). It takes the reflex (its default), 2x
+  and 3x. The downloaded M4A1 is gone.
 - `art/dmr.py` builds the DMR (`assets/models/weapons/dmr.glb`), a new gun
   (id 3, between the shotgun and the sniper): semi-automatic, 45 damage
   (a head and a body shot kill through the starting armor), 20 rounds,
@@ -54,7 +53,7 @@ sights were made here already. Each new gun gets:
   straight magazine, a ported muzzle brake, a solid stock with an
   adjustable cheek piece and a storage door. Its sights sit forward on the
   rail as on the sniper, so the stock stays out of the aimed view. It takes
-  the red dot, reflex, 2x, 3x and scope (the 2x by default). Its own
+  the reflex, 2x, 3x and scope (the 2x by default). Its own
   gunshot and reload handling in `audio.rs`.
 - A 3x sight (`assets/models/sights/3x.glb`, by `art/sights.py` with the
   reflex and 2x): the 2x made bulkier, with thicker walls, a bigger window
@@ -71,16 +70,19 @@ sights were made here already. Each new gun gets:
   receiver's sides filled the sight picture, and on the stock the user did
   not want them, so there are none. 800 mm at true size, held at 290 mm
   (first 940 and 340; the user asked for it shorter). Ghost-ring rear
-  and orange post on the rail, laid out on the rifle's heights. It still
-  takes only the 2x (a settings test says so). `Shell` lies in the
+  and orange post on the rail, laid out on the rifle's heights. It takes
+  the reflex and the 2x, not the 3x (a settings test says so). `Shell` lies in the
   receiver and is shown only while loading.
 - `art/sniper.py` builds the sniper (`assets/models/weapons/sniper.glb`), a
   bolt-action rifle 1200 mm long at true size: a black round receiver and
   heavy barrel in a dark aluminium chassis, a slotted handguard under one
   full-length rail, a folded bipod, a ported muzzle brake, a five-round box
   magazine, and a solid stock with an adjustable cheek riser on posts. Its
-  bolt is worked by hand (see the node names below). It takes the red dot,
-  reflex, 2x and scope. The downloaded SCAR is gone.
+  bolt is worked by hand (see the node names below). It takes the reflex,
+  2x, 3x and scope. The downloaded SCAR is gone.
+- The red dot was removed on 2026-11-25 (the user's call): the reflex
+  took its place on every gun, and the rifle starts with it. The sights
+  left are the reflex, 2x, 3x and scope.
 - Every magazine reload ends by cocking the gun (slide or bolt drawn back,
   slowly, then let go); see the node names below.
 - Every weapon model is placed as it is (`Model` in `src/weapons.rs`):
@@ -91,9 +93,8 @@ sights were made here already. Each new gun gets:
   centred) baked into their files, and `Fit` is gone.
 - The sights face forward (+Y in Blender) as the guns do, so a gun's
   `SightMount` puts them on as they are, with no turn. `art/sights.py`
-  builds the reflex and 2x that way; the red dot and scope
-  (`art/red_dot.blend`, `art/scope.blend`, made by hand) were turned half
-  round in their files. In the game everything looks as it did.
+  builds the reflex, 2x and 3x that way; the scope (`art/scope.blend`,
+  made by hand) was turned half round in its file. In the game everything looks as it did.
 - Iron sights with an `AimPoint`. A gun's own `AimPoint` node (outside any
   sight) becomes `Fitted::iron_aim`. Aiming down the irons holds it
   `sight_relief` in front of the eye, as for a sight's dot, and hides the
@@ -246,7 +247,7 @@ irons alone (a new field) would put it behind the eye.
   Name other parts too (`Trigger`, `SlideStop`, `MagRelease`, a charging
   handle...), with sensible pivots, for animations to come.
 - `src/weapons.rs`: point the gun's `Model` at the new file and list its
-  `sights`. The long guns take the red dot, reflex and 2x; the rifle, DMR
+  `sights`. The long guns take the reflex and 2x; the rifle, DMR
   and sniper the 3x too, and the DMR and sniper the scope. Every gun must take `TWO_X`
   (a test checks it). Then delete the downloaded model and its `.blend`
   (`git rm`): git keeps them.
@@ -308,8 +309,8 @@ players' guns only drop their magazine (`remote.rs`).
   sniper's, pistol's, knife's and grenade's ids).
 - `dropped magazines: []` at the end of the self-test is how `main` already
   was; it is not a regression.
-- The red dot and scope were built here, in Blender by hand
-  (`art/red_dot.blend`, `art/scope.blend`), with no scripts. The reflex, 2x
+- The scope was built here, in Blender by hand (`art/scope.blend`), with
+  no scripts. The reflex, 2x
   and 3x come from `art/sights.py`.
 
 ### Steps

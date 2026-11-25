@@ -2,7 +2,7 @@
 receiver with a full-length top rail on a dark grey polymer lower, its
 magazine ahead of the trigger guard and its stock folded along the right
 side. A ghost-ring rear sight and a post with an orange dot between guard
-ears, both on the rail; a mount on the rail for the red dot, reflex and 2x.
+ears, both on the rail; a mount on the rail for the reflex and 2x.
 
 Built for the game, so it is placed in the hand as it is, with no turning or
 scaling in code:

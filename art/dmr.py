@@ -4,7 +4,7 @@ dark grey polymer lower with a straight 20-round magazine for its heavier
 cartridge, a long barrel with a ported muzzle brake, and a solid stock with
 an adjustable cheek piece. Backup irons on the rail (a ring at the back, a
 post with an orange dot between guard ears at the front), and a mount on the
-rail for the red dot, reflex and 2x.
+rail for the reflex, 2x, 3x and scope.
 
 Built for the game, so it is placed in the hand as it is, with no turning or
 scaling in code:
