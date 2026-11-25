@@ -1,7 +1,7 @@
 """Builds the rifle: an original carbine, a black upper receiver and
 octagonal handguard under one full-length top rail, on a dark grey polymer
 lower with a flared magazine well, a curved 30-round magazine, and a
-skeleton stock on the back of the receiver. A ghost-ring rear sight and a post
+solid polymer stock with a rubber cheek pad on the back of the receiver. A ghost-ring rear sight and a post
 with an orange dot between guard ears, both on the rail; a mount on the
 rail for the red dot, reflex and 2x.
 
@@ -14,10 +14,10 @@ scaling in code:
 - It is designed at true size (`TRUE_LENGTH`) and shrunk by `SCALE` to that
   length, and its `SightMount` is scaled by `SCALE` too, so a sight (built
   in true metres) keeps its true size next to the gun (see PLAN.md, Round 4).
-- Aimed, the stock reaches back past the eye. It is a narrow skeleton whose
-  comb drops away from the receiver towards the butt, and the rear sight is
-  well forward of the back of the rail, so little of it shows at the bottom
-  of the view.
+- Aimed, the stock reaches back past the eye. Its comb drops away from the
+  receiver towards the butt and is narrow along the top (the stock is full
+  only lower down), and the rear sight is well forward of the back of the
+  rail, so little of it shows at the bottom of the view.
 
 The nodes the game looks for (see src/gun_model.rs):
 - Bolt: kicked back by each shot, held back when empty and drawn back to
@@ -358,24 +358,123 @@ part.box(-14.0, 14.0, -2.0, 0.0, -2.0, 46.0, RECEIVER)
 part.cylinder("x", 4.0, (-1.0, 22.0), -18.0, -14.0, STEEL, segments=14)
 part.to_object("EndPlate")
 
-# The stock: a skeleton of two narrow bars, lofted round, from the end plate
-# back to the butt plate: the comb, dropping away from the receiver so it
-# stays under the eye when aiming, and the bar under it; then the rubber pad.
+# The stock: a solid polymer stock from the end plate back to the butt. Its
+# comb drops away from the receiver so it stays under the eye when aiming,
+# and its top is narrow, so from the eye it is a thin strip; it is full
+# below, where the eye does not see it. On each side a sculpted pocket at the
+# front, a ribbed grip panel at the back, a screw at the front and a sling
+# socket near the butt; a sling slot through the toe, a ribbed rubber cheek
+# pad along the comb, and a ribbed rubber butt pad on a polymer plate.
+STOCK_FRONT = -2.0
 STOCK_BACK = REAR_Y + 14.0
+
+
+def along_stock(y):
+    """How far back along the stock `y` is, from 0 at its front to 1 at the butt."""
+    return (y - STOCK_FRONT) / (STOCK_BACK - STOCK_FRONT)
+
+
+def comb_z(y):
+    return 46.0 - 22.0 * along_stock(y)
+
+
+def toe_z(y):
+    return -2.0 - 48.0 * along_stock(y)
+
+
+def stock_half_width(y):
+    return 13.0 + 1.5 * along_stock(y)
+
+
+def stock_section(y):
+    """The stock across, at `y`: narrow along the comb, full below it."""
+    t = along_stock(y)
+    top, bottom, half, comb = comb_z(y), toe_z(y), stock_half_width(y), 6.5 + 1.0 * t
+    right = [(half - 5.0, bottom), (half - 1.5, bottom + 1.5), (half, bottom + 5.0), (half, top - 20.0),
+             (half - 1.0, top - 15.0), (comb + 3.5, top - 6.0), (comb + 1.2, top - 1.5), (comb - 1.5, top)]
+    return [(x, y, z) for x, z in right + [(-x, z) for x, z in reversed(right)]]
+
+
+def along_lines(y0, y1, below_comb, above_toe):
+    """A four-sided outline on the side of the stock, from `y0` back to `y1`,
+    its top and bottom following the comb and the toe, as (y, z) points."""
+    return [(y0, toe_z(y0) + above_toe), (y0, comb_z(y0) - below_comb), (y1, comb_z(y1) - below_comb),
+            (y1, toe_z(y1) + above_toe)]
+
+
+def rounded_polygon(corners, radius, per_corner=4):
+    """A polygon with each corner rounded off `radius` along each side of it."""
+    points = []
+    for i, (px, py) in enumerate(corners):
+        ends = []
+        for qx, qy in (corners[i - 1], corners[(i + 1) % len(corners)]):
+            length = math.hypot(qx - px, qy - py)
+            r = min(radius, length / 2.0)
+            ends.append((px + (qx - px) * r / length, py + (qy - py) * r / length))
+        (ax, ay), (bx, by) = ends
+        for k in range(per_corner + 1):
+            s = k / per_corner
+            points.append(((1 - s) ** 2 * ax + 2 * (1 - s) * s * px + s * s * bx,
+                           (1 - s) ** 2 * ay + 2 * (1 - s) * s * py + s * s * by))
+    return points
+
+
 part = Part()
-for front, back in (((34.0, 46.0), (10.0, 22.0)), ((-2.0, 10.0), (-48.0, -36.0))):
-    rings = []
-    for i in range(5):
-        t = i / 4
-        y = -1.0 + (STOCK_BACK + 1.0) * t
-        lo, hi = (front[k] + (back[k] - front[k]) * t for k in (0, 1))
-        rings.append([(x, y, z) for x, z in rounded_rect(-7.0, 7.0, lo, hi, 3.5)])
-    part.loft(rings, POLYMER)
-part.prism("y", rounded_rect(-16.0, 16.0, -50.0, 24.0, 5.0), STOCK_BACK - 6.0, STOCK_BACK, POLYMER)
-part.to_object("Stock")
+part.loft([stock_section(STOCK_FRONT + (STOCK_BACK - STOCK_FRONT) * i / 8) for i in range(9)], POLYMER)
+part.prism("y", rounded_rect(-16.0, 16.0, -50.0, 24.0, 5.0), STOCK_BACK - 6.0, STOCK_BACK + 0.5, POLYMER)
+stock = part.to_object("Stock")
+part = Part()
+pocket = rounded_polygon(along_lines(-30.0, -118.0, 14.0, 12.0), 8.0)
+for side in (-1.0, 1.0):
+    half = stock_half_width(-30.0)
+    part.prism("x", pocket, *sorted((side * (half - 2.5), side * (half + 3.0))), POLYMER)
+    half = stock_half_width(-200.0)
+    for i in range(6):
+        below = 22.0 + 5.0 * i
+        rib = [(-136.0, comb_z(-136.0) - below), (-136.0, comb_z(-136.0) - below - 2.2),
+               (-204.0, comb_z(-204.0) - below - 2.2), (-204.0, comb_z(-204.0) - below)]
+        part.prism("x", rounded_polygon(rib, 1.0, per_corner=2), *sorted((side * (half - 0.9), side * (half + 3.0))),
+                   POLYMER)
+slot = rounded_polygon([(-150.0, toe_z(-150.0) + 5.0), (-150.0, toe_z(-150.0) + 11.0),
+                        (-178.0, toe_z(-178.0) + 11.0), (-178.0, toe_z(-178.0) + 5.0)], 3.0)
+part.prism("x", slot, -20.0, 20.0, POLYMER)
+boolean(stock, part.to_object("StockCuts"), "DIFFERENCE")
+
+part = Part()
+for side in (-1.0, 1.0):
+    half = stock_half_width(-14.0)
+    part.cylinder("x", 3.4, (-14.0, 20.0), *sorted((side * (half - 1.0), side * (half + 0.8))), STEEL, segments=12)
+    part.box(*sorted((side * (half + 0.6), side * (half + 1.0))), -14.6, -13.4, 17.6, 22.4, RUBBER)
+    y, z = -210.0, toe_z(-210.0) + 16.0
+    half = stock_half_width(y)
+    part.cylinder("x", 5.0, (y, z), *sorted((side * (half - 1.0), side * (half + 1.2))), STEEL, segments=16)
+    part.cylinder("x", 2.8, (y, z), *sorted((side * (half + 1.1), side * (half + 1.4))), RUBBER, segments=12)
+part.to_object("StockFittings")
+
+# The cheek pad along the comb, ribbed across.
+part = Part()
+rings = []
+for i in range(7):
+    y = -66.0 + (-178.0 + 66.0) * i / 6
+    comb = 6.5 + 1.0 * along_stock(y) - 0.5
+    rings.append([(x, y, z) for x, z in rounded_rect(-comb, comb, comb_z(y) - 2.5, comb_z(y) + 2.2, 2.0, per_corner=3)])
+part.loft(rings, RUBBER)
+y = -72.0
+while y - 3.0 >= -172.0:
+    rib = [(y, comb_z(y) + 1.0), (y, comb_z(y) + 2.9), (y - 3.0, comb_z(y - 3.0) + 2.9), (y - 3.0, comb_z(y - 3.0) + 1.0)]
+    comb = 6.5 + 1.0 * along_stock(y) - 1.5
+    part.prism("x", rib, -comb, comb, RUBBER)
+    y -= 8.0
+part.to_object("CheekPad")
+
 part = Part()
 part.prism("y", rounded_rect(-16.0, 16.0, -50.0, 24.0, 5.0), REAR_Y, STOCK_BACK - 6.0, RUBBER)
-part.to_object("ButtPad")
+pad = part.to_object("ButtPad")
+part = Part()
+for i in range(8):
+    z = -44.0 + 8.5 * i
+    part.box(-20.0, 20.0, REAR_Y - 1.0, REAR_Y + 1.6, z, z + 3.0, RUBBER)
+boolean(pad, part.to_object("ButtPadGrooves"), "DIFFERENCE")
 
 # The bolt, with the extractor on its right; through the port it shows, and
 # when it is back the chamber does. The charging handle rides on it, out

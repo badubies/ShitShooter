@@ -35,7 +35,8 @@ sights were made here already. Each new gun gets:
   carbine 840 mm long at true size, built like the SMG: one top rail over
   the upper and an octagonal slotted handguard, a curved 30-round magazine
   ahead of the trigger, a slotted flash hider, the same bolt and charging
-  handle, and a skeleton stock. It takes the red dot, reflex and 2x. The
+  handle, and a solid stock with a rubber cheek pad (it was a skeleton at
+  first; the user wanted more body). It takes the red dot, reflex and 2x. The
   downloaded M4A1 is gone.
 - Every magazine reload ends by cocking the gun (slide or bolt drawn back,
   slowly, then let go); see the node names below.
@@ -134,8 +135,12 @@ and shows as a wedge up the bottom of the view. A solid stock on a buffer
 tube in line with the bore filled the bottom of the screen on the rifle.
 What fixed it:
 
-- a skeleton stock of two narrow bars (14 mm wide), the comb dropping away
-  from the receiver towards the butt;
+- the comb dropping away from the receiver towards the butt, and narrow
+  along the top (about 14 mm, widening only 15 mm or more below it), so
+  from the eye the stock is a strip no wider than the receiver. A skeleton
+  of two narrow bars did this too, but the user found it too skeletal, so
+  the rifle's stock is now solid, full below the comb, with pockets, a
+  ribbed panel, a cheek pad, a sling slot and sockets;
 - the rear sight well forward of the back of the rail (30 mm), which brings
   the whole gun back towards the eye, so more of the stock is behind it;
 - the sight line high enough over the rail (80 mm above the bottom of the
