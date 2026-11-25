@@ -270,21 +270,21 @@ pub fn touches_pickup(feet: Vec3, spot: Vec3) -> bool {
     (feet - spot).with_y(0.0).length() < 1.2 && (-0.5..1.5).contains(&(feet.y - spot.y))
 }
 
-const FLOOR: [f32; 3] = [0.20, 0.22, 0.26];
-const WALL: [f32; 3] = [0.30, 0.33, 0.40];
-const COVER: [f32; 3] = [0.75, 0.42, 0.18];
-const PILLAR: [f32; 3] = [0.45, 0.48, 0.55];
-const PLATFORM: [f32; 3] = [0.22, 0.45, 0.60];
-const LEDGE: [f32; 3] = [0.50, 0.30, 0.60];
+pub(crate) const FLOOR: [f32; 3] = [0.20, 0.22, 0.26];
+pub(crate) const WALL: [f32; 3] = [0.30, 0.33, 0.40];
+pub(crate) const COVER: [f32; 3] = [0.75, 0.42, 0.18];
+pub(crate) const PILLAR: [f32; 3] = [0.45, 0.48, 0.55];
+pub(crate) const PLATFORM: [f32; 3] = [0.22, 0.45, 0.60];
+pub(crate) const LEDGE: [f32; 3] = [0.50, 0.30, 0.60];
 
-const DEPOT_FLOOR: [f32; 3] = [0.25, 0.24, 0.22];
-const DEPOT_WALL: [f32; 3] = [0.36, 0.33, 0.30];
-const CONCRETE: [f32; 3] = [0.52, 0.51, 0.48];
-const CONTAINER_RED: [f32; 3] = [0.62, 0.20, 0.16];
-const CONTAINER_BLUE: [f32; 3] = [0.16, 0.34, 0.60];
-const CRATE: [f32; 3] = [0.62, 0.46, 0.24];
-const BARRIER: [f32; 3] = [0.80, 0.68, 0.20];
-const ROOF: [f32; 3] = [0.20, 0.42, 0.36];
+pub(crate) const DEPOT_FLOOR: [f32; 3] = [0.25, 0.24, 0.22];
+pub(crate) const DEPOT_WALL: [f32; 3] = [0.36, 0.33, 0.30];
+pub(crate) const CONCRETE: [f32; 3] = [0.52, 0.51, 0.48];
+pub(crate) const CONTAINER_RED: [f32; 3] = [0.62, 0.20, 0.16];
+pub(crate) const CONTAINER_BLUE: [f32; 3] = [0.16, 0.34, 0.60];
+pub(crate) const CRATE: [f32; 3] = [0.62, 0.46, 0.24];
+pub(crate) const BARRIER: [f32; 3] = [0.80, 0.68, 0.20];
+pub(crate) const ROOF: [f32; 3] = [0.20, 0.42, 0.36];
 
 /// Arena half size and wall height. Every map uses the same outer box.
 const A: f32 = 32.0;

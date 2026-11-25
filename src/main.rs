@@ -63,6 +63,8 @@ mod scenery;
 #[cfg(feature = "client")]
 mod settings;
 #[cfg(feature = "client")]
+mod textures;
+#[cfg(feature = "client")]
 mod ui;
 #[cfg(feature = "client")]
 mod weapon_panel;
@@ -111,6 +113,8 @@ pub struct LaunchArgs {
     pub server: ServerSettings,
     /// The `--bots` given, if any: the self-test plays against 3 bots unless told.
     pub bots: Option<usize>,
+    /// The `--map` given, if any: the self-test plays on Depot unless told.
+    pub map: Option<u8>,
     /// Hidden developer option: play a scripted match and save screenshots here.
     pub selftest: Option<String>,
 }
@@ -212,6 +216,7 @@ fn parse_args() -> Result<LaunchArgs, String> {
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
                     .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley, hamlet)"))? as u8;
+                args.map = Some(args.server.map);
             }
             "--airaccel" => {
                 let accel: u16 = number(&flag, value("number")?)?;
@@ -354,7 +359,7 @@ fn run_game(args: LaunchArgs) {
         .init_state::<AppState>()
         .add_plugins((
             (net::NetPlugin, browser::BrowserPlugin),
-            (world::WorldPlugin, scenery::SceneryPlugin),
+            (world::WorldPlugin, scenery::SceneryPlugin, textures::TexturesPlugin),
             player::PlayerPlugin,
             remote::RemotePlugin,
             combat::CombatPlugin,

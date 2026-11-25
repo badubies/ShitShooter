@@ -122,10 +122,10 @@ const CLUTTER: &[Placed] = &[
     (OAK, -20.0, 21.0, 0.0),
 ];
 
-const STONE: [f32; 3] = [0.50, 0.47, 0.42];
-const STONE_DARK: [f32; 3] = [0.38, 0.36, 0.33];
-const PLASTER: [f32; 3] = [0.72, 0.66, 0.55];
-const WOOD: [f32; 3] = [0.45, 0.32, 0.20];
+pub(crate) const STONE: [f32; 3] = [0.50, 0.47, 0.42];
+pub(crate) const STONE_DARK: [f32; 3] = [0.38, 0.36, 0.33];
+pub(crate) const PLASTER: [f32; 3] = [0.72, 0.66, 0.55];
+pub(crate) const WOOD: [f32; 3] = [0.45, 0.32, 0.20];
 
 /// A wall of blocks: (x0, z0, x1, z1, height above the ground, colour).
 type Wall = (f32, f32, f32, f32, f32, [f32; 3]);

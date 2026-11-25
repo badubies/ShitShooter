@@ -386,8 +386,30 @@ Done so far, worth knowing:
 - `src/valley.rs` tests walk a player up the stairs of the tall house, the
   barn loft, the warehouse mezzanine and the chapel tower to the belfry.
 - Re-run `art/map_props.py` after changing a model; it rewrites
-  `src/props.rs`. The selftest plays on Valley with `--map depot` (it
-  presses "next map" once); add `--port` if 7777 is busy.
+  `src/props.rs`. The selftest plays on Depot unless given `--map`
+  (`--map valley` to see the props); add `--port` if 7777 is busy.
+- Textures (`src/textures.rs`): every map surface, the props and the guns
+  are textured in code when the game starts, nothing downloaded. A model's
+  material gets a pattern by its name in the model file (`look`, with how
+  many model units one tile covers); a new material name stays plain until
+  it is listed there. A map block gets one by its colour (`block_look`,
+  matched against the colour constants in `map.rs` and `hamlet.rs`; a new
+  colour gets concrete), and each block has its own box mesh textured in
+  world metres (`block_mesh`). The ground, roads, road paint and water use
+  their x and z as texture coordinates (`flat_uvs`); the ground's vertex
+  colours still decide grass or earth. Anisotropic filtering is 4: at 16
+  Valley's frame rate halved. The
+  meshes get box-projected texture coordinates and tangents, and the
+  material's colour is divided by the texture's average, so a model keeps
+  the colour it was built with. The guns' steel, receivers, slides and
+  sight bodies are made metallic (colour 2.5 times their paint, glossier,
+  no normal map: on rounded parts the projection's seams show as lumps),
+  and a 2 m reflection probe (`GunReflections`) follows the first-person
+  camera with a mostly dark surround, a bright sky overhead and a thin
+  bright horizon, at 2.5 times the map's ambient. Only the gun in hand
+  reflects it; the loadout previews have no probe. To look at the patterns:
+  `TEXTURE_SHEET=<dir> cargo test write_sheet -- --include-ignored`
+  writes each one's colour and normal map as a BMP.
 
 - Conquest: `src/conquest.rs` (client), `update_conquest` and
   `conquest_spawn_group` in `src/server.rs`. Bots path-find with `src/nav.rs`

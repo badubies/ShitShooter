@@ -13,6 +13,7 @@ use bevy::{
 use crate::{
     props::PROPS,
     terrain::Terrain,
+    textures::{Pattern, Textured, flat_uvs},
     world::{GameMap, MainCamera, Sun},
 };
 
@@ -48,6 +49,7 @@ fn build_scenery(
     old: Query<Entity, With<Scenery>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    (mut images, mut textured): (ResMut<Assets<Image>>, ResMut<Textured>),
 ) {
     for entity in &old {
         commands.entity(entity).despawn();
@@ -65,54 +67,74 @@ fn build_scenery(
     let Some(terrain) = &map.terrain else {
         return;
     };
+    let mut dressed = |mut material: StandardMaterial, pattern: Pattern, tile: f32| {
+        textured.dress(&mut material, pattern, tile, &mut images);
+        material
+    };
 
     commands.spawn((
         Scenery,
-        Mesh3d(meshes.add(ground_mesh(terrain))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            perceptual_roughness: 0.95,
-            reflectance: 0.2,
-            ..default()
-        })),
+        Mesh3d(meshes.add(flat_uvs(ground_mesh(terrain)))),
+        MeshMaterial3d(materials.add(dressed(
+            StandardMaterial {
+                perceptual_roughness: 0.95,
+                reflectance: 0.2,
+                ..default()
+            },
+            Pattern::Ground,
+            4.0,
+        ))),
         Transform::IDENTITY,
     ));
 
-    let asphalt = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.17, 0.17, 0.18),
-        perceptual_roughness: 0.85,
-        depth_bias: 50.0,
-        ..default()
-    });
-    let paint = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.85, 0.82, 0.70),
-        perceptual_roughness: 0.7,
-        depth_bias: 100.0,
-        ..default()
-    });
+    let asphalt = materials.add(dressed(
+        StandardMaterial {
+            base_color: Color::srgb(0.17, 0.17, 0.18),
+            perceptual_roughness: 0.85,
+            depth_bias: 50.0,
+            ..default()
+        },
+        Pattern::Asphalt,
+        4.0,
+    ));
+    let paint = materials.add(dressed(
+        StandardMaterial {
+            base_color: Color::srgb(0.85, 0.82, 0.70),
+            perceptual_roughness: 0.7,
+            depth_bias: 100.0,
+            ..default()
+        },
+        Pattern::Paint,
+        2.0,
+    ));
     for road in map.roads.iter().filter(|road| road.paved) {
         let line = sample_line(&road.points, 2.0);
         commands.spawn((
             Scenery,
-            Mesh3d(meshes.add(strip_mesh(&line, road.width, |p| terrain.height(p.x, p.y) + 0.04, None))),
+            Mesh3d(meshes.add(flat_uvs(strip_mesh(&line, road.width, |p| terrain.height(p.x, p.y) + 0.04, None)))),
             MeshMaterial3d(asphalt.clone()),
             NotShadowCaster,
         ));
         // A dashed line down the middle.
         commands.spawn((
             Scenery,
-            Mesh3d(meshes.add(strip_mesh(&line, 0.15, |p| terrain.height(p.x, p.y) + 0.06, Some(2)))),
+            Mesh3d(meshes.add(flat_uvs(strip_mesh(&line, 0.15, |p| terrain.height(p.x, p.y) + 0.06, Some(2))))),
             MeshMaterial3d(paint.clone()),
             NotShadowCaster,
         ));
     }
 
-    let water = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.16, 0.30, 0.34, 0.78),
-        alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.08,
-        reflectance: 0.6,
-        ..default()
-    });
+    let water = materials.add(dressed(
+        StandardMaterial {
+            base_color: Color::srgba(0.16, 0.30, 0.34, 0.78),
+            alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 0.08,
+            reflectance: 0.6,
+            ..default()
+        },
+        Pattern::Water,
+        6.0,
+    ));
     for (points, width) in &map.water {
         let line: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.x, p.z)).collect();
         let heights: Vec<f32> = points.iter().map(|p| p.y).collect();
@@ -122,7 +144,7 @@ fn build_scenery(
             index += 1;
             h
         }, None);
-        commands.spawn((Scenery, Mesh3d(meshes.add(mesh)), MeshMaterial3d(water.clone()), NotShadowCaster));
+        commands.spawn((Scenery, Mesh3d(meshes.add(flat_uvs(mesh))), MeshMaterial3d(water.clone()), NotShadowCaster));
     }
 }
 

@@ -11,6 +11,7 @@ use crate::{
     map::Map,
     net::Session,
     protocol::{GRENADE_KINDS, HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, MODE_HILL},
+    textures::{Textured, block_look, block_mesh},
     ui::{BLUE, RED},
 };
 
@@ -309,6 +310,7 @@ fn build_map(
     map: Res<GameMap>,
     assets: Res<SharedAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    (mut meshes, mut images, mut textured): (ResMut<Assets<Mesh>>, ResMut<Assets<Image>>, ResMut<Textured>),
     old: Query<Entity, With<MapGeometry>>,
 ) {
     for entity in &old {
@@ -322,21 +324,25 @@ fn build_map(
             Some((_, handle)) => handle.clone(),
             None => {
                 let [r, g, b] = block.color;
-                let handle = materials.add(StandardMaterial {
+                let mut material = StandardMaterial {
                     base_color: Color::srgb(r, g, b),
                     perceptual_roughness: 0.9,
                     ..default()
-                });
+                };
+                let (pattern, tile) = block_look(block.color);
+                textured.dress(&mut material, pattern, tile, &mut images);
+                let handle = materials.add(material);
                 block_materials.push((block.color, handle.clone()));
                 handle
             }
         };
+        // A mesh of its own, so its texture is in metres and meets its
+        // neighbours'.
         commands.spawn((
             MapGeometry,
-            Mesh3d(assets.cube.clone()),
+            Mesh3d(meshes.add(block_mesh(block.min, block.max))),
             MeshMaterial3d(material),
-            Transform::from_translation((block.min + block.max) / 2.0)
-                .with_scale(block.max - block.min),
+            Transform::from_translation((block.min + block.max) / 2.0),
         ));
     }
 
