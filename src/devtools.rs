@@ -277,7 +277,7 @@ fn selftest_lobby(
     model: Res<PlayerModel>,
     sliders: Query<Entity, With<Slider>>,
     (settings, map, mut picker, mut final_scores): (Res<Settings>, Res<GameMap>, ResMut<PickerOpen>, ResMut<FinalScoresOpen>),
-    mut loadout: ResMut<LoadoutScreen>,
+    (mut loadout, mut hovered, mut answered_at): (ResMut<LoadoutScreen>, Local<Option<Vec2>>, Local<Option<f32>>),
     choices: Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
     match_choices: Query<(&MatchChoice, &UiGlobalTransform)>,
     window: Single<(Entity, &Window), With<PrimaryWindow>>,
@@ -317,11 +317,15 @@ fn selftest_lobby(
     if test.reached(1, 1.5) {
         test.capture("lobby.png");
     }
-    // The mode and map are picked in the match picker, open while they are clicked.
-    picker.0 = (1.6..3.0).contains(&test.clock);
+    // The mode and map are picked in the match picker, open while they are
+    // clicked and pictured. Not closed by the clock: picking a big map
+    // (Valley, Hamlet) stalls a frame for a quarter of a second, which once
+    // made the last click land after the picker had shut.
+    picker.0 = test.clock >= 1.6 && test.step <= 15;
     // The lobby's chips and cards, clicked: team deathmatch on Arena with
     // the bots' fire the other way, then back to the mode asked for (free
-    // for all unless `--mode`) on Depot (unless `--map`) with the bots' fire as asked. Each click is checked once the server has answered.
+    // for all unless `--mode`) on Depot (unless `--map`) with the bots'
+    // fire as asked.
     let scale = window.1.scale_factor();
     let card_at = |target: Choice| {
         choices.iter().find(|(choice, ..)| **choice == target).map(|(_, at, _)| at.translation / scale)
@@ -348,19 +352,44 @@ fn selftest_lobby(
                     session.mode, map.0.id, session.bots_hold_fire
                 );
             }
-            point(&test.pointer_target(window.0), &mut pointer, chip_at(target), false);
+            *hovered = chip_at(target);
+            point(&test.pointer_target(window.0), &mut pointer, *hovered, false);
         }
-        if test.reached(3 + 2 * index as u32, at + 0.1) {
-            point(&test.pointer_target(window.0), &mut pointer, chip_at(target), true);
+        let click = 3 + 2 * index as u32;
+        if test.step == click && test.clock >= at + 0.1 {
+            // The picker's chips are not where they end up the first frame it
+            // is shown: if the chip has moved since the pointer went to it,
+            // go to it again and click next frame.
+            let now = chip_at(target);
+            if now != *hovered {
+                *hovered = now;
+                point(&test.pointer_target(window.0), &mut pointer, now, false);
+            } else if test.reached(click, at + 0.1) {
+                point(&test.pointer_target(window.0), &mut pointer, now, true);
+            }
         }
     }
-    if test.reached(14, 2.9) {
+    // Once the server has answered the clicks (or it is clearly not going
+    // to), and the chips have faded to their new colours.
+    if test.step == 14
+        && answered_at.is_none()
+        && session.mode == test.mode
+        && map.0.id == test.map
+        && session.bots_hold_fire == test.bots_hold_fire
+    {
+        *answered_at = Some(test.clock);
+    }
+    let settled = answered_at.is_some_and(|at| test.clock >= at + 0.25);
+    if (settled || test.clock >= 4.0) && test.reached(14, 2.9) {
         println!(
             "[selftest] after clicking the chips and cards: mode {} map {} bots hold fire {}",
             session.mode, map.0.id, session.bots_hold_fire
         );
         point(&test.pointer_target(window.0), &mut pointer, None, false);
         test.capture("lobby_picker.png");
+        // The picture is of this frame: the picker shuts and the paint
+        // screen opens no sooner than the next.
+        return;
     }
     // Stripes on the paint job, and a look at them on the paint screen.
     if test.reached(15, 3.2) {
