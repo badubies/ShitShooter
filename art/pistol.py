@@ -9,6 +9,11 @@ scaling in code:
   so in the file the barrel points along -Z and up is +Y, as the game holds it.
 - Its length is the pistol's `size` in src/weapons.rs (0.15 m), and its origin
   is the middle of its bounding box (where the box gun's middle would be).
+- It is designed at true size (`TRUE_LENGTH`) and shrunk by `SCALE` to that
+  length, and its `SightMount` is scaled by `SCALE` too, so a sight (built
+  in true metres) keeps its true size next to the gun. A real compact pistol
+  is the length the game holds this one, so here `SCALE` is 1; the long guns
+  are held at about a third of their true size (see PLAN.md, Round 4).
 
 The nodes the game looks for (see src/gun_model.rs):
 - Slide: kicked back by each shot and held back when empty. It carries the
@@ -34,15 +39,19 @@ from mathutils import Vector
 
 ROOT = sys.argv[sys.argv.index("--") + 1]
 
-# Laid out in millimetres, the slide's rear bottom edge at y = 0, z = 0. Every
-# vertex is turned into metres as it is made, and the whole gun is centred on
-# its origin at the end.
-MM = 0.001
-# The pistol's length in src/weapons.rs.
+# The pistol's length in src/weapons.rs, in millimetres: how long the game holds it.
 LENGTH = 150.0
+# How long it is at true size, which it is laid out at; everything is
+# shrunk by `SCALE` to `LENGTH`, sights on its mount included.
+TRUE_LENGTH = 150.0
+SCALE = LENGTH / TRUE_LENGTH
+# Laid out in true millimetres, the slide's rear bottom edge at y = 0, z = 0.
+# Every vertex and position is turned into game metres with `MM` as it is
+# made, and the whole gun is centred on its origin at the end.
+MM = 0.001 * SCALE
 # The tang of the frame over the web of the hand is the rearmost point.
 TANG_Y = -6.5
-SLIDE_FRONT = LENGTH + TANG_Y
+SLIDE_FRONT = TRUE_LENGTH + TANG_Y
 SLIDE_HALF_WIDTH = 12.5
 SLIDE_TOP = 27.0
 BORE_Z = 13.5
@@ -193,11 +202,12 @@ def place(obj, origin, parent, rotation):
         obj.location = origin
 
 
-def empty(name, at, parent, rotation=(0.0, 0.0, 0.0)):
+def empty(name, at, parent, rotation=(0.0, 0.0, 0.0), scale=1.0):
     obj = bpy.data.objects.new(name, None)
     obj.empty_display_size = 0.006
     COLLECTION.objects.link(obj)
     place(obj, Vector(at) * MM, parent, rotation)
+    obj.scale = (scale, scale, scale)
     return obj
 
 
@@ -306,7 +316,8 @@ part.prism("x", [(y0, SLIDE_TOP - 0.5), (y1, SLIDE_TOP - 0.5), (y1, SIGHT_LINE_Z
 part.cylinder("y", 1.3, (0.0, SIGHT_LINE_Z - 1.8), y0 - 0.15, y0 + 0.2, FRONT_DOT, segments=12)
 part.to_object("IronSightFront", origin=(0.0, y0, SLIDE_TOP), parent=slide)
 empty("AimPoint", (0.0, REAR_SIGHT_Y[0], SIGHT_LINE_Z), slide)
-empty("SightMount", (0.0, SIGHT_MOUNT_Y, SLIDE_TOP), slide, rotation=(0.0, 0.0, math.pi))
+# Turned round, as the sights face -Y, and shrunk with the gun.
+empty("SightMount", (0.0, SIGHT_MOUNT_Y, SLIDE_TOP), slide, rotation=(0.0, 0.0, math.pi), scale=SCALE)
 # A plate over the striker at the back of the slide.
 part = Part()
 part.box(-6.5, 6.5, -0.5, 0.3, 6.0, 20.0, STEEL)
@@ -381,8 +392,8 @@ middle = (low + high) / 2
 for obj in COLLECTION.objects:
     if obj.parent is None:
         obj.location -= middle
-size = (high - low) / MM
-print(f"pistol: {size.x:.1f} wide, {size.z:.1f} high, {size.y:.1f} long (mm)")
+size = (high - low) / 0.001
+print(f"pistol: {size.x:.1f} wide, {size.z:.1f} high, {size.y:.1f} long (game mm, x{SCALE:.3f} of true size)")
 assert abs(size.y - LENGTH) < 0.05, f"the pistol is {size.y:.2f} mm long, not {LENGTH}"
 
 bpy.ops.wm.save_as_mainfile(filepath=f"{ROOT}/art/pistol.blend")

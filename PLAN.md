@@ -2,7 +2,8 @@
 
 ## Round 4: original weapons
 
-Handoff for whoever picks this up next. The pistol is done; the SMG is next.
+Handoff for whoever picks this up next. The pistol is done; the SMG is next,
+and how big to build it is decided (below), so start straight away.
 
 Replace the downloaded guns (rifle, SMG, sniper) with originals built by
 scripts in `art/`, one gun at a time. The shotgun, the knife and all four
@@ -55,43 +56,63 @@ sights were made here already. Each new gun gets:
 - Run the self-test with `--bots-hold-fire`, or with `--bots 0`, unless the
   check needs bots that shoot (only the hurt and dead pictures do).
 
-### Decide before the SMG: scale of the long guns
+### Decided: how big to build the long guns
 
-The pistol was easy: the game holds it 0.15 m long, which is the size of a
-real compact pistol. So it was built at true size and the sights (real
-metres) fit it 1:1. The long guns are held much smaller than real:
+The user chose this; do not ask again. Every gun is designed at true size and
+shrunk, as a whole, to the length the game holds it (`size[2]` in
+`src/weapons.rs`). Its `SightMount` is shrunk by the same factor, so a sight
+(built in true metres) keeps its true size next to the gun. The scale lives
+in the model file, never in code. `art/pistol.py` shows how; there
+`SCALE` is 1, because the game holds the pistol at a real compact's length.
 
-| Gun | `size` length | A real one | Ratio |
-|---|---|---|---|
-| SMG | 0.20 m | about 0.45-0.6 m | about 0.4 |
-| Rifle | 0.30 m | about 0.85 m | about 0.35 |
-| Sniper | 0.44 m | about 1.1 m | about 0.4 |
-| Shotgun (ours, `Fit::Scaled`) | 0.34 m | its file is 1.07 m | 0.32 |
+In the gun's script:
 
-A gun built at its `size` length would have the shared sights at about 2.5
-to 3 times their true size next to it. Today the old guns shrink them
-through their `SightMount` scale: about 0.36 on the rifle, 1.0 on the
-shotgun (whose whole file is scaled 0.32). Ask the user which way to go:
+```python
+LENGTH = 200.0            # size[2] in src/weapons.rs, in mm: how long the game holds it
+TRUE_LENGTH = 410.0       # how long the design is at true size
+SCALE = LENGTH / TRUE_LENGTH
+MM = 0.001 * SCALE        # every vertex and position goes through MM
+...
+empty("SightMount", at, parent, rotation=(0.0, 0.0, math.pi), scale=SCALE)
+```
 
-- **Recommended:** build each gun at its `size` length, and give its
-  `SightMount` a scale equal to its ratio (e.g. 0.36). The scale is in the
-  file, not code, and the sights keep their true proportion to the gun.
-- Build at true size and raise `size` in `src/weapons.rs`. This makes the
-  first-person guns much bigger and moves them (`hip_position`, `aimed` in
-  `player.rs`, `REMOTE_GUN_SCALE` in `remote.rs`), which changes the feel.
-- Build at `size` length with sights 1:1, which would look oversized.
+Lay everything out in true millimetres; the script's closing check (the
+middle on the origin, length `LENGTH`) stays as it is in `pistol.py`. Use
+these true lengths. Each matches how big the sights look on the gun it
+replaces today, so the sights' look does not change:
 
-Iron sights at game scale: a rifle's `sight_relief` is 0.08, so its
-`AimPoint` (put it at the rear aperture or notch) sits 8 cm from the eye,
-and the front post about 0.3 m away. Size the notch and post for that
-(angles as on the pistol: notch about 2.3 degrees wide, post about 0.8,
-from where the eye is). The camera's near plane is 0.01 m. `art/preview.py`
-takes the relief and renders the sight picture from there.
+| Gun | `size[2]` | `TRUE_LENGTH` | `SCALE` | What to design |
+|---|---|---|---|---|
+| SMG | 200 mm | 410 mm | 0.488 | a compact PDW, stock folded |
+| Rifle | 300 mm | 840 mm | 0.357 | a carbine with a top rail |
+| Sniper | 440 mm | 1200 mm | 0.367 | a bolt-action rifle |
+
+Size the iron sights by how they look from the eye, not by real sizes. The
+pistol's look good:
+
+- **Notch:** about 2.3 degrees wide.
+- **Post:** about 0.8 degrees wide.
+- **Light gap:** clear either side of the post.
+
+Work them out in game metres (true mm times `SCALE`). Aiming holds the
+`AimPoint` (the rear aperture or notch) `sight_relief` from the eye: 0.08 m
+for the long guns. The front post is that plus the sight radius away. Angle
+in degrees is about 57.3 times width over distance. On the rifle that
+comes to:
+
+- a rear aperture about 3.2 mm across in game metres, 9 mm true;
+- a post about 4.6 mm in game metres, 13 mm true, some 0.33 m from the eye.
+
+Check with `art/preview.py`'s `irons_zoom.png` and show the user. Keep the
+rear sight's frame thin, as on the pistol. The camera's near plane is
+0.01 m, so nothing within 1 cm of the eye is drawn.
 
 ### How a gun is built (follow `art/pistol.py`)
 
-- Lay it out in millimetres with whatever zero is handy (the pistol uses the
-  slide's rear bottom edge); `MM` turns every vertex into metres.
+- Lay it out in true millimetres with whatever zero is handy (the pistol
+  uses the slide's rear bottom edge). `MM` (`0.001 * SCALE`) turns every
+  vertex and position into game metres, so the gun comes out shrunk to
+  `LENGTH` (see above).
 - In Blender, X is right, Y forward along the barrel and Z up. The Y-up
   export makes that the game's barrel along -Z, up +Y.
 - At the end, move everything so the middle of the bounds is the origin, and
@@ -115,11 +136,12 @@ takes the relief and renders the sight picture from there.
   - `IronSight...`: everything hidden while a sight is on.
   - `AimPoint`: the iron sights' aim point.
   - `SightMount`: where a sight's base sits, turned 180 degrees about Z
-    because the sights face -Y.
+    because the sights face -Y, and scaled by `SCALE`.
   Name other parts too (`Trigger`, `SlideStop`, `MagRelease`, a charging
   handle...), with sensible pivots, for animations to come.
 - `src/weapons.rs`: point the gun's `Model` at the new file, set
-  `fit: Fit::AsBuilt` and list its `sights`. Every gun must take `TWO_X`
+  `fit: Fit::AsBuilt` and list its `sights`. The long guns take the red dot,
+  reflex and 2x; the sniper takes the scope too. Every gun must take `TWO_X`
   (a test checks it). Then delete the downloaded model and its `.blend`
   (`git rm`): git keeps them.
 - Build: `/Applications/Blender.app/Contents/MacOS/Blender --background
@@ -180,12 +202,13 @@ players' guns only drop their magazine (`remote.rs`).
 ### Steps
 
 1. [x] Pistol (`art/pistol.py`).
-2. [ ] Decide the long guns' scale with the user (above).
-3. [ ] SMG: replaces `MP7.gltf`. Magazine, bolt or charging handle, irons,
-   mount for the red dot, reflex and 2x.
-4. [ ] Rifle: replaces `M4A1.gltf`. The same, on a top rail.
-5. [ ] Sniper: replaces `SCAR.gltf`. A bolt action with the bolt animation
-   above; the scope too.
+2. [x] The long guns' scale: decided, see above.
+3. [ ] SMG (`art/smg.py`, replaces `MP7.gltf`). Start by copying
+   `art/pistol.py` and setting `LENGTH`, `TRUE_LENGTH`. Magazine, bolt or
+   charging handle, irons, mount for the red dot, reflex and 2x.
+4. [ ] Rifle (`art/rifle.py`, replaces `M4A1.gltf`). The same, on a top rail.
+5. [ ] Sniper (`art/sniper.py`, replaces `SCAR.gltf`). A bolt action with
+   the bolt animation above; the scope too.
 6. [ ] Once nothing uses them: turn the sights to face +Y (`art/sights.py`,
    and the red dot and scope), drop the mounts' turn, and remove
    `Fit::Scaled`. The shotgun and knife need re-exporting as built for the
