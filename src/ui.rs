@@ -116,6 +116,7 @@ impl Plugin for UiPlugin {
             .expect("the default font's slot");
         app.add_plugins(TabNavigationPlugin)
             .init_resource::<PickerOpen>()
+            .init_resource::<FinalScoresOpen>()
             .add_systems(OnEnter(AppState::Connecting), spawn_connecting)
             .add_systems(OnEnter(AppState::Lobby), spawn_lobby)
             .add_systems(OnEnter(AppState::Playing), spawn_hud)
@@ -596,11 +597,15 @@ fn update_connecting(time: Res<Time>, mut dots: Single<&mut Text, With<Connectin
 // ---------------------------------------------------------------- player list
 
 /// A table of the players and their scores, kept up to date by
-/// `update_rosters`. Used in the lobby and for the in-game scoreboard.
+/// `update_rosters`. Used for the in-game scoreboard, and in the lobby for
+/// how the last match ended.
 #[derive(Component, Default)]
 struct RosterList {
     /// What the rows were last built from.
     shown: Option<RosterKey>,
+    /// Shows the scores the last match ended on (`Session::last_match`), not
+    /// the players here now.
+    last_match: bool,
 }
 
 /// Everything the player list shows; the rows are rebuilt when it changes.
@@ -620,9 +625,12 @@ struct RosterKey {
 const ROSTER_WIDTH: f32 = 430.0;
 const STAT_WIDTH: f32 = 56.0;
 
-fn roster_list(min_width: f32) -> impl Bundle {
+fn roster_list(min_width: f32, last_match: bool) -> impl Bundle {
     (
-        RosterList::default(),
+        RosterList {
+            shown: None,
+            last_match,
+        },
         Node {
             flex_direction: FlexDirection::Column,
             row_gap: px(12),
@@ -712,26 +720,38 @@ fn update_rosters(
     if lists.is_empty() {
         return;
     }
-    let mut roster = session.roster.clone();
-    roster.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
-    let colors = roster
-        .iter()
-        .map(|player| match &my_paint {
-            Some(mine) if player.id == session.my_id => mine.canvas.main_color(),
-            _ => skins.main_color(player.id).unwrap_or(player.color),
-        })
-        .collect();
-    let key = RosterKey {
-        roster,
-        my_id: session.my_id,
-        leader: session.leader,
-        team_mode: session.team_mode(),
-        my_team: session.team_of(session.my_id),
-        team_scores: session.team_scores,
-        colors,
+    let key_of = |roster: &[PlayerInfo], mode: u8, my_team: u8, team_scores: [u32; 2]| {
+        let mut roster = roster.to_vec();
+        roster.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.deaths.cmp(&b.deaths)));
+        let colors = roster
+            .iter()
+            .map(|player| match &my_paint {
+                Some(mine) if player.id == session.my_id => mine.canvas.main_color(),
+                _ => skins.main_color(player.id).unwrap_or(player.color),
+            })
+            .collect();
+        RosterKey {
+            roster,
+            my_id: session.my_id,
+            leader: session.leader,
+            team_mode: is_team_mode(mode),
+            my_team,
+            team_scores,
+            colors,
+        }
     };
+    let live = key_of(&session.roster, session.mode, session.team_of(session.my_id), session.team_scores);
+    let last = session
+        .last_match
+        .as_ref()
+        .map(|last| key_of(&last.roster, last.mode, last.my_team, last.team_scores));
     for (entity, mut list) in &mut lists {
-        if list.shown.as_ref() == Some(&key) {
+        let key = match (list.last_match, &last) {
+            (false, _) => &live,
+            (true, Some(last)) => last,
+            (true, None) => continue,
+        };
+        if list.shown.as_ref() == Some(key) {
             continue;
         }
         list.shown = Some(key.clone());
@@ -790,6 +810,8 @@ enum LobbyText {
     Bots,
     /// How the last match ended.
     Result,
+    /// Over the last match's scoreboard: its map and mode.
+    FinalCaption,
     /// Who we are waiting for.
     Waiting,
 }
@@ -831,6 +853,14 @@ struct MapNote(u8);
 /// Whether the match picker (the mode, map, air acceleration and bots) is open.
 #[derive(Resource, Default)]
 pub(crate) struct PickerOpen(pub bool);
+
+/// Whether the scoreboard the last match ended on is open in the lobby.
+#[derive(Resource, Default)]
+pub(crate) struct FinalScoresOpen(pub bool);
+
+/// The last match's scoreboard, over the lobby, and what is around it.
+#[derive(Component)]
+struct FinalScoresPanel;
 
 /// The button in the corner that shows the match and opens the picker.
 #[derive(Component)]
@@ -884,6 +914,7 @@ fn team_tint(color: Color, left: bool) -> impl Bundle {
 
 fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<AssetServer>) {
     commands.insert_resource(PickerOpen(false));
+    commands.insert_resource(FinalScoresOpen(false));
     let share = session.share_address.clone();
     let server_label = session.server_label.clone();
     let pictures: Vec<_> = (0..MAP_NAMES.len() as u8).map(|id| crate::browser::map_picture(&asset_server, id)).collect();
@@ -940,6 +971,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                 GlobalZIndex(4),
                 observe(|_: On<PointerClick>, mut picker: ResMut<PickerOpen>| picker.0 = false),
             ));
+            screen.spawn(final_scores_panel());
             screen
                 .spawn(Node {
                     width: percent(100),
@@ -1077,14 +1109,22 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                             ResultBanner,
                             Node {
                                 display: Display::None,
-                                padding: UiRect::axes(px(16), px(10)),
+                                align_items: AlignItems::Center,
+                                column_gap: px(14),
+                                padding: UiRect::new(px(16), px(6), px(6), px(6)),
                                 border: UiRect::all(px(1)),
                                 border_radius: BorderRadius::all(px(12)),
                                 ..default()
                             },
                             BackgroundColor(BLUE.with_alpha(0.12)),
                             BorderColor::all(BLUE.with_alpha(0.4)),
-                            children![(weighted("", 15.0, 700, TEXT), LobbyText::Result)],
+                            children![
+                                (weighted("", 15.0, 700, TEXT), LobbyText::Result),
+                                (
+                                    small_button("Scoreboard"),
+                                    observe(|_: On<Activate>, mut open: ResMut<FinalScoresOpen>| open.0 = !open.0),
+                                ),
+                            ],
                         ));
                         row.spawn(Node {
                             flex_direction: FlexDirection::Column,
@@ -1156,6 +1196,80 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                     ));
                 });
         });
+}
+
+/// The scoreboard the last match ended on, over the whole lobby. A click
+/// outside it, its button or Escape closes it.
+fn final_scores_panel() -> impl Bundle {
+    (
+        FinalScoresPanel,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            height: percent(100),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            display: Display::None,
+            ..default()
+        },
+        GlobalZIndex(6),
+        Pickable::IGNORE,
+        children![
+            (
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(SCRIM.with_alpha(0.66)),
+                observe(|_: On<PointerClick>, mut open: ResMut<FinalScoresOpen>| open.0 = false),
+            ),
+            (
+                Node {
+                    min_width: px(640),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(10),
+                    padding: UiRect::axes(px(28), px(26)),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(26)),
+                    ..default()
+                },
+                BackgroundColor(PANEL),
+                BorderColor::all(PANEL_EDGE),
+                soft_shadow(),
+                children![
+                    (
+                        Node {
+                            justify_content: JustifyContent::SpaceBetween,
+                            align_items: AlignItems::FlexEnd,
+                            column_gap: px(24),
+                            margin: UiRect::bottom(px(6)),
+                            ..default()
+                        },
+                        children![
+                            (
+                                Node {
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: px(6),
+                                    ..default()
+                                },
+                                children![
+                                    (weighted("", 12.0, 700, DIM), LobbyText::FinalCaption),
+                                    heading("Final scores", 30.0, TEXT),
+                                ],
+                            ),
+                            (
+                                small_button("Close"),
+                                observe(|_: On<Activate>, mut open: ResMut<FinalScoresOpen>| open.0 = false),
+                            ),
+                        ],
+                    ),
+                    roster_list(ROSTER_WIDTH, true),
+                ],
+            ),
+        ],
+    )
 }
 
 /// The button in the corner: the map's picture, the mode, the map. It opens
@@ -1328,6 +1442,7 @@ fn update_lobby(
     map: Res<GameMap>,
     keys: Res<ButtonInput<KeyCode>>,
     mut picker: ResMut<PickerOpen>,
+    mut final_scores: ResMut<FinalScoresOpen>,
     mut texts: Query<(&LobbyText, &mut Text)>,
     mut thumbs: Query<(&MatchThumb, &mut ImageNode)>,
     mut match_button: Query<&mut BorderColor, With<MatchButton>>,
@@ -1337,10 +1452,14 @@ fn update_lobby(
         Query<&mut Node, With<TeamModeOnly>>,
         Query<&mut Node, With<ResultBanner>>,
         Query<&mut Node, Or<(With<MatchPicker>, With<PickerCatcher>)>>,
+        Query<&mut Node, With<FinalScoresPanel>>,
     )>,
 ) {
     if picker.0 && keys.just_pressed(KeyCode::Escape) {
         picker.0 = false;
+    }
+    if final_scores.0 && (keys.just_pressed(KeyCode::Escape) || session.last_match.is_none()) {
+        final_scores.0 = false;
     }
     let leader = session.name_of(session.leader).to_string();
     let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
@@ -1359,6 +1478,14 @@ fn update_lobby(
             LobbyText::PickerNote => format!("Only {leader} can change these"),
             LobbyText::Bots => session.roster.iter().filter(|player| player.is_bot).count().to_string(),
             LobbyText::Result => session.last_result.clone().unwrap_or_default(),
+            LobbyText::FinalCaption => match &session.last_match {
+                Some(last) => {
+                    let map = MAP_NAMES.get(last.map as usize).copied().unwrap_or("?");
+                    let mode = MODE_NAMES.get(last.mode as usize).copied().unwrap_or("?");
+                    format!("LAST MATCH  ·  {map}  ·  {mode}").to_uppercase()
+                }
+                None => String::new(),
+            },
             LobbyText::Waiting => format!("Waiting for {leader} to start the match"),
         };
         set_text(&mut text, value);
@@ -1390,6 +1517,9 @@ fn update_lobby(
     }
     for mut node in &mut shown.p4() {
         set_shown(&mut node, picker.0);
+    }
+    for mut node in &mut shown.p5() {
+        set_shown(&mut node, final_scores.0);
     }
 }
 
@@ -2468,7 +2598,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                         (heading("", 30.0, ACCENT), Hud::ScoreClock),
                     ],
                 ),
-                roster_list(ROSTER_WIDTH),
+                roster_list(ROSTER_WIDTH, false),
                 (
                     Node {
                         align_items: AlignItems::Center,

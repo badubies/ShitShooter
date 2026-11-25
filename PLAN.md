@@ -305,8 +305,9 @@ players' guns only drop their magazine (`remote.rs`).
   `Screenshot::image(handle)` (scale 1) it reads a texture nothing drew
   into, and the picture is black.
 - Changing `ClientMsg` or `ServerMsg` means bumping the protocol id in
-  `protocol_id` (now `shitshooter-proto-16`; 16 when the DMR moved the
-  sniper's, pistol's, knife's and grenade's ids).
+  `protocol_id` (now `shitshooter-proto-17`; 16 when the DMR moved the
+  sniper's, pistol's, knife's and grenade's ids, 17 when `MatchEnded` began
+  carrying the final team scores).
 - `dropped magazines: []` at the end of the self-test is how `main` already
   was; it is not a regression.
 - The scope was built here, in Blender by hand (`art/scope.blend`), with

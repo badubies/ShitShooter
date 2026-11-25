@@ -85,9 +85,24 @@ pub struct Session {
     pub countdown: f32,
     /// Result line of the previous match, shown in the lobby.
     pub last_result: Option<String>,
+    /// The scoreboard the previous match ended on, which the lobby can show.
+    pub last_match: Option<FinalScores>,
     /// Address to tell friends about, when hosting.
     pub share_address: Option<String>,
     pub server_label: String,
+}
+
+/// The scoreboard as a match ended: everybody who played it, as they were,
+/// even if they leave or switch teams in the lobby afterwards.
+#[derive(Clone)]
+pub struct FinalScores {
+    pub roster: Vec<PlayerInfo>,
+    pub team_scores: [u32; 2],
+    /// One of the `MODE_*` constants.
+    pub mode: u8,
+    pub map: u8,
+    /// Our team then.
+    pub my_team: u8,
 }
 
 impl Session {
@@ -380,7 +395,17 @@ fn update_session(
                 session.time_left = *time_left;
                 next_state.set(AppState::Playing);
             }
-            ServerMsg::MatchEnded { winner } => {
+            ServerMsg::MatchEnded { winner, team_scores } => {
+                // The roster that came just before this has everybody's final
+                // kills and deaths.
+                session.team_scores = *team_scores;
+                session.last_match = Some(FinalScores {
+                    roster: session.roster.clone(),
+                    team_scores: *team_scores,
+                    mode: session.mode,
+                    map: game_map.0.id,
+                    my_team: session.team_of(session.my_id),
+                });
                 session.last_result = Some(match winner {
                     Winner::Player(id) => format!("{} won the last match!", session.name_of(*id)),
                     Winner::Team(team) => {

@@ -1328,7 +1328,10 @@ impl Server {
         }
         let roster = self.roster_msg();
         self.broadcast(&roster);
-        self.broadcast(&ServerMsg::MatchEnded { winner });
+        self.broadcast(&ServerMsg::MatchEnded {
+            winner,
+            team_scores: self.team_scores,
+        });
         self.roster_dirty = false;
     }
 

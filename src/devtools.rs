@@ -25,7 +25,7 @@ use crate::{
     loadout::{Choice, LoadoutScreen},
     remote::{Corpse, RemotePlayer},
     weapons::{GUN_COUNT, IRON_SIGHTS, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
-    ui::{MatchChoice, PickerOpen},
+    ui::{FinalScoresOpen, MatchChoice, PickerOpen},
     world::{GameMap, MainCamera},
     settings::{Settings, SettingsMenu, SettingsTab},
 };
@@ -268,7 +268,7 @@ fn selftest_lobby(
     mut editor: ResMut<PaintEditor>,
     model: Res<PlayerModel>,
     sliders: Query<Entity, With<Slider>>,
-    (settings, map, mut picker): (Res<Settings>, Res<GameMap>, ResMut<PickerOpen>),
+    (settings, map, mut picker, mut final_scores): (Res<Settings>, Res<GameMap>, ResMut<PickerOpen>, ResMut<FinalScoresOpen>),
     mut loadout: ResMut<LoadoutScreen>,
     choices: Query<(&Choice, &UiGlobalTransform, &ComputedNode)>,
     match_choices: Query<(&MatchChoice, &UiGlobalTransform)>,
@@ -281,7 +281,17 @@ fn selftest_lobby(
         if test.reached(0, 1.0) {
             test.capture("lobby_after.png");
         }
-        if test.reached(1, 2.0) {
+        // The scoreboard the match ended on, opened from the lobby.
+        if test.reached(1, 1.2) {
+            final_scores.0 = true;
+        }
+        if test.reached(2, 1.8) {
+            test.capture("lobby_final_scores.png");
+        }
+        if test.reached(3, 2.4) {
+            final_scores.0 = false;
+            let last = session.last_match.as_ref().map(|last| (last.roster.len(), last.team_scores));
+            println!("[selftest] last match: (players, team scores) {last:?}");
             println!("[selftest] finished: {:?}", session.last_result);
             exit.write(AppExit::Success);
         }
