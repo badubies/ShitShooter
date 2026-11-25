@@ -1699,6 +1699,27 @@ pub struct ServerHandle {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+impl ServerHandle {
+    /// The server's thread has ended on its own: it crashed. Its last
+    /// `LobbyStatus` stays as it was, so it must not be trusted any more.
+    pub fn has_stopped(&self) -> bool {
+        self.thread.as_ref().is_none_or(|thread| thread.is_finished())
+    }
+
+    /// A handle whose server crashed straight away, for tests.
+    #[cfg(test)]
+    pub fn crashed() -> ServerHandle {
+        let thread = thread::spawn(|| panic!("test: the lobby's server crashed"));
+        while !thread.is_finished() {
+            thread::yield_now();
+        }
+        ServerHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            thread: Some(thread),
+        }
+    }
+}
+
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);

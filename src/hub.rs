@@ -369,6 +369,9 @@ impl Hub {
 
     /// Notes who is in which lobby, and closes the ones left empty too long.
     fn sweep(&mut self, now: Instant) {
+        // A lobby whose server crashed still says whoever was in it then is
+        // in it, so it would be listed (and hold back updates) forever.
+        self.close(|lobby| lobby._server.has_stopped(), "its server crashed");
         for lobby in &mut self.lobbies {
             if lobby.status.lock().is_ok_and(|status| status.humans > 0) {
                 lobby.active = now;
@@ -515,6 +518,32 @@ mod tests {
         // Once Alice's lobby has sat empty long enough, it closes.
         hub.sweep(Instant::now() + IDLE_CLOSE);
         assert_eq!(hub.create("Bob", 1, false, bob), HubReply::Created { port: 17_301 });
+    }
+
+    /// A lobby whose server crashed with someone in it is closed, instead of
+    /// counting that person as playing forever.
+    #[test]
+    fn a_crashed_lobby_is_closed() {
+        let mut hub = Hub::bind(
+            ServerSettings {
+                port: 17_600,
+                ..ServerSettings::default()
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            hub.create("Alice", 1, false, IpAddr::from([10, 0, 0, 1])),
+            HubReply::Created { port: 17_601 }
+        );
+        let lobby = &mut hub.lobbies[0];
+        // Its real server stops when replaced, so it stops updating the count.
+        lobby._server = ServerHandle::crashed();
+        lobby.status.lock().unwrap().humans = 1;
+        assert_eq!(hub.list().len(), 1);
+        hub.sweep(Instant::now());
+        assert!(hub.lobbies.is_empty());
+        assert_eq!(hub.list(), vec![]);
     }
 
     #[test]
