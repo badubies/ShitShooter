@@ -725,6 +725,13 @@ dedicated server), sent with the roster (`AIR_ACCEL_CHOICES` in
 once per rendered frame, so at a high frame rate the air acceleration bites
 less per frame than at 60 fps (Source avoids that with a fixed tick).
 
+## One weapon switch on the wheel
+
+Next and previous weapon became one "Switch weapon" (wheel up and wheel
+down, by default): it goes between the two guns only, and from the knife
+back to the gun held last (`LocalPlayer::last_gun`). Old settings files
+drop their next and previous lines and get the new defaults.
+
 ## Later: surf ramps (#6)
 
 Not in this round. Notes for when it is picked up: the map is only upright boxes (`Block` in `src/map.rs`), and `move_and_slide`

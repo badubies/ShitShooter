@@ -214,16 +214,21 @@ fn fire(
     let cooking = player.hand.is_some_and(|hand| hand.fuse.is_some());
     let slots = [(Action::Primary, 0), (Action::Secondary, 1), (Action::Knife, KNIFE_SLOT)];
     let mut wanted = slots.iter().rev().find(|(action, _)| input.just_pressed(*action)).map(|(_, slot)| *slot);
-    // Next and previous go round the three in order.
-    let step = input.just_pressed(Action::NextWeapon) as i32 - input.just_pressed(Action::PreviousWeapon) as i32;
-    if step != 0 {
-        let here = slots.iter().position(|(_, slot)| *slot == player.slot).unwrap_or(0) as i32;
-        wanted = Some(slots[(here + step).rem_euclid(slots.len() as i32) as usize].1);
+    // The switch goes between the two guns only; from the knife, back to the
+    // gun held last.
+    if input.just_pressed(Action::SwitchWeapon) {
+        wanted = Some(match player.slot {
+            KNIFE_SLOT => player.last_gun,
+            gun => 1 - gun,
+        });
     }
     if let Some(slot) = wanted
         && !cooking
     {
         if player.hand.take().is_some() || player.slot != slot {
+            if player.slot != KNIFE_SLOT {
+                player.last_gun = player.slot;
+            }
             player.slot = slot;
             player.draw = DRAW_TIME;
             player.reload = 0.0;

@@ -272,6 +272,8 @@ pub struct LocalPlayer {
     pub guns: [GunSlot; 2],
     /// What is in hand: a gun slot (0 or 1) or `KNIFE_SLOT`.
     pub slot: usize,
+    /// The gun slot held before the knife came out, where switching goes back to.
+    pub last_gun: usize,
     /// Seconds until the weapon just switched to is up and usable.
     pub draw: f32,
     pub knife_cooldown: f32,
@@ -365,6 +367,7 @@ impl Default for LocalPlayer {
             spawn_seq: 0,
             guns: [GunSlot::full(RIFLE, IRON_SIGHTS), GunSlot::full(PISTOL, IRON_SIGHTS)],
             slot: 0,
+            last_gun: 0,
             draw: 0.0,
             knife_cooldown: 0.0,
             recoil: 0.0,

@@ -102,14 +102,13 @@ pub enum Action {
     Primary,
     Secondary,
     Knife,
-    NextWeapon,
-    PreviousWeapon,
+    SwitchWeapon,
     Scores,
     Minimap,
 }
 
 impl Action {
-    pub const ALL: [Action; 19] = [
+    pub const ALL: [Action; 18] = [
         Action::Forward,
         Action::Back,
         Action::Left,
@@ -125,15 +124,14 @@ impl Action {
         Action::Primary,
         Action::Secondary,
         Action::Knife,
-        Action::NextWeapon,
-        Action::PreviousWeapon,
+        Action::SwitchWeapon,
         Action::Scores,
         Action::Minimap,
     ];
 
     /// (name in the settings panel, name in the settings file, default binding)
     fn info(self) -> (&'static str, &'static str, Bind) {
-        use Bind::{Key, Mouse, WheelDown, WheelUp};
+        use Bind::{Key, Mouse, WheelUp};
         match self {
             Action::Forward => ("Move forward", "forward", Key(KeyCode::KeyW)),
             Action::Back => ("Move back", "back", Key(KeyCode::KeyS)),
@@ -150,8 +148,7 @@ impl Action {
             Action::Primary => ("Primary gun", "primary", Key(KeyCode::Digit1)),
             Action::Secondary => ("Secondary gun", "secondary", Key(KeyCode::Digit2)),
             Action::Knife => ("Knife", "knife", Key(KeyCode::Digit3)),
-            Action::NextWeapon => ("Next weapon", "next_weapon", WheelDown),
-            Action::PreviousWeapon => ("Previous weapon", "previous_weapon", WheelUp),
+            Action::SwitchWeapon => ("Switch weapon", "switch_weapon", WheelUp),
             Action::Scores => ("Scoreboard", "scores", Key(KeyCode::Tab)),
             Action::Minimap => ("Toggle minimap", "minimap", Key(KeyCode::KeyM)),
         }
@@ -159,6 +156,14 @@ impl Action {
 
     pub fn label(self) -> &'static str {
         self.info().0
+    }
+
+    /// The second binding an action starts with, if any.
+    fn second_default(self) -> Option<Bind> {
+        match self {
+            Action::SwitchWeapon => Some(Bind::WheelDown),
+            _ => None,
+        }
     }
 }
 
@@ -317,7 +322,7 @@ impl Default for Settings {
             secondary: PISTOL,
             sights: default_sights(),
             grenade: FRAG,
-            binds: Action::ALL.map(|action| [Some(action.info().2), None]),
+            binds: Action::ALL.map(|action| [Some(action.info().2), action.second_default()]),
             persist: false,
         }
     }
@@ -1266,7 +1271,7 @@ const CONTROL_GROUPS: &[(&str, &[Action])] = &[
     ),
     (
         "Weapons",
-        &[Action::Primary, Action::Secondary, Action::Knife, Action::NextWeapon, Action::PreviousWeapon],
+        &[Action::Primary, Action::Secondary, Action::Knife, Action::SwitchWeapon],
     ),
 ];
 
@@ -1514,11 +1519,31 @@ sight.Pistol = Scope
     #[test]
     fn the_defaults_bind_every_action_to_something_different() {
         let settings = Settings::default();
-        for (i, a) in Action::ALL.iter().enumerate() {
-            for b in &Action::ALL[i + 1..] {
-                assert_ne!(settings.bind(*a, 0), settings.bind(*b, 0), "{a:?} and {b:?}");
-            }
+        let all: Vec<Bind> = Action::ALL.iter().flat_map(|action| settings.binds(*action)).collect();
+        for (i, a) in all.iter().enumerate() {
+            assert!(!all[i + 1..].contains(a), "{a:?} is bound twice");
         }
+        assert!(Action::ALL.iter().all(|action| settings.bind(*action, 0).is_some()));
+    }
+
+    #[test]
+    fn the_scroll_wheel_switches_weapons_until_something_else_takes_it() {
+        let settings = Settings::default();
+        assert_eq!(settings.binds(Action::SwitchWeapon).collect::<Vec<_>>(), [Bind::WheelUp, Bind::WheelDown]);
+        // A file from before there was one switch: next and previous are gone.
+        let old = Settings::parse("bind.next_weapon = WheelDown
+bind.previous_weapon = WheelUp
+");
+        assert_eq!(old.binds(Action::SwitchWeapon).collect::<Vec<_>>(), [Bind::WheelUp, Bind::WheelDown]);
+        // Scroll up taken as a second "move forward": the switch keeps
+        // scroll down, and that is saved and read back as it was.
+        let mut rebound = Settings::default();
+        rebound.set_bind(Action::Forward, 1, Bind::WheelUp);
+        assert_eq!(rebound.binds(Action::Forward).collect::<Vec<_>>(), [Bind::Key(KeyCode::KeyW), Bind::WheelUp]);
+        assert_eq!(rebound.binds(Action::SwitchWeapon).collect::<Vec<_>>(), [Bind::WheelDown]);
+        let read = Settings::parse(&rebound.to_text());
+        assert_eq!(read.binds(Action::Forward).collect::<Vec<_>>(), [Bind::Key(KeyCode::KeyW), Bind::WheelUp]);
+        assert_eq!(read.binds(Action::SwitchWeapon).collect::<Vec<_>>(), [Bind::WheelDown]);
     }
 
     #[test]
