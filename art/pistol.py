@@ -47,7 +47,7 @@ SLIDE_HALF_WIDTH = 12.5
 SLIDE_TOP = 27.0
 BORE_Z = 13.5
 # The top of the rear blade and of the front post: the line aimed along.
-SIGHT_LINE_Z = 33.0
+SIGHT_LINE_Z = 32.0
 REAR_SIGHT_Y = (2.0, 10.0)
 FRONT_SIGHT_Y = (SLIDE_FRONT - 9.5, SLIDE_FRONT - 3.5)
 # Wide enough to see the front post with a gap of light either side.
@@ -287,16 +287,16 @@ part.box(-1.0, 14.0, 68.0, 96.0, 15.0, 30.0, SLIDE)
 part.cylinder("y", 7.2, (0.0, BORE_Z), SLIDE_FRONT - 10.0, SLIDE_FRONT + 2.0, SLIDE)
 boolean(slide, part.to_object("SlideCuts"), "DIFFERENCE")
 
-# The rear sight: a wide blade with a square notch, a white dot either side;
-# the front: a narrow post with an orange dot. Their tops are the sight line.
+# The rear sight: a low blade, its sides drawn in and its top corners cut
+# away so it hides little round the notch, a white dot either side; the
+# front: a narrow post with an orange dot. Their tops are the sight line.
 part = Part()
 y0, y1 = REAR_SIGHT_Y
-n = NOTCH_HALF_WIDTH
-part.prism("y", [(-10.0, SLIDE_TOP - 0.5), (10.0, SLIDE_TOP - 0.5), (10.0, SIGHT_LINE_Z), (n, SIGHT_LINE_Z),
-                 (n, SIGHT_LINE_Z - 3.0), (-n, SIGHT_LINE_Z - 3.0), (-n, SIGHT_LINE_Z), (-10.0, SIGHT_LINE_Z)],
-           y0, y1, SLIDE)
-for x in (-5.6, 5.6):
-    part.cylinder("y", 0.95, (x, SIGHT_LINE_Z - 1.9), y0 - 0.15, y0 + 0.2, REAR_DOT, segments=12)
+n, top = NOTCH_HALF_WIDTH, SIGHT_LINE_Z
+right = [(9.0, SLIDE_TOP - 0.5), (8.7, top - 1.2), (8.0, top), (n, top), (n, top - 2.8)]
+part.prism("y", right + [(-x, z) for x, z in reversed(right)], y0, y1, SLIDE)
+for x in (-6.1, 6.1):
+    part.cylinder("y", 0.9, (x, top - 1.7), y0 - 0.15, y0 + 0.2, REAR_DOT, segments=12)
 part.to_object("IronSightRear", origin=(0.0, y0, SLIDE_TOP), parent=slide)
 part = Part()
 y0, y1 = FRONT_SIGHT_Y
