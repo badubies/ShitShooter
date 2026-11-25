@@ -8,14 +8,17 @@ use bevy::{light::NotShadowCaster, prelude::*};
 
 use crate::{
     AppState,
-    audio::{Sound, SoundCue},
+    audio::{BOLT_LOCK, PUMP_CLACK, Sound, SoundCue},
     map,
     net::{Connection, NetMsg, Session},
-    player::{BOLT_HOME, InHand, KNIFE_SLOT, LocalPlayer, MAGAZINE_IN, MAGAZINE_OUT, PlayerSystems, RACK_TIME},
+    player::{
+        BOLT_BACK, BOLT_HOME, InHand, KNIFE_SLOT, LocalPlayer, MAGAZINE_IN, MAGAZINE_OUT, PUMP_AFTER, PUMP_TIME,
+        PlayerSystems, RACK_TIME,
+    },
     protocol::*,
     remote::{RemotePlayer, RemoteSystems},
     settings::{Action, ActionInput},
-    weapons::{DRAW_TIME, KNIFE, KNIFE_RANGE, WeaponId, weapon, weapon_name},
+    weapons::{Cycle, DRAW_TIME, KNIFE, KNIFE_RANGE, WeaponId, weapon, weapon_name},
     world::{GameMap, SharedAssets},
 };
 
@@ -128,6 +131,7 @@ fn fire(
     let mut own_sound = |sound| {
         sounds.write(SoundCue { sound, at: None });
     };
+    let cooled_from = player.guns.map(|gun| gun.cooldown);
     for gun in &mut player.guns {
         gun.cooldown = (gun.cooldown - dt).max(0.0);
     }
@@ -255,6 +259,24 @@ fn fire(
             player.reload = stats.reload;
             player.reload_empty = player.guns[slot].ammo == 0;
             player.reload_stop = false;
+        }
+    }
+
+    // A pump or bolt worked between shots, heard as the hands get to it. The
+    // bolt locks down just as the next shot is ready: that click says so.
+    if let (Some(cycle), Some(gun)) = (stats.cycle, player.guns.get(slot))
+        && gun.ammo > 0
+        && !player.reloading()
+        && player.draw <= 0.0
+    {
+        let (before, after) = (stats.interval - cooled_from[slot], stats.interval - gun.cooldown);
+        let passed = |at: f32| before < at && after >= at;
+        match cycle {
+            // So that its first clack comes as the pump is all the way back.
+            Cycle::Pump if passed(PUMP_AFTER + PUMP_TIME / 2.0 - PUMP_CLACK) => own_sound(Sound::Pump),
+            Cycle::Bolt if passed(BOLT_BACK) => own_sound(Sound::BoltBack),
+            Cycle::Bolt if passed(stats.interval - BOLT_LOCK) => own_sound(Sound::BoltHome),
+            _ => {}
         }
     }
 

@@ -19,6 +19,9 @@ pub struct Weapon {
     pub reload: f32,
     /// Loads one round at a time until it is full, or until it is fired.
     pub reload_per_round: bool,
+    /// Worked by hand after every shot, which is what the wait between
+    /// shots is spent on.
+    pub cycle: Option<Cycle>,
     /// Bullet speed in m/s.
     pub speed: f32,
     /// How fast the bullet drops (m/s²).
@@ -33,8 +36,6 @@ pub struct Weapon {
     /// How far in front of the eye a sight's dot is held when aiming: close
     /// for a gun held to the shoulder, further out for a pistol held in front.
     pub sight_relief: f32,
-    /// Playback speed of the gunshot sound: lower is deeper.
-    pub pitch: f32,
     /// How far each shot throws the view up, and at most sideways (radians).
     pub kick_up: f32,
     pub kick_side: f32,
@@ -44,6 +45,15 @@ pub struct Weapon {
     pub model: Option<Model>,
     /// Aimed, its shots close up tighter the longer it is held there.
     pub choke: Option<Choke>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cycle {
+    /// A pump racked back and forth.
+    Pump,
+    /// A bolt lifted, drawn back, pushed home and locked down: the lock is
+    /// heard just as the next shot is ready.
+    Bolt,
 }
 
 /// Holding a gun aimed narrows its spread from `aim_spread` down to `spread`
@@ -156,6 +166,7 @@ pub const KNIFE_RANGE: f32 = 2.6;
 pub const DRAW_TIME: f32 = 0.35;
 
 pub const RIFLE: WeaponId = 0;
+pub const SMG: WeaponId = 1;
 pub const SHOTGUN: WeaponId = 2;
 pub const SNIPER: WeaponId = 3;
 pub const PISTOL: WeaponId = 4;
@@ -175,6 +186,7 @@ pub const WEAPONS: [Weapon; 6] = [
         magazine: 30,
         reload: 1.6,
         reload_per_round: false,
+        cycle: None,
         speed: 200.0,
         gravity: 4.0,
         hip_spread: 0.014,
@@ -182,7 +194,6 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.0,
         size: [0.04, 0.055, 0.3],
         sight_relief: 0.08,
-        pitch: 1.0,
         kick_up: 0.014,
         kick_side: 0.006,
         headshot: 2.0,
@@ -202,6 +213,7 @@ pub const WEAPONS: [Weapon; 6] = [
         magazine: 36,
         reload: 1.3,
         reload_per_round: false,
+        cycle: None,
         speed: 150.0,
         gravity: 5.0,
         hip_spread: 0.024,
@@ -209,7 +221,6 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.05,
         size: [0.04, 0.06, 0.2],
         sight_relief: 0.08,
-        pitch: 1.3,
         kick_up: 0.018,
         kick_side: 0.007,
         headshot: 1.6,
@@ -229,6 +240,7 @@ pub const WEAPONS: [Weapon; 6] = [
         magazine: 6,
         reload: 0.4,
         reload_per_round: true,
+        cycle: Some(Cycle::Pump),
         speed: 130.0,
         gravity: 6.0,
         hip_spread: 0.06,
@@ -236,7 +248,6 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.0,
         size: [0.05, 0.06, 0.34],
         sight_relief: 0.08,
-        pitch: 0.7,
         kick_up: 0.075,
         kick_side: 0.018,
         headshot: 1.5,
@@ -259,6 +270,7 @@ pub const WEAPONS: [Weapon; 6] = [
         magazine: 5,
         reload: 2.4,
         reload_per_round: false,
+        cycle: Some(Cycle::Bolt),
         speed: 400.0,
         gravity: 3.0,
         hip_spread: 0.05,
@@ -266,7 +278,6 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 0.9,
         size: [0.035, 0.05, 0.44],
         sight_relief: 0.08,
-        pitch: 0.55,
         kick_up: 0.1,
         kick_side: 0.012,
         headshot: 2.5,
@@ -286,6 +297,7 @@ pub const WEAPONS: [Weapon; 6] = [
         magazine: 12,
         reload: 1.1,
         reload_per_round: false,
+        cycle: None,
         speed: 170.0,
         gravity: 5.0,
         hip_spread: 0.012,
@@ -293,7 +305,6 @@ pub const WEAPONS: [Weapon; 6] = [
         mobility: 1.05,
         size: [0.035, 0.05, 0.15],
         sight_relief: 0.18,
-        pitch: 1.45,
         kick_up: 0.03,
         kick_side: 0.007,
         headshot: 2.0,
@@ -313,6 +324,7 @@ pub const WEAPONS: [Weapon; 6] = [
         magazine: 0,
         reload: 0.0,
         reload_per_round: false,
+        cycle: None,
         speed: 0.0,
         gravity: 0.0,
         hip_spread: 0.0,
@@ -321,7 +333,6 @@ pub const WEAPONS: [Weapon; 6] = [
         // Blade and handle together.
         size: [0.012, 0.04, 0.3],
         sight_relief: 0.08,
-        pitch: 1.0,
         kick_up: 0.0,
         kick_side: 0.0,
         headshot: 1.0,

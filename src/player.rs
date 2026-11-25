@@ -84,6 +84,13 @@ pub fn hip_position(length: f32) -> Vec3 {
 }
 /// Seconds it takes to work the pump after loading an empty shotgun.
 pub const RACK_TIME: f32 = 0.4;
+/// After each shot the pump is worked, starting this many seconds after it
+/// and taking this long.
+pub const PUMP_AFTER: f32 = 0.12;
+pub const PUMP_TIME: f32 = 0.45;
+/// After each shot a bolt is lifted and drawn back this many seconds after
+/// it. It goes home again in time for the next one (see `audio::BOLT_LOCK`).
+pub const BOLT_BACK: f32 = 0.4;
 /// How far through a magazine reload: the magazine is let go and slides
 /// out; it has dropped away (and falls to the floor); the new one latches;
 /// the bolt or slide goes home.
@@ -1117,7 +1124,7 @@ fn follow_camera(
     // The pump: worked after each shot, and once more after loading it empty.
     let pump_cycle = match in_hand {
         _ if player.racking => player.reload_progress(),
-        Some(gun) if gun.cooldown > 0.0 => (stats.interval - gun.cooldown - 0.12) / 0.45,
+        Some(gun) if gun.cooldown > 0.0 => (stats.interval - gun.cooldown - PUMP_AFTER) / PUMP_TIME,
         _ => -1.0,
     };
     let pump = if (0.0..1.0).contains(&pump_cycle) { (pump_cycle * std::f32::consts::PI).sin() } else { 0.0 };

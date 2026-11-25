@@ -14,12 +14,20 @@ use crate::{
     map::Map,
     player::{LANDING_AIR_TIME, LocalPlayer, PlayerSystems},
     protocol::PlayerId,
-    weapons::{WeaponId, weapon},
+    weapons::{GUN_COUNT, PISTOL, RIFLE, SHOTGUN, SMG, SNIPER, WeaponId},
     remote::{RemotePlayer, RemoteSystems},
     world::GameMap,
 };
 
 const SAMPLE_RATE: u32 = 44_100;
+/// Seconds into `Sound::BoltHome` that the bolt locks: it is started this
+/// long before the gun is ready, so the lock is heard as it is.
+pub const BOLT_LOCK: f32 = 0.12;
+/// Seconds into `Sound::Pump` that the pump reaches the back.
+pub const PUMP_CLACK: f32 = 0.09;
+/// Different takes of each gun's shot, so automatic fire does not sound
+/// like one sound over and over.
+const GUNSHOT_TAKES: u32 = 3;
 /// Metres walked between two footstep sounds.
 const STRIDE: f32 = 2.6;
 /// Slower than this is treated as standing still.
@@ -53,7 +61,7 @@ impl Plugin for AudioPlugin {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Sound {
-    /// Each weapon's shot is the same recording, played deeper or higher.
+    /// Each gun's own shot.
     Gunshot(WeaponId),
     /// The tick of one of our bullets reaching somebody.
     Hit,
@@ -76,6 +84,10 @@ pub enum Sound {
     ShellIn,
     /// A shotgun's pump racked back and forth.
     Pump,
+    /// A bolt action lifted and drawn back after a shot, throwing out the case.
+    BoltBack,
+    /// The bolt pushed home and locked down: ready to fire.
+    BoltHome,
     /// The click of a grenade's pin being pulled.
     Pin,
     /// The swish of a grenade being thrown.
@@ -115,7 +127,10 @@ pub struct SoundCue {
 
 #[derive(Resource)]
 struct Sounds {
-    gunshot: Handle<AudioSource>,
+    /// Indexed by weapon.
+    gunshots: Vec<Vec<Handle<AudioSource>>>,
+    bolt_back: Handle<AudioSource>,
+    bolt_home: Handle<AudioSource>,
     /// Indexed by `Surface`: a few takes of each, so no two steps in a row
     /// sound the same.
     footsteps: [Vec<Handle<AudioSource>>; Surface::COUNT],
@@ -150,7 +165,11 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         })
     };
     commands.insert_resource(Sounds {
-        gunshot: add(synth_gunshot()),
+        gunshots: (0..GUN_COUNT)
+            .map(|weapon_id| (0..GUNSHOT_TAKES).map(|take| add(synth_gunshot(weapon_id, take))).collect())
+            .collect(),
+        bolt_back: add(synth_bolt_back()),
+        bolt_home: add(synth_bolt_home()),
         footsteps: Surface::ALL.map(|surface| {
             (0..FOOTSTEP_TAKES).map(|take| add(synth_footstep(surface, take, false))).collect()
         }),
@@ -185,11 +204,14 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
         let own = cue.at.is_none();
         // (sound, volume, playback speed)
         let (source, volume, speed) = match cue.sound {
-            Sound::Gunshot(weapon_id) => (
-                sounds.gunshot.clone(),
-                if own { 0.5 } else { 1.0 },
-                (0.94 + random * 0.12) * weapon(weapon_id).pitch,
-            ),
+            Sound::Gunshot(weapon_id) => {
+                let takes = sounds.gunshots.get(weapon_id as usize).unwrap_or(&sounds.gunshots[RIFLE as usize]);
+                (
+                    takes[(random * 997.0) as usize % takes.len()].clone(),
+                    if own { 0.5 } else { 1.0 },
+                    0.97 + random * 0.06,
+                )
+            }
             Sound::Hit => (sounds.tick.clone(), 0.55, 0.96 + random * 0.08),
             Sound::Headshot => (sounds.tick.clone(), 0.85, 1.6),
             Sound::Kill => (sounds.chime.clone(), 0.6, 1.0),
@@ -236,6 +258,9 @@ fn play_cues(mut commands: Commands, mut cues: MessageReader<SoundCue>, mut soun
             Sound::Bolt => (sounds.bolt.clone(), 0.6, 0.96 + random * 0.08),
             Sound::ShellIn => (sounds.shell_in.clone(), 0.5, 0.92 + random * 0.16),
             Sound::Pump => (sounds.pump.clone(), 0.75, 0.97 + random * 0.06),
+            Sound::BoltBack => (sounds.bolt_back.clone(), 0.45, 0.97 + random * 0.06),
+            // Not sped up or slowed: the lock must land when the gun is ready.
+            Sound::BoltHome => (sounds.bolt_home.clone(), 0.6, 1.0),
         };
         let settings = PlaybackSettings::DESPAWN
             .with_volume(Volume::Linear(volume))
@@ -469,7 +494,7 @@ fn synth_pump() -> Vec<f32> {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
         low_passed += (noise - low_passed) * 0.2;
         let slide = |from: f32, to: f32| if (from..to).contains(&t) { low_passed * 0.5 } else { 0.0 };
-        let back = knock(t, 0.09, 110.0, 1300.0, noise) + slide(0.0, 0.09);
+        let back = knock(t, PUMP_CLACK, 110.0, 1300.0, noise) + slide(0.0, PUMP_CLACK);
         let forward = knock(t, 0.22, 90.0, 900.0, noise) + slide(0.14, 0.22);
         ((back + forward * 1.2) * 1.5).tanh() * 0.9
     })
@@ -646,24 +671,191 @@ fn synth_ring() -> Vec<f32> {
     })
 }
 
-/// A short crack of noise over a falling bass thump.
-fn synth_gunshot() -> Vec<f32> {
-    let mut rng = 0x9e37_79b9;
-    let mut low_passed = 0.0;
+/// How one gun's shot is put together (see `synth_gunshot`). Decays are
+/// per second, frequencies in Hz.
+struct Report {
+    length: f32,
+    /// The blast wave out of the muzzle: seconds of overpressure (a bigger
+    /// charge pushes longer, and sounds deeper), and its gain.
+    blast: (f32, f32),
+    /// The crack: bright noise (cutoff, decay, gain).
+    crack: (f32, f32, f32),
+    /// The boom: a sine falling from one pitch to another (from, to, decay, gain).
+    boom: (f32, f32, f32, f32),
+    /// The body: darker noise (cutoff, decay, gain).
+    body: (f32, f32, f32),
+    /// The action slamming back and forward: a metal knock (seconds after
+    /// the shot, pitch, gain). Not on guns worked by hand.
+    action: Option<(f32, f32, f32)>,
+    /// The shot rolling back off the surroundings: dark noise (cutoff, decay, gain).
+    tail: (f32, f32, f32),
+    /// How hard it is driven into soft clipping: louder-seeming and rougher.
+    drive: f32,
+    level: f32,
+}
+
+fn report(weapon_id: WeaponId) -> Report {
+    match weapon_id {
+        SMG => Report {
+            length: 0.6,
+            blast: (0.0008, 0.9),
+            crack: (8000.0, 240.0, 2.2),
+            boom: (230.0, 95.0, 45.0, 0.5),
+            body: (2800.0, 70.0, 1.2),
+            action: Some((0.022, 2400.0, 0.3)),
+            tail: (1000.0, 9.0, 1.2),
+            drive: 1.8,
+            level: 0.8,
+        },
+        SHOTGUN => Report {
+            length: 1.4,
+            blast: (0.0025, 1.0),
+            crack: (5500.0, 110.0, 3.0),
+            boom: (120.0, 48.0, 15.0, 0.75),
+            body: (1500.0, 22.0, 1.6),
+            action: None,
+            tail: (700.0, 4.0, 1.8),
+            drive: 2.5,
+            level: 0.8,
+        },
+        SNIPER => Report {
+            length: 1.8,
+            blast: (0.0018, 1.1),
+            crack: (7500.0, 120.0, 3.4),
+            boom: (140.0, 50.0, 13.0, 0.7),
+            body: (1800.0, 26.0, 1.4),
+            action: None,
+            tail: (800.0, 3.2, 2.0),
+            drive: 2.6,
+            level: 0.83,
+        },
+        PISTOL => Report {
+            length: 0.7,
+            blast: (0.001, 0.9),
+            crack: (5500.0, 200.0, 2.0),
+            boom: (260.0, 110.0, 40.0, 0.7),
+            body: (2000.0, 60.0, 1.2),
+            action: Some((0.028, 2800.0, 0.3)),
+            tail: (900.0, 8.0, 1.0),
+            drive: 1.8,
+            level: 0.78,
+        },
+        _ => Report {
+            length: 0.9,
+            blast: (0.0012, 1.0),
+            crack: (9000.0, 160.0, 2.6),
+            boom: (180.0, 70.0, 30.0, 0.8),
+            body: (2200.0, 45.0, 1.3),
+            action: Some((0.035, 1900.0, 0.25)),
+            tail: (900.0, 6.0, 1.4),
+            drive: 2.0,
+            level: 0.9,
+        },
+    }
+}
+
+/// One take of a gun's shot: the blast wave and the crack of the muzzle,
+/// a falling boom, the action working, and the tail rolling back.
+fn synth_gunshot(weapon_id: WeaponId, take: u32) -> Vec<f32> {
+    let report = report(weapon_id);
+    let mut rng = 0x9e37_79b9 ^ (weapon_id as u32 + 1).wrapping_mul(0x85eb_ca6b) ^ (take + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+    let (blast_time, blast_gain) = report.blast;
+    let blast_time = vary(blast_time, 0.1);
+    let (crack_cutoff, crack_decay, crack_gain) = report.crack;
+    let mut crack = Biquad::new(Pass::Low, vary(crack_cutoff, 0.1), 0.7);
+    let crack_decay = vary(crack_decay, 0.1);
+    let (boom_from, boom_to, boom_decay, boom_gain) = report.boom;
+    let (boom_from, boom_to) = (vary(boom_from, 0.06), vary(boom_to, 0.06));
+    let (body_cutoff, body_decay, body_gain) = report.body;
+    let mut body = Biquad::new(Pass::Low, vary(body_cutoff, 0.1), 0.7);
+    let action = report.action.map(|(at, pitch, gain)| (vary(at, 0.15), vary(pitch, 0.08), gain));
+    let (tail_cutoff, tail_decay, tail_gain) = report.tail;
+    let mut tail = [Biquad::new(Pass::Low, vary(tail_cutoff, 0.1), 0.7); 2];
+    // The tail swells and fades a little as echoes come back.
+    let (roll_rate, roll_phase) = (vary(5.0, 0.3), random() * TAU);
+    let mut noise_rng = rng ^ 0x5bd1_e995;
     let mut phase = 0.0_f32;
-    samples(0.26, |t| {
+    let mut sound = samples(report.length, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        // Friedlander's blast wave: the pressure jumps up, falls through
+        // zero at `blast_time`, and a longer, shallower suction follows.
+        let blast = (1.0 - t / blast_time) * (-2.0 * t / blast_time).exp() * (t * 20_000.0).min(1.0);
+        let cracking = crack.run(noise) * (-t * crack_decay).exp();
+        phase += TAU * (boom_to + (boom_from - boom_to) * (-t * 40.0).exp()) / SAMPLE_RATE as f32;
+        let boom = phase.sin() * (-t * boom_decay).exp() * (t * 2000.0).min(1.0);
+        let bodies = body.run(noise) * (-t * body_decay).exp();
+        let working = action.map_or(0.0, |(at, pitch, gain)| knock(t, at, 140.0, pitch, noise) * gain);
+        let rolling = tail.iter_mut().fold(noise, |x, filter| filter.run(x));
+        let swell = 1.0 + 0.35 * (TAU * roll_rate * t + roll_phase).sin();
+        let tails = rolling * (t / 0.03).min(1.0) * (-t * tail_decay).exp() * swell;
+        let shot = blast * blast_gain
+            + cracking * crack_gain
+            + boom * boom_gain
+            + bodies * body_gain
+            + working
+            + tails * tail_gain;
+        (shot * report.drive).tanh()
+    });
+    finish(&mut sound, report.level);
+    sound
+}
+
+/// A bolt lifted and drawn back: the handle knocks up, the bolt slides back
+/// to a hard stop, and the empty case rings out as it is thrown and lands.
+fn synth_bolt_back() -> Vec<f32> {
+    let mut rng = 0x3a6_0006;
+    let mut low_passed = 0.0;
+    let mut scrape = Biquad::new(Pass::Band, 1900.0, 1.2);
+    // A brass case rings at a few unrelated pitches (frequency, decay).
+    const CASE: [(f32, f32); 3] = [(3650.0, 30.0), (5480.0, 38.0), (7320.0, 45.0)];
+    // (when, how hard): thrown out, then hitting the ground and bouncing.
+    const RINGS: [(f32, f32); 4] = [(0.17, 0.2), (0.46, 0.13), (0.53, 0.06), (0.57, 0.03)];
+    samples(0.7, |t| {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
-        // The noise starts bright and gets duller as it rings out.
-        let brightness = 0.08 + 0.8 * (-t * 45.0).exp();
-        low_passed += (noise - low_passed) * brightness;
-        let crack = low_passed * (-t * 24.0).exp();
+        low_passed += (noise - low_passed) * 0.2;
+        let lift = knock(t, 0.0, 300.0, 2600.0, noise) * 0.6 + knock(t, 0.012, 120.0, 700.0, low_passed * 1.5) * 0.5;
+        let drawing = if (0.05..0.16).contains(&t) {
+            let along = (t - 0.05) / 0.11;
+            scrape.run(noise) * (along * std::f32::consts::PI).sin() * 0.7
+        } else {
+            scrape.run(0.0)
+        };
+        let stop = knock(t, 0.16, 150.0, 1500.0, noise);
+        let ring: f32 = RINGS
+            .iter()
+            .filter(|(at, _)| t >= *at)
+            .map(|(at, hard)| {
+                let since = t - at;
+                let tone: f32 = CASE
+                    .iter()
+                    .map(|(frequency, decay)| (TAU * frequency * since).sin() * (-since * decay).exp())
+                    .sum();
+                tone * hard * (since * 3000.0).min(1.0)
+            })
+            .sum();
+        ((lift + drawing + stop + ring) * 1.5).tanh() * 0.85
+    })
+}
 
-        let frequency = 55.0 + 150.0 * (-t * 38.0).exp();
-        phase += TAU * frequency / SAMPLE_RATE as f32;
-        let thump = phase.sin() * (-t * 17.0).exp();
-
-        // Soft clipping gives it some bite.
-        ((crack * 1.5 + thump * 0.9) * 1.6).tanh() * 0.85
+/// A bolt pushed home: it slides forward, chambers the round with a dull
+/// knock, and locks down with a sharp click `BOLT_LOCK` seconds in.
+fn synth_bolt_home() -> Vec<f32> {
+    let mut rng = 0x3a6_0007;
+    let mut low_passed = 0.0;
+    let mut scrape = Biquad::new(Pass::Band, 1600.0, 1.2);
+    samples(0.24, |t| {
+        let noise = next_random(&mut rng) * 2.0 - 1.0;
+        low_passed += (noise - low_passed) * 0.2;
+        let pushing = if t < 0.075 {
+            scrape.run(noise) * (t / 0.075 * std::f32::consts::PI).sin() * 0.6
+        } else {
+            scrape.run(0.0)
+        };
+        let chamber = knock(t, 0.075, 110.0, 800.0, low_passed * 1.5) * 0.8;
+        let lock = knock(t, BOLT_LOCK, 200.0, 2200.0, noise) + knock(t, BOLT_LOCK + 0.004, 160.0, 3300.0, 0.0) * 0.5;
+        ((pushing + chamber + lock) * 1.6).tanh() * 0.9
     })
 }
 
@@ -1140,7 +1332,8 @@ mod tests {
     #[test]
     fn sounds_are_audible_and_do_not_clip() {
         let mut all = vec![
-            synth_gunshot(),
+            synth_bolt_back(),
+            synth_bolt_home(),
             synth_clack(),
             synth_swish(),
             synth_explosion(),
@@ -1157,6 +1350,9 @@ mod tests {
             synth_shell_in(),
             synth_pump(),
         ];
+        for weapon_id in 0..GUN_COUNT {
+            all.extend((0..GUNSHOT_TAKES).map(|take| synth_gunshot(weapon_id, take)));
+        }
         for surface in Surface::ALL {
             all.extend((0..FOOTSTEP_TAKES).map(|take| synth_footstep(surface, take, false)));
             all.extend((0..LANDING_TAKES).map(|take| synth_footstep(surface, take, true)));
@@ -1198,6 +1394,54 @@ mod tests {
             let mut expected = expected;
             expected.sort_by_key(|surface| *surface as u8);
             assert_eq!(found, expected, "map {id}");
+        }
+    }
+
+    /// Writes the guns out to listen to: each take of each shot, the bolt
+    /// and pump, and each gun fired at its own pace with what is heard in
+    /// between, at the levels they are played at. `cargo test write_guns --
+    /// -- --ignored`, into `target/sounds` (or `$SOUND_DIR`).
+    #[test]
+    #[ignore]
+    fn write_guns() {
+        use crate::{player::{BOLT_BACK, PUMP_AFTER, PUMP_TIME}, weapons::weapon};
+        let dir = std::env::var("SOUND_DIR").unwrap_or_else(|_| "target/sounds".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let rate = SAMPLE_RATE as f32;
+        for (name, sound) in [("bolt_back", synth_bolt_back()), ("bolt_home", synth_bolt_home()), ("pump", synth_pump())] {
+            std::fs::write(format!("{dir}/{name}.wav"), wav_bytes(&sound)).unwrap();
+        }
+        for weapon_id in 0..GUN_COUNT {
+            let stats = weapon(weapon_id);
+            let name = stats.name.to_lowercase();
+            let takes: Vec<_> = (0..GUNSHOT_TAKES).map(|take| synth_gunshot(weapon_id, take)).collect();
+            for (take, sound) in takes.iter().enumerate() {
+                std::fs::write(format!("{dir}/shot_{name}_{take}.wav"), wav_bytes(sound)).unwrap();
+            }
+            let shots = if stats.auto { 12 } else { 4 };
+            let mut fired = vec![0.0; ((shots as f32 * stats.interval + 2.0) * rate) as usize];
+            let mut put = |at: f32, sound: &[f32], volume: f32| {
+                for (i, s) in sound.iter().enumerate() {
+                    fired[(at * rate) as usize + i] += s * volume;
+                }
+            };
+            for shot in 0..shots {
+                let at = shot as f32 * stats.interval;
+                put(at, &takes[shot % takes.len()], 0.5);
+                if shot + 1 < shots {
+                    match stats.cycle {
+                        Some(crate::weapons::Cycle::Pump) => {
+                            put(at + PUMP_AFTER + PUMP_TIME / 2.0 - PUMP_CLACK, &synth_pump(), 0.75)
+                        }
+                        Some(crate::weapons::Cycle::Bolt) => {
+                            put(at + BOLT_BACK, &synth_bolt_back(), 0.45);
+                            put(at + stats.interval - BOLT_LOCK, &synth_bolt_home(), 0.6);
+                        }
+                        None => {}
+                    }
+                }
+            }
+            std::fs::write(format!("{dir}/firing_{name}.wav"), wav_bytes(&fired)).unwrap();
         }
     }
 
