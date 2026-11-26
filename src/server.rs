@@ -92,6 +92,13 @@ const BOT_SIGHT_RANGE: f32 = 70.0;
 /// and up to `BOT_REACTION_JITTER` more.
 const BOT_REACTION: f32 = 0.3;
 const BOT_REACTION_JITTER: f32 = 0.2;
+/// Beyond `BOT_FAR` metres, enemies take `BOT_SPOT_TIME` seconds longer
+/// to react to for every metre further, and the angle the aim wobbles by
+/// (`BOT_AIM_ERROR`) grows, twice as wide `BOT_FAR_DOUBLING` metres on:
+/// a far body is small and hard to make out.
+const BOT_FAR: f32 = 20.0;
+const BOT_SPOT_TIME: f32 = 0.008;
+const BOT_FAR_DOUBLING: f32 = 30.0;
 /// Radians per second.
 const BOT_TURN_RATE: f32 = 6.0;
 /// Radius of the aim wobble, in radians, once settled on a target...
@@ -105,7 +112,7 @@ const BOT_EASY_TRACK: f32 = 0.3;
 const BOT_TRACKING: f32 = 0.12;
 /// How much of the enemy's movement during the bullet's flight a bot aims
 /// ahead by: somewhere in this range, rolled with each wobble.
-const BOT_LEAD: (f32, f32) = (0.7, 1.1);
+const BOT_LEAD: (f32, f32) = (0.5, 1.2);
 /// Seconds over which a bot works out how fast its enemy is going.
 const BOT_VEL_SMOOTHING: f32 = 0.15;
 /// Seconds it takes the wobble to settle down to `BOT_AIM_ERROR`.
@@ -2030,7 +2037,8 @@ fn bot_pick_enemy(
         // A new enemy: take a moment to react, and dodge sideways right away.
         bot.enemy = Some(target.id);
         bot.sight = 0.0;
-        bot.reaction = BOT_REACTION + BOT_REACTION_JITTER * random_unit(rng);
+        let far = (target.center.distance(player.pos) - BOT_FAR).max(0.0);
+        bot.reaction = BOT_REACTION + BOT_REACTION_JITTER * random_unit(rng) + BOT_SPOT_TIME * far;
         bot.enemy_vel = Vec3::ZERO;
         bot.wobble_in = 0.0;
         bot.retarget_in = 0.0;
@@ -2254,7 +2262,8 @@ fn bot_fight(
         let along = offset / distance;
         let relative = bot.enemy_vel - bot.vel;
         let sweep = (relative - along * relative.dot(along)).length() / distance;
-        let error = BOT_AIM_ERROR + BOT_AIM_SLOP / distance + BOT_TRACKING * (sweep - BOT_EASY_TRACK).max(0.0);
+        let far = 1.0 + (distance - BOT_FAR).max(0.0) / BOT_FAR_DOUBLING;
+        let error = BOT_AIM_ERROR * far + BOT_AIM_SLOP / distance + BOT_TRACKING * (sweep - BOT_EASY_TRACK).max(0.0);
         let unsettled = 1.0 + 1.5 * (1.0 - bot.sight / BOT_AIM_SETTLE).max(0.0);
         let radius = error * unsettled * random_unit(rng).sqrt();
         let around = random_unit(rng) * std::f32::consts::TAU;
@@ -2918,14 +2927,20 @@ mod tests {
         bot.sight = 10.0;
         bot.enemy_vel = Vec3::X * 7.0;
         let enemy = Vec3::new(0.0, 0.0, -40.0);
-        let mut rng = 12345;
-        for _ in 0..60 {
-            bot_fight(1, &mut player, &mut bot, Some(enemy), false, &mut rng, 1.0 / 60.0);
-        }
         let to = aim_point(enemy) - bot_eye(&player);
         let straight = (-to.x).atan2(-to.z);
+        // Its aim wobbles, so on average over ten seconds (after turning).
+        let mut rng = 12345;
+        let mut off = 0.0;
+        for tick in 0..60 * 11 {
+            bot_fight(1, &mut player, &mut bot, Some(enemy), false, &mut rng, 1.0 / 60.0);
+            if tick >= 60 {
+                off += angle_between(straight, player.yaw) / (60.0 * 10.0);
+            }
+        }
         // Yaw grows to the left, so aiming right of them is a smaller yaw.
-        assert!(angle_between(straight, player.yaw) < -0.005, "not leading: {} vs {}", player.yaw, straight);
+        // Running 7 m/s, a bullet's 0.27 s flight ahead is 0.047 rad.
+        assert!(off < -0.02, "not leading: {off}");
     }
 
     #[test]
