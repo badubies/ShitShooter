@@ -25,7 +25,9 @@ use bevy::{
 
 use crate::{
     AppState, LaunchArgs,
-    graphics::{AntiAlias, FRAME_LIMITS, Graphics, Preset, Shadows, TEXTURE_FILTERING, texture_filtering_in_use},
+    graphics::{
+        AntiAlias, FRAME_LIMITS, Graphics, Preset, Shadows, TEXTURE_FILTERING, render_size, texture_filtering_in_use,
+    },
     player::Controls,
     protocol::{FRAG, GRENADE_KINDS, GRENADES, GrenadeKind},
     weapons::{
@@ -343,16 +345,18 @@ enum Dial {
     Volume,
     UiScale,
     Brightness,
+    RenderScale,
 }
 
 impl Dial {
-    const ALL: [Dial; 6] = [
+    const ALL: [Dial; 7] = [
         Dial::Sensitivity,
         Dial::AdsSensitivity,
         Dial::Fov,
         Dial::Volume,
         Dial::UiScale,
         Dial::Brightness,
+        Dial::RenderScale,
     ];
     /// The ones on the General page.
     const GENERAL: [Dial; 5] = [Dial::Sensitivity, Dial::AdsSensitivity, Dial::Fov, Dial::Volume, Dial::UiScale];
@@ -366,6 +370,7 @@ impl Dial {
             Dial::Volume => ("Volume", 0.05, 0.0, 1.0),
             Dial::UiScale => ("HUD size", 0.05, 0.75, 1.5),
             Dial::Brightness => ("Brightness", 0.05, 0.5, 2.0),
+            Dial::RenderScale => ("Render scale", 0.05, 0.5, 2.0),
         }
     }
 }
@@ -427,6 +432,7 @@ impl Settings {
             Dial::Volume => &mut self.volume,
             Dial::UiScale => &mut self.ui_scale,
             Dial::Brightness => &mut self.graphics.brightness,
+            Dial::RenderScale => &mut self.graphics.render_scale,
         }
     }
 
@@ -438,6 +444,7 @@ impl Settings {
             Dial::Volume => format!("{:.0}%", self.volume * 100.0),
             Dial::UiScale => format!("{:.0}%", self.ui_scale * 100.0),
             Dial::Brightness => format!("{:.0}%", self.graphics.brightness * 100.0),
+            Dial::RenderScale => format!("{:.0}%", self.graphics.render_scale * 100.0),
         }
     }
 
@@ -880,6 +887,7 @@ enum Hint {
     Preset,
     AmbientOcclusion,
     TextureFiltering,
+    RenderScale,
 }
 #[derive(Component)]
 struct DialSlider(Dial);
@@ -1096,7 +1104,7 @@ fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
         }))
         .with_children(|dials| {
             for (index, dial) in Dial::GENERAL.into_iter().enumerate() {
-                dial_row(dials, dial, settings, index + 1 < Dial::GENERAL.len());
+                dial_row(dials, dial, settings, index + 1 < Dial::GENERAL.len(), 72.0, None);
             }
         });
         row.spawn((
@@ -1123,14 +1131,22 @@ fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
     });
 }
 
-/// A dial's line: its name, its slider and its value. `rule` draws the line
-/// under it that parts it from the next.
-fn dial_row(parent: &mut ChildSpawnerCommands, dial: Dial, settings: &Settings, rule: bool) {
+/// A dial's line, `height` tall: its name (with a hint under it, if
+/// given), its slider and its value. `rule` draws the line under it that
+/// parts it from the next.
+fn dial_row(
+    parent: &mut ChildSpawnerCommands,
+    dial: Dial,
+    settings: &Settings,
+    rule: bool,
+    height: f32,
+    hint: Option<HintText>,
+) {
     let (name, step, low, high) = dial.info();
     let value = *settings.clone().dial(dial);
     parent
         .spawn(Node {
-            height: px(72),
+            height: px(height),
             align_items: AlignItems::Center,
             column_gap: px(24),
             border: UiRect::bottom(px(if rule { 1 } else { 0 })),
@@ -1138,14 +1154,19 @@ fn dial_row(parent: &mut ChildSpawnerCommands, dial: Dial, settings: &Settings, 
         })
         .insert(BorderColor::all(ui::PANEL_EDGE))
         .with_children(|line| {
-            line.spawn((
-                ui::weighted(name, 16.0, 600, TEXT),
-                Node {
-                    width: px(190),
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-            ));
+            line.spawn(Node {
+                width: px(190),
+                flex_shrink: 0.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(3),
+                ..default()
+            })
+            .with_children(|names| {
+                names.spawn(ui::weighted(name, 16.0, 600, TEXT));
+                if let Some(hint) = hint {
+                    spawn_hint(names, hint);
+                }
+            });
             line.spawn(dial_slider(dial, value, low, high, step))
                 .observe(slider_self_update)
                 .observe(move |change: On<ValueChange<f32>>, mut settings: ResMut<Settings>| {
@@ -1242,7 +1263,8 @@ fn graphics_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
                     .map(|n| (if n == 1 { "Off".to_string() } else { format!("{n}x") }, Pick::TextureFiltering(n)))
                     .to_vec(),
             );
-            dial_row(quality, Dial::Brightness, settings, false);
+            dial_row(quality, Dial::RenderScale, settings, true, 58.0, Some(HintText::Live(Hint::RenderScale)));
+            dial_row(quality, Dial::Brightness, settings, false, 58.0, Some(HintText::Fixed("The 3D view, not the HUD.")));
         });
         // Wider than the General page's, for the frame rate limits in one line.
         row.spawn(settings_box(Node {
@@ -1289,6 +1311,18 @@ enum HintText {
     Live(Hint),
 }
 
+/// The line under a setting's name.
+fn spawn_hint(parent: &mut ChildSpawnerCommands, hint: HintText) {
+    match hint {
+        HintText::Fixed(text) => {
+            parent.spawn(ui::label(text, 12.0, DIM));
+        }
+        HintText::Live(hint) => {
+            parent.spawn((ui::label("", 12.0, DIM), hint));
+        }
+    }
+}
+
 /// "Off" and "On" for a setting that is one or the other.
 fn on_off(pick: fn(bool) -> Pick) -> Vec<(String, Pick)> {
     vec![("Off".into(), pick(false)), ("On".into(), pick(true))]
@@ -1318,14 +1352,7 @@ fn option_row(parent: &mut ChildSpawnerCommands, name: &str, hint: HintText, pic
             })
             .with_children(|names| {
                 names.spawn(ui::weighted(name, 16.0, 600, TEXT));
-                match hint {
-                    HintText::Fixed(text) => {
-                        names.spawn(ui::label(text, 12.0, DIM));
-                    }
-                    HintText::Live(hint) => {
-                        names.spawn((ui::label("", 12.0, DIM), hint));
-                    }
-                }
+                spawn_hint(names, hint);
             });
             line.spawn(Node {
                 flex_grow: 1.0,
@@ -1604,6 +1631,7 @@ fn update_panel(
     mut dials: Query<(&DialText, &mut Text), (Without<BindText>, Without<Hint>)>,
     mut binds: Query<(&BindText, &mut Text, &mut TextColor), (Without<DialText>, Without<Hint>)>,
     mut hints: Query<(&Hint, &mut Text, &mut TextColor), (Without<DialText>, Without<BindText>)>,
+    window: Single<&Window, With<PrimaryWindow>>,
 ) {
     for (dial, mut text) in &mut dials {
         ui::set_text(&mut text, settings.dial_text(dial.0));
@@ -1612,17 +1640,29 @@ fn update_panel(
     for (hint, mut text, mut color) in &mut hints {
         let (shown, wanted) = match hint {
             Hint::Preset if Preset::ALL.iter().any(|preset| preset.matches(graphics)) => {
-                ("Sets the four below.", DIM)
+                ("Sets the four below.".to_string(), DIM)
             }
-            Hint::Preset => ("Custom: changed below.", DIM),
-            Hint::AmbientOcclusion if graphics.anti_alias == AntiAlias::Msaa4 => ("On swaps MSAA for SMAA.", DIM),
-            Hint::AmbientOcclusion => ("Shade where surfaces meet.", DIM),
+            Hint::Preset => ("Custom: changed below.".to_string(), DIM),
+            Hint::AmbientOcclusion if graphics.anti_alias == AntiAlias::Msaa4 => {
+                ("On swaps MSAA for SMAA.".to_string(), DIM)
+            }
+            Hint::AmbientOcclusion => ("Shade where surfaces meet.".to_string(), DIM),
             Hint::TextureFiltering if graphics.texture_filtering != texture_filtering_in_use() => {
-                ("Restart the game to apply.", ACCENT)
+                ("Restart the game to apply.".to_string(), ACCENT)
             }
-            Hint::TextureFiltering => ("Sharpness of far, slanted ground.", DIM),
+            Hint::TextureFiltering => ("Sharpness of far, slanted ground.".to_string(), DIM),
+            Hint::RenderScale => {
+                // The pixels the 3D view is drawn at, against the screen's.
+                let screen = window.physical_size();
+                let drawn = render_size(screen, graphics.render_scale);
+                if drawn == screen {
+                    (format!("Full: {} × {}.", screen.x, screen.y), DIM)
+                } else {
+                    (format!("{} × {} of {} × {}.", drawn.x, drawn.y, screen.x, screen.y), DIM)
+                }
+            }
         };
-        ui::set_text(&mut text, shown.to_string());
+        ui::set_text(&mut text, shown);
         if color.0 != wanted {
             color.0 = wanted;
         }

@@ -1,6 +1,7 @@
 //! The static scene: map geometry, lighting, the camera and shared assets.
 
 use bevy::{
+    camera::ShadowLodOrigin,
     light::{CascadeShadowConfigBuilder, NotShadowCaster},
     prelude::*,
     render::render_resource::Face,
@@ -170,6 +171,9 @@ fn setup(
     commands.spawn((
         MainCamera,
         Camera3d::default(),
+        // The detail of point lights' shadows is decided from here, also
+        // when it draws into an image (see `graphics.rs`) and not the window.
+        ShadowLodOrigin,
         Projection::from(PerspectiveProjection {
             fov: crate::player::BASE_FOV,
             near: 0.01,

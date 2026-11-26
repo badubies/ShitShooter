@@ -1,12 +1,21 @@
 //! Graphics settings: anti-aliasing, shadows, ambient occlusion, bloom,
-//! brightness, texture filtering, vertical sync and a frame rate limit. They
-//! are part of `Settings` (saved with the rest, edited on the settings
-//! panel's Graphics page), and this module puts them on the main camera, the
-//! sun and the window whenever they change.
+//! brightness, texture filtering, render scale, vertical sync and a frame
+//! rate limit. They are part of `Settings` (saved with the rest, edited on
+//! the settings panel's Graphics page), and this module puts them on the
+//! main camera, the sun and the window whenever they change.
 //!
 //! The defaults are how the game looked before there were any: MSAA 4x, the
 //! sun's shadows at 2048 texels over four cascades, no bloom, textures
-//! filtered 4x, vertical sync on and no limit.
+//! filtered 4x, the 3D view drawn at the window's own resolution, vertical
+//! sync on and no limit.
+//!
+//! At a render scale other than 100% the main camera draws the 3D view
+//! into an image that much smaller (or bigger) than the screen, and a
+//! second camera, `ScreenCamera`, shows it stretched over the whole screen
+//! behind the HUD and menus, which it draws at full resolution. The image
+//! has the screen's shape, so whatever is placed over the 3D view from the
+//! camera's field of view and the window's size (pings, flags, names)
+//! still lines up.
 
 use std::{
     sync::atomic::{AtomicU16, Ordering},
@@ -14,15 +23,18 @@ use std::{
 };
 
 use bevy::{
-    anti_alias::{fxaa::Fxaa, smaa::Smaa},
-    camera::Hdr,
+    anti_alias::{contrast_adaptive_sharpening::ContrastAdaptiveSharpening, fxaa::Fxaa, smaa::Smaa},
+    camera::{Hdr, ImageRenderTarget, RenderTarget},
     core_pipeline::prepass::{DepthPrepass, NormalPrepass},
     light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap},
     pbr::ScreenSpaceAmbientOcclusion,
     post_process::bloom::Bloom,
     prelude::*,
-    render::view::{ColorGrading, Msaa},
-    window::{PresentMode, PrimaryWindow},
+    render::{
+        render_resource::TextureFormat,
+        view::{ColorGrading, Msaa},
+    },
+    window::{PresentMode, PrimaryWindow, WindowRef},
 };
 
 use crate::{
@@ -35,7 +47,8 @@ pub struct GraphicsPlugin;
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DirectionalLightShadowMap>()
-            .add_systems(Update, apply_graphics.run_if(resource_changed::<Settings>))
+            .init_resource::<ScreenTarget>()
+            .add_systems(Update, (apply_graphics.run_if(resource_changed::<Settings>), route_picture))
             // After everything else in the frame, so the wait is the frame's last.
             .add_systems(Last, limit_frame_rate);
     }
@@ -129,6 +142,10 @@ pub struct Graphics {
     pub texture_filtering: u16,
     /// How bright the 3D view is, 1 as designed. The HUD and menus keep theirs.
     pub brightness: f32,
+    /// The 3D view's resolution, as a share of the screen's along each side:
+    /// below 1 for speed, above for a sharper picture. The HUD and menus are
+    /// always drawn at the screen's.
+    pub render_scale: f32,
     pub vsync: bool,
     /// Frames a second at most; 0 for no limit.
     pub max_fps: u32,
@@ -145,6 +162,7 @@ impl Default for Graphics {
             bloom: false,
             texture_filtering: 4,
             brightness: 1.0,
+            render_scale: 1.0,
             vsync: true,
             max_fps: 0,
             show_stats: true,
@@ -193,6 +211,7 @@ impl Graphics {
                 }
             }
             "brightness" => self.brightness = value.parse().unwrap_or(self.brightness),
+            "render_scale" => self.render_scale = value.parse().unwrap_or(self.render_scale),
             "vsync" => self.vsync = flag.unwrap_or(self.vsync),
             "max_fps" => {
                 if let Ok(n) = value.parse::<u32>() {
@@ -214,13 +233,14 @@ impl Graphics {
 
     pub fn write(&self, text: &mut String) {
         text.push_str(&format!(
-            "anti_aliasing = {}\nshadows = {}\nambient_occlusion = {}\nbloom = {}\ntexture_filtering = {}\nbrightness = {}\nvsync = {}\nmax_fps = {}\nshow_stats = {}\n",
+            "anti_aliasing = {}\nshadows = {}\nambient_occlusion = {}\nbloom = {}\ntexture_filtering = {}\nbrightness = {}\nrender_scale = {}\nvsync = {}\nmax_fps = {}\nshow_stats = {}\n",
             self.anti_alias.names().1,
             self.shadows.names().1,
             self.ambient_occlusion,
             self.bloom,
             self.texture_filtering,
             self.brightness,
+            self.render_scale,
             self.vsync,
             self.max_fps,
             self.show_stats,
@@ -390,6 +410,170 @@ fn apply_graphics(
     }
 }
 
+// ---------------------------------------------------------------- render scale
+
+/// Where the finished picture goes: the window, or the image the self-test
+/// takes its pictures from (`devtools.rs` sets it).
+#[derive(Resource, Default)]
+pub struct ScreenTarget(pub Option<ImageRenderTarget>);
+
+impl ScreenTarget {
+    fn render_target(&self) -> RenderTarget {
+        match &self.0 {
+            Some(image) => RenderTarget::Image(image.clone()),
+            None => RenderTarget::Window(WindowRef::Primary),
+        }
+    }
+}
+
+/// Draws the HUD and menus, and the 3D view stretched under them, when the
+/// 3D view is drawn at another resolution than the screen's.
+#[derive(Component)]
+struct ScreenCamera;
+
+/// The 3D view as the screen camera shows it: an image over the whole
+/// screen, under everything else.
+#[derive(Component)]
+struct Backdrop;
+
+/// The biggest image the 3D view is drawn into, along either side: the
+/// largest texture every graphics card takes.
+const MAX_RENDER_SIZE: f32 = 8192.0;
+
+/// How strongly a picture drawn smaller than the screen is sharpened, to
+/// win back some of what stretching it softens.
+const UPSCALE_SHARPENING: f32 = 0.5;
+
+/// The size the 3D view is drawn at for a screen of `screen` pixels, kept
+/// to the screen's shape.
+pub fn render_size(screen: UVec2, scale: f32) -> UVec2 {
+    let wanted = screen.as_vec2() * scale;
+    let fit = (MAX_RENDER_SIZE / wanted.max_element()).min(1.0);
+    (wanted * fit).round().as_uvec2().max(UVec2::ONE)
+}
+
+/// What `route_picture` last set up: the render scale, the screen's size and
+/// scale factor, and where the picture went.
+#[derive(PartialEq)]
+struct Route {
+    scale: u32,
+    screen: UVec2,
+    scale_factor: u32,
+    target: Option<AssetId<Image>>,
+}
+
+/// Points the main camera at the screen, or at an image of the render
+/// scale's size that the screen camera shows, whenever the scale, the
+/// window's size or the screen target changes.
+fn route_picture(
+    mut commands: Commands,
+    settings: Res<Settings>,
+    target: Res<ScreenTarget>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut images: ResMut<Assets<Image>>,
+    mut last: Local<Option<Route>>,
+    camera: Single<Entity, With<MainCamera>>,
+    screen_cameras: Query<Entity, With<ScreenCamera>>,
+    mut backdrops: Query<(Entity, &mut ImageNode, &mut Node), With<Backdrop>>,
+) {
+    // Within half a step of 100% is 100%: the slider's steps are 5%.
+    let mut scale = settings.graphics.render_scale;
+    if (scale - 1.0).abs() < 0.025 {
+        scale = 1.0;
+    }
+    let screen = window.physical_size();
+    // Minimised: nothing to draw, and nothing to size an image by.
+    if screen.min_element() == 0 {
+        return;
+    }
+    let route = Route {
+        scale: scale.to_bits(),
+        screen,
+        scale_factor: window.scale_factor().to_bits(),
+        target: target.0.as_ref().map(|image| image.handle.id()),
+    };
+    if last.as_ref() == Some(&route) {
+        return;
+    }
+    *last = Some(route);
+
+    if scale == 1.0 {
+        // Straight to the screen, HUD and all, as without a render scale.
+        commands
+            .entity(*camera)
+            .insert((target.render_target(), IsDefaultUiCamera))
+            .remove::<ContrastAdaptiveSharpening>();
+        for screen_camera in &screen_cameras {
+            commands.entity(screen_camera).despawn();
+        }
+        for (backdrop, ..) in &backdrops {
+            commands.entity(backdrop).despawn();
+        }
+        return;
+    }
+
+    let size = render_size(screen, scale);
+    // The format the loadout's pictures use too: stored plainly, drawn into as sRGB.
+    let image = images.add(Image::new_target_texture(
+        size.x,
+        size.y,
+        TextureFormat::Rgba8Unorm,
+        Some(TextureFormat::Rgba8UnormSrgb),
+    ));
+    let picture = ImageRenderTarget {
+        handle: image.clone(),
+        // So the camera's size in logical pixels is the window's.
+        scale_factor: window.scale_factor() * size.x as f32 / screen.x as f32,
+    };
+    let mut main = commands.entity(*camera);
+    main.insert(RenderTarget::Image(picture)).remove::<IsDefaultUiCamera>();
+    if scale < 1.0 {
+        main.insert(ContrastAdaptiveSharpening {
+            sharpening_strength: UPSCALE_SHARPENING,
+            ..default()
+        });
+    } else {
+        main.remove::<ContrastAdaptiveSharpening>();
+    }
+
+    match screen_cameras.iter().next() {
+        Some(screen_camera) => {
+            commands.entity(screen_camera).insert(target.render_target());
+        }
+        None => {
+            commands.spawn((
+                ScreenCamera,
+                Camera2d,
+                // After the main camera, whose picture it shows.
+                Camera {
+                    order: 1,
+                    ..default()
+                },
+                target.render_target(),
+                IsDefaultUiCamera,
+            ));
+        }
+    }
+    match backdrops.iter_mut().next() {
+        // The old image goes once nothing holds it.
+        Some((_, mut node_image, _)) => node_image.image = image,
+        None => {
+            commands.spawn((
+                Backdrop,
+                ImageNode::new(image),
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    height: percent(100),
+                    ..default()
+                },
+                GlobalZIndex(i32::MIN),
+                Pickable::IGNORE,
+            ));
+        }
+    }
+}
+
 /// Holds each frame back until its turn when there is a limit. It sleeps
 /// for most of the wait and spins for the last moment, as a sleep can
 /// overrun by a millisecond or so.
@@ -430,6 +614,7 @@ mod tests {
             bloom: true,
             texture_filtering: 16,
             brightness: 1.35,
+            render_scale: 0.75,
             vsync: false,
             max_fps: 144,
             show_stats: false,
@@ -463,6 +648,16 @@ mod tests {
             assert!(!(graphics.ambient_occlusion && graphics.anti_alias == AntiAlias::Msaa4), "{preset:?}");
             assert!(preset.matches(&graphics));
         }
+    }
+
+    #[test]
+    fn the_picture_keeps_the_screen_shape_within_the_size_limit() {
+        assert_eq!(render_size(UVec2::new(2560, 1440), 1.0), UVec2::new(2560, 1440));
+        assert_eq!(render_size(UVec2::new(2560, 1440), 0.75), UVec2::new(1920, 1080));
+        assert_eq!(render_size(UVec2::new(2560, 1440), 0.5), UVec2::new(1280, 720));
+        // A 5K screen at 200% would be 10240 wide: held to 8192, same shape.
+        assert_eq!(render_size(UVec2::new(5120, 2880), 2.0), UVec2::new(8192, 4608));
+        assert_eq!(render_size(UVec2::new(1, 1), 0.5), UVec2::new(1, 1));
     }
 
     #[test]
