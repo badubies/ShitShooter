@@ -144,7 +144,7 @@ fn look(material: &str) -> Option<(Pattern, f32)> {
 /// The texture a map block gets, by its colour, and the metres one tile
 /// covers. Unknown colours get concrete.
 pub fn block_look(color: [f32; 3]) -> (Pattern, f32) {
-    use crate::{hamlet, map, surf};
+    use crate::{gauntlet, hamlet, map, surf};
     use Pattern::*;
     let looks = [
         (map::FLOOR, Panels, 4.0),
@@ -167,6 +167,11 @@ pub fn block_look(color: [f32; 3]) -> (Pattern, f32) {
         (hamlet::WOOD, Wood, 1.0),
         (surf::RAMP, Panels, 4.0),
         (surf::DECK, Paint, 2.0),
+        (gauntlet::CHUTE, Panels, 4.0),
+        (gauntlet::RIDGE, Panels, 4.0),
+        (gauntlet::DECK, Slab, 4.0),
+        (gauntlet::PIT, Concrete, 6.0),
+        (gauntlet::PILLAR, Concrete, 2.5),
     ];
     looks
         .into_iter()

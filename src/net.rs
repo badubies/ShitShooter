@@ -85,6 +85,8 @@ pub struct Session {
     /// Seconds of the starting countdown left: nobody can move or shoot while
     /// it is above 0. It keeps going down to -1, so "GO" can show for a moment.
     pub countdown: f32,
+    /// Seconds played since the countdown ended: a race's clock.
+    pub elapsed: f32,
     /// Result line of the previous match, shown in the lobby.
     pub last_result: Option<String>,
     /// The scoreboard the previous match ended on, which the lobby can show.
@@ -339,6 +341,9 @@ fn update_session(
     mut next_state: ResMut<NextState<AppState>>,
     mut sounds: MessageWriter<SoundCue>,
 ) {
+    if session.countdown <= 0.0 {
+        session.elapsed += time.delta_secs();
+    }
     // A beep for each second of the countdown, and a higher one for the start.
     if session.countdown > -1.0 {
         let before = session.countdown;
@@ -382,7 +387,9 @@ fn update_session(
                 score_limit,
                 time_left,
                 countdown,
+                elapsed,
             } => {
+                session.elapsed = *elapsed;
                 // Joining a match already under way: no countdown, and no "GO".
                 session.countdown = if *countdown > 0.0 { *countdown } else { -1.0 };
                 if session.frozen() {

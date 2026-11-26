@@ -14,6 +14,8 @@
 
 // Shared by the game and the servers.
 mod canvas;
+mod course;
+mod gauntlet;
 mod hamlet;
 mod hub;
 mod map;
@@ -60,6 +62,8 @@ mod paint_editor;
 mod ping;
 #[cfg(feature = "client")]
 mod player;
+#[cfg(feature = "client")]
+mod race;
 #[cfg(feature = "client")]
 mod remote;
 #[cfg(feature = "client")]
@@ -160,14 +164,16 @@ SERVERS:
     --password <TEXT>    Lobby password (--host, --join and --server)
 
 LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
-    --mode <NAME>        Game mode: ffa, teams, hill or conquest [default: ffa]
+    --mode <NAME>        Game mode: ffa, teams, hill, conquest, race or trial
+                         [default: ffa] (race, trial: no guns, no bots)
     --frags <N>          Kills needed to win (doubled for teams) [default: 20]
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
     --bots-hold-fire     The bots never shoot
     --bot-difficulty <L> How well bots fight: easy, normal or hard [default: normal]
-    --map <NAME>         Map: arena, depot, valley, hamlet or surf [default: arena]
-                         (hamlet, surf: ffa and teams only)
+    --map <NAME>         Map: arena, depot, valley, hamlet, surf or gauntlet
+                         [default: arena] (hamlet, surf: ffa and teams only;
+                         gauntlet: race and trial, and they only there)
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
 
     --help               Show this text
@@ -217,17 +223,21 @@ fn parse_args() -> Result<LaunchArgs, String> {
             }
             "--mode" => {
                 let name = value("name")?;
-                args.server.mode = ["ffa", "teams", "hill", "conquest"]
+                args.server.mode = ["ffa", "teams", "hill", "conquest", "race", "trial"]
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown mode '{name}' (try: ffa, teams, hill, conquest)"))? as u8;
+                    .ok_or_else(|| format!("unknown mode '{name}' (try: ffa, teams, hill, conquest, race, trial)"))? as u8;
+                // The racing modes are only run on the course.
+                if protocol::is_course_mode(args.server.mode) && args.map.is_none() {
+                    args.server.map = map::GAUNTLET;
+                }
             }
             "--map" => {
                 let name = value("name")?;
                 args.server.map = map::MAP_NAMES
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley, hamlet, surf)"))? as u8;
+                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley, hamlet, surf, gauntlet)"))? as u8;
                 args.map = Some(args.server.map);
             }
             "--airaccel" => {
@@ -241,6 +251,10 @@ fn parse_args() -> Result<LaunchArgs, String> {
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown option '{other}'")),
         }
+    }
+    // The course on its own means a race.
+    if args.server.map == map::GAUNTLET && args.server.mode == protocol::MODE_FFA {
+        args.server.mode = protocol::MODE_RACE;
     }
     if !map::plays(args.server.map, args.server.mode) {
         return Err(format!(
@@ -376,7 +390,7 @@ fn run_game(args: LaunchArgs) {
             remote::RemotePlugin,
             combat::CombatPlugin,
             grenade::GrenadePlugin,
-            (ping::PingPlugin, conquest::ConquestPlugin, minimap::MinimapPlugin),
+            (ping::PingPlugin, conquest::ConquestPlugin, minimap::MinimapPlugin, race::RacePlugin),
             paint::PaintPlugin,
             paint_editor::PaintEditorPlugin,
             gun_model::GunModelPlugin,

@@ -5,7 +5,8 @@
 use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
-    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, MODE_FFA, MODE_TEAMS, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE},
+    course::Course,
+    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, MODE_FFA, MODE_TEAMS, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE, is_course_mode},
     props::{FLAGPOLE, PROPS},
     ramp::{Ramp, WALKABLE},
     terrain::Terrain,
@@ -29,12 +30,18 @@ pub const STEP_UP: f32 = 0.5;
 /// Side of a cell of the grids that find the blocks and ramps near a point quickly.
 const GRID_CELL: f32 = 8.0;
 
-pub const MAP_NAMES: [&str; 5] = ["Arena", "Depot", "Valley", "Hamlet", "Surf"];
+pub const MAP_NAMES: [&str; 6] = ["Arena", "Depot", "Valley", "Hamlet", "Surf", "Gauntlet"];
+/// The id of the surf course, the one map with a `Course`.
+pub const GAUNTLET: u8 = 5;
 
 /// True if map `id` can be played in `mode`. Hamlet is built for close
 /// fights only, and Surf for riding ramps: neither has flags for conquest
-/// nor a hill.
+/// nor a hill. The racing modes are run on a course, and the course is
+/// for nothing else.
 pub fn plays(id: u8, mode: u8) -> bool {
+    if is_course_mode(mode) || id == GAUNTLET {
+        return is_course_mode(mode) && id == GAUNTLET;
+    }
     !matches!(id, 3 | 4) || mode == MODE_FFA || mode == MODE_TEAMS
 }
 
@@ -226,6 +233,8 @@ pub struct Map {
     /// Conquest: the capture points, and where each team starts.
     pub flags: Vec<FlagPoint>,
     pub bases: [Vec<Spawn>; 2],
+    /// The racing modes: the start, checkpoints and finish.
+    pub course: Option<Course>,
     pub look: Look,
     grid: BlockGrid,
     ramp_grid: BlockGrid,
@@ -412,6 +421,7 @@ impl Map {
             water: Vec::new(),
             flags: Vec::new(),
             bases: [Vec::new(), Vec::new()],
+            course: None,
             look: Look::default(),
             grid: BlockGrid::default(),
             ramp_grid: BlockGrid::default(),
@@ -505,6 +515,7 @@ impl Map {
             2 => crate::valley::valley(),
             3 => crate::hamlet::hamlet(),
             4 => crate::surf::surf(),
+            GAUNTLET => crate::gauntlet::gauntlet(),
             _ => Map::arena(),
         }
     }
@@ -1212,7 +1223,9 @@ mod tests {
     #[test]
     fn armor_lies_on_something_a_player_can_stand_in() {
         for map in maps() {
-            assert!(!map.armor_spots.is_empty() && map.armor_spots.len() <= 32, "map {}", map.id);
+            // Nobody gets hurt on a course.
+            assert_eq!(map.armor_spots.is_empty(), map.course.is_some(), "map {}", map.id);
+            assert!(map.armor_spots.len() <= 32, "map {}", map.id);
             for spot in &map.armor_spots {
                 let standing = *spot + Vec3::Y * (PLAYER_HALF.y + 0.01);
                 assert!(map.is_free(standing, PLAYER_HALF), "map {} armor at {spot} is inside a block", map.id);

@@ -15,6 +15,7 @@ use bevy::{
 use crate::{
     AppState,
     audio::{BOLT_LOCK, Sound, SoundCue, surface_under},
+    course::{Course, Run},
     gun_model::{Fitted, FittedModels, GunHolder, GunPart, PartKind},
     loadout::DeathLoadoutOpen,
     map::{self, CROUCH_EYE, Map, PLAYER_HALF, STAND_EYE},
@@ -365,6 +366,38 @@ pub struct LocalPlayer {
     pub hold: f32,
     /// Seconds of flashbang blindness left.
     pub blind: f32,
+    /// No weapons this match (the racing modes): nothing in hand, nothing
+    /// to aim or fire.
+    pub unarmed: bool,
+    /// Which racing mode this is, if any.
+    pub racing: Racing,
+    /// The racing modes: our run along the course, timed step by step.
+    pub run: Run,
+    /// What happened on it that the server has not been told yet.
+    pub run_events: Vec<crate::course::RunEvent>,
+    /// Seconds since we went through the finish.
+    pub finished_for: f32,
+}
+
+/// The racing modes, as the local player plays them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Racing {
+    #[default]
+    No,
+    /// Everybody's clock starts at "GO".
+    Race,
+    /// Our clock starts when we leave the start.
+    Trial,
+}
+
+impl Racing {
+    pub fn of(mode: u8) -> Racing {
+        match mode {
+            MODE_RACE => Racing::Race,
+            MODE_TRIAL => Racing::Trial,
+            _ => Racing::No,
+        }
+    }
 }
 
 impl Default for LocalPlayer {
@@ -426,6 +459,11 @@ impl Default for LocalPlayer {
             throw_anim: 0.0,
             hold: 0.0,
             blind: 0.0,
+            unarmed: false,
+            racing: Racing::No,
+            run: Run::default(),
+            run_events: Vec::new(),
+            finished_for: 0.0,
         }
     }
 }
@@ -633,10 +671,18 @@ fn handle_net(
                 spawn_seq,
                 grenade: kind,
             } if *id == session.my_id => {
+                let racing = Racing::of(session.mode);
                 *player = LocalPlayer {
                     yaw: *yaw,
                     frame_yaw: *yaw,
                     alive: true,
+                    unarmed: is_course_mode(session.mode),
+                    racing,
+                    // Coming into a race already under way: on its clock.
+                    run: Run {
+                        clock: (racing == Racing::Race && !session.frozen()).then_some(session.elapsed),
+                        ..default()
+                    },
                     health: MAX_HEALTH,
                     armor: START_ARMOR,
                     spawn_seq: *spawn_seq,
@@ -935,9 +981,13 @@ fn advance(p: &mut LocalPlayer, frame: f32, held: &Held, map: &Map, air_accel: f
         let right = Vec3::new(-forward.z, 0.0, forward.x);
         let wish = (right * held.keys.x + forward * held.keys.y).normalize_or_zero();
         p.last_feet = p.feet();
+        let before = p.pos;
         step(p, held, wish, forward, map, air_accel, frozen);
         p.jump_queued = false;
         p.dash_queued = false;
+        if let Some(course) = &map.course {
+            follow_course(p, course, before, frozen);
+        }
     }
     let feet = p.feet();
     p.view_feet = if p.last_feet.distance_squared(feet) > SNAP_DISTANCE * SNAP_DISTANCE {
@@ -978,13 +1028,15 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
         }
     }
 
-    let aiming = held.aim && !p.reloading() && p.slot != KNIFE_SLOT && p.hand.is_none();
+    let aiming = held.aim && !p.unarmed && !p.reloading() && p.slot != KNIFE_SLOT && p.hand.is_none();
     p.aim += (aiming as u8 as f32 - p.aim) * (dt * 14.0).min(1.0);
 
     let top_speed = if p.crouching {
         CROUCH_SPEED
     } else if aiming {
         AIM_SPEED
+    } else if p.unarmed {
+        RUN_SPEED
     } else {
         RUN_SPEED * p.weapon().mobility
     };
@@ -1084,6 +1136,58 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
     if p.pos.y < -20.0 || !p.pos.is_finite() {
         p.pos = Vec3::new(0.0, 8.0, 0.0);
         p.vel = Vec3::ZERO;
+    }
+}
+
+/// The racing modes, after each movement step from `before`: the run's
+/// clock and checkpoints, and coming back on after a fall.
+fn follow_course(p: &mut LocalPlayer, course: &Course, before: Vec3, frozen: bool) {
+    if p.racing == Racing::No || !p.alive || frozen {
+        return;
+    }
+    // A race's clock starts as the countdown ends.
+    if p.racing == Racing::Race && p.run.clock.is_none() && p.run.finished.is_none() {
+        p.run.clock = Some(0.0);
+    }
+    // Not across a teleport.
+    if before.distance_squared(p.pos) < SNAP_DISTANCE * SNAP_DISTANCE * 16.0 {
+        let event = p.run.step(course, before, p.pos, TICK, p.racing == Racing::Trial);
+        p.run_events.extend(event);
+    }
+    if course.fallen(p.pos, p.run.passed) {
+        p.back_on_course(course, false);
+    }
+}
+
+impl LocalPlayer {
+    /// The racing modes: back onto the course where we left it, at the last
+    /// checkpoint we went through (moving, so the ramp after it carries us
+    /// on), or at the start. Going back to the start of a time trial
+    /// (`to_start`, or with no checkpoint passed yet) ends the run.
+    pub fn back_on_course(&mut self, course: &Course, to_start: bool) {
+        let trial = self.racing == Racing::Trial;
+        let at = if trial && (to_start || self.run.passed == 0) {
+            if self.run.clock.is_some() || self.run.passed > 0 {
+                self.run_events.push(crate::course::RunEvent::Abandoned);
+            }
+            self.run = Run::default();
+            course.start_point
+        } else if self.run.finished.is_some() {
+            course.finish_point
+        } else {
+            course.respawn(self.run.passed)
+        };
+        if self.crouching {
+            self.crouching = false;
+            self.sliding = false;
+        }
+        self.teleport(at.pos);
+        self.vel = at.vel;
+        self.yaw = at.yaw;
+        self.frame_yaw = at.yaw;
+        self.pitch = 0.0;
+        self.grounded = false;
+        self.finished_for = 0.0;
     }
 }
 
@@ -1388,7 +1492,7 @@ fn follow_camera(
     }
 
     // Looking through a scope, its lens fills the screen instead.
-    let wanted = if (player.alive || player.pov.is_some()) && player.scope_view() < 1.0 {
+    let wanted = if (player.alive || player.pov.is_some()) && player.scope_view() < 1.0 && !player.unarmed {
         Visibility::Inherited
     } else {
         Visibility::Hidden
@@ -1883,5 +1987,129 @@ mod tests {
         p.pos = Vec3::new(50.0, PLAYER_HALF.y, 0.0);
         advance(&mut p, 0.0, &idle(), &map, DEFAULT_AIR_ACCEL.into(), false);
         assert!((p.eye().x - 50.0).abs() < 1e-4);
+    }
+
+    /// Rides the Gauntlet as a player would: looking along the ramps,
+    /// holding the strafe key into the face it is on (in a chute, the wall
+    /// on its side, or the outside wall of a bend), and letting go near the
+    /// top of a face or in the air between ramps. Returns the keys.
+    fn ride(p: &mut LocalPlayer, marks: &[crate::gauntlet::Mark]) -> Vec2 {
+        use crate::gauntlet::Kind;
+        if p.grounded {
+            return Vec2::Y;
+        }
+        // The nearest bit of the course's line.
+        let mut best: Option<(f32, usize, f32)> = None;
+        for (i, pair) in marks.windows(2).enumerate() {
+            if pair[0].chain != pair[1].chain {
+                continue;
+            }
+            let (a, b) = (pair[0].at, pair[1].at);
+            let t = ((p.pos - a).dot(b - a) / (b - a).length_squared()).clamp(-0.5, 1.5);
+            let distance = p.pos.distance(a.lerp(b, t.clamp(0.0, 1.0)));
+            if best.is_none_or(|(d, ..)| distance < d) {
+                best = Some((distance, i, t));
+            }
+        }
+        let Some((_, i, t)) = best else { return Vec2::ZERO };
+        let (a, b) = (marks[i], marks[i + 1]);
+        let along = (b.at - a.at).with_y(0.0).normalize();
+        p.yaw = (-along.x).atan2(-along.z);
+        if !(0.0..=1.0).contains(&t) {
+            // Flying between ramps.
+            return Vec2::ZERO;
+        }
+        let point = a.at.lerp(b.at, t);
+        let left = Vec3::new(along.z, 0.0, -along.x);
+        let lat = (p.pos - point).dot(left);
+        let feet = p.feet().y - point.y;
+        // +1 strafes right.
+        let strafe = match b.kind {
+            Kind::Chute => {
+                // The wall to ride: the outside of a bend, else the one we are on.
+                let wall = if b.turn != 0.0 { -b.turn.signum() } else if lat >= 0.0 { 1.0 } else { -1.0 };
+                // Off it again before the top.
+                if feet > FACE_FOR_TESTS * 0.75 {
+                    wall
+                } else if feet > FACE_FOR_TESTS * 0.55 {
+                    0.0
+                } else {
+                    -wall
+                }
+            }
+            Kind::Ridge => {
+                if lat.abs() < 1.5 { 0.0 } else { lat.signum() }
+            }
+        };
+        Vec2::new(strafe, 0.0)
+    }
+
+    const FACE_FOR_TESTS: f32 = 16.0;
+
+    /// Rides from `from` until through checkpoint `until` (or the finish,
+    /// past the last), for at most `seconds`. The run, and where it fell
+    /// off if it did.
+    fn ride_from(map: &Map, from: crate::course::Respawn, passed: usize, seconds: f32, air_accel: u16) -> (LocalPlayer, Option<Vec3>) {
+        let marks = crate::gauntlet::marks();
+        let mut p = LocalPlayer {
+            alive: true,
+            racing: Racing::Trial,
+            ..default()
+        };
+        p.teleport(from.pos);
+        p.vel = from.vel;
+        p.yaw = from.yaw;
+        p.frame_yaw = from.yaw;
+        if passed > 0 {
+            p.run.passed = passed;
+            p.run.clock = Some(0.0);
+        }
+        let mut fell = None;
+        let mut last = p.pos;
+        let mut top_speed: f32 = 0.0;
+        let fps = 144.0;
+        for _ in 0..(seconds * fps) as u32 {
+            let p = &mut p;
+            let yaw_from = p.yaw;
+            if fell.is_none() && p.pos.distance(last) > 8.0 {
+                fell = Some(last);
+            }
+            last = p.pos;
+            top_speed = top_speed.max(p.horizontal_speed());
+            if p.run.finished.is_some() || fell.is_some() {
+                break;
+            }
+            let keys = ride(p, &marks);
+            if std::env::var("RIDE_TRACE").is_ok() {
+                println!("{:.1} {:.2} {:.2} {} {:?}", p.pos, p.vel, keys, p.grounded, p.run.clock);
+            }
+            let held = Held { keys, yaw_from, yaw_to: p.yaw, ..idle() };
+            advance(p, 1.0 / fps, &held, map, air_accel.into(), false);
+        }
+        println!(
+            "air accel {air_accel}, from {:.1}: through {} checkpoints, {:?}, top speed {top_speed:.1}",
+            from.pos, p.run.passed, p.run.finished
+        );
+        (p, fell)
+    }
+
+    /// Ridden like a player would, the course can be done from the start in
+    /// one go, and from every checkpoint to the next.
+    #[test]
+    fn the_gauntlet_can_be_ridden_from_start_to_finish() {
+        let map = crate::gauntlet::gauntlet();
+        let course = map.course.as_ref().unwrap();
+        // However the host set the air acceleration.
+        for accel in AIR_ACCEL_CHOICES {
+            let (p, fell) = ride_from(&map, course.start_point, 0, 120.0, accel);
+            assert_eq!(fell, None, "air accel {accel}: fell off after {} checkpoints, {:?}", p.run.passed, p.run.splits);
+            let time = p.run.finished.expect("never finished");
+            assert!(time > 15.0 && time < 90.0, "{time}");
+            for (index, (_, respawn)) in course.gates.iter().enumerate() {
+                let (p, fell) = ride_from(&map, *respawn, index + 1, 60.0, accel);
+                assert_eq!(fell, None, "air accel {accel}, from checkpoint {}: fell off after {}", index + 1, p.run.passed);
+                assert!(p.run.finished.is_some(), "air accel {accel}, from checkpoint {}: stuck", index + 1);
+            }
+        }
     }
 }

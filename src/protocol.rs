@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+pub use crate::course::RunEvent;
 use crate::weapons::{SightId, WeaponId};
 
 pub const DEFAULT_PORT: u16 = 7777;
@@ -66,7 +67,18 @@ pub const MODE_HILL: u8 = 2;
 /// Conquest: each team has tickets. Every death costs one, and the team
 /// holding fewer of the map's flags bleeds them. Out of tickets, you lose.
 pub const MODE_CONQUEST: u8 = 3;
-pub const MODE_NAMES: [&str; 4] = ["Free for all", "Team deathmatch", "King of the hill", "Conquest"];
+/// Race: everybody sets off down the course together at "GO", with no guns
+/// and no bots, and the first through the finish wins. Once somebody is
+/// through, the rest have `RACE_FINISH_GRACE` seconds to follow.
+pub const MODE_RACE: u8 = 4;
+/// Time trial: the same course, each on your own clock, which starts as you
+/// leave the start; as many runs as you like, and the best time wins.
+pub const MODE_TRIAL: u8 = 5;
+pub const MODE_NAMES: [&str; 6] = ["Free for all", "Team deathmatch", "King of the hill", "Conquest", "Race", "Time trial"];
+/// A race goes on for at most this many seconds after the first finish.
+pub const RACE_FINISH_GRACE: f32 = 30.0;
+/// Once everybody is through the finish, the race ends this many seconds later.
+pub const RACE_END_DELAY: f32 = 4.0;
 /// How well the bots fight (see `ClientMsg::SetBotDifficulty`).
 pub const BOT_EASY: u8 = 0;
 pub const BOT_NORMAL: u8 = 1;
@@ -102,7 +114,12 @@ pub fn early_respawn(mode: u8) -> bool {
 }
 
 pub fn is_team_mode(mode: u8) -> bool {
-    mode != MODE_FFA
+    matches!(mode, MODE_TEAMS | MODE_HILL | MODE_CONQUEST)
+}
+
+/// The racing modes, run on a course with no weapons and no bots.
+pub fn is_course_mode(mode: u8) -> bool {
+    matches!(mode, MODE_RACE | MODE_TRIAL)
 }
 
 /// The score that wins a match: kills for one player, kills for a team, or
@@ -112,6 +129,8 @@ pub fn score_limit(mode: u8, frag_limit: u32) -> u32 {
         MODE_TEAMS => frag_limit * 2,
         MODE_HILL => HILL_SCORE_LIMIT,
         MODE_CONQUEST => CONQUEST_TICKETS,
+        // Won on time, not on a score.
+        MODE_RACE | MODE_TRIAL => 0,
         _ => frag_limit,
     }
 }
@@ -199,7 +218,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-20:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-21:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -222,6 +241,12 @@ pub struct PlayerInfo {
     /// Health and armor taken off other players this match.
     pub damage: u32,
     pub is_bot: bool,
+    /// The racing modes: a race's finishing time, or the best time of a
+    /// time trial, once there is one.
+    pub time: Option<f32>,
+    /// The racing modes: how many checkpoints they are through (in a time
+    /// trial, on the run they are on).
+    pub gates: u8,
 }
 
 /// Client -> server, reliable ordered.
@@ -302,6 +327,8 @@ pub enum ClientMsg {
     /// server thinks best; 0: our base; `1 + i`: the map's flag `i`, while
     /// our team holds it (else the base).
     SpawnAt { point: Option<u8> },
+    /// The racing modes: what just happened on our run, as we timed it.
+    Run(RunEvent),
 }
 
 /// Client -> server, unreliable, sent every fixed tick while alive.
@@ -346,6 +373,8 @@ pub enum ServerMsg {
         time_left: f32,
         /// Seconds of the starting countdown left (see `COUNTDOWN`).
         countdown: f32,
+        /// Seconds played since it ended (a race's clock).
+        elapsed: f32,
     },
     MatchEnded {
         winner: Winner,
@@ -414,6 +443,11 @@ pub enum ServerMsg {
     Paint {
         id: PlayerId,
         paint: Vec<u8>,
+    },
+    /// The racing modes: a run's checkpoint or finish, taken by the server.
+    Run {
+        id: PlayerId,
+        event: RunEvent,
     },
 }
 

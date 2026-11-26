@@ -20,6 +20,8 @@ use bevy::{
 use crate::{
     AppState,
     combat::{HIT_MARKER_TIME, KillFeed, Notices},
+    course::format_time,
+    race::{BACK_TO_START, ordinal},
     grenade::SmokeFog,
     gun_model::FittedModels,
     map::MAP_NAMES,
@@ -28,7 +30,7 @@ use crate::{
     paint::{Skins, palette_color},
     loadout::{DeathLoadout, DeathLoadoutOpen, Preview, Thumbnails, death_loadout, loadout_summary, on_open_loadout, summary_button},
     paint_editor::on_open_paint,
-    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer},
+    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, Racing},
     remote::Spectate,
     protocol::*,
     settings::{Action, ActionInput, Settings, on_open_settings},
@@ -617,6 +619,8 @@ struct RosterKey {
     my_id: PlayerId,
     leader: PlayerId,
     team_mode: bool,
+    /// A racing mode: times and checkpoints instead of kills.
+    course: bool,
     my_team: u8,
     team_scores: [u32; 2],
     /// The dot beside each name, in roster order: their main paint colour.
@@ -652,13 +656,9 @@ fn outer_justify(right: bool) -> TextLayout {
     TextLayout::justify(if right { Justify::Right } else { Justify::Left })
 }
 
-/// A number in one of the columns beside the names. They keep to the names'
-/// side, so on the mirrored team they line up on their left.
-fn roster_stat(text: String, size: f32, color: Color, right: bool) -> impl Bundle {
-    roster_stat_if(text, size, color, right, true)
-}
-
-/// A `roster_stat` that takes no room at all unless `shown`.
+/// A number in one of the columns beside the names, taking no room at all
+/// unless `shown`. They keep to the names' side, so on the mirrored team
+/// they line up on their left.
 fn roster_stat_if(text: String, size: f32, color: Color, right: bool, shown: bool) -> impl Bundle {
     (
         label(text, size, color),
@@ -684,17 +684,34 @@ fn roster_row_node(right: bool) -> Node {
     }
 }
 
+/// A run's time in a racing mode's scoreboard, wider than the other columns.
+fn roster_time(text: String, size: f32, color: Color, shown: bool) -> impl Bundle {
+    (
+        label(text, size, color),
+        TextLayout::justify(Justify::Right),
+        Node {
+            display: if shown { Display::Flex } else { Display::None },
+            width: px(STAT_WIDTH * 2.0),
+            flex_shrink: 0.0,
+            ..default()
+        },
+    )
+}
+
 /// The line over a group of players: a title, and the names of the columns.
-/// Free for all has no assists, so no column for them.
-fn roster_heading(title: String, color: Color, right: bool, assists: bool) -> impl Bundle {
+/// Free for all has no assists, so no column for them; a course has times
+/// and checkpoints instead of kills.
+fn roster_heading(title: String, color: Color, right: bool, assists: bool, course: bool) -> impl Bundle {
     (
         roster_row_node(right),
         children![
             (weighted(title, 11.0, 700, color), outer_justify(right), Node { flex_grow: 1.0, ..default() }),
-            roster_stat("KILLS".into(), 11.0, DIM, right),
+            roster_stat_if("KILLS".into(), 11.0, DIM, right, !course),
             roster_stat_if("ASSISTS".into(), 11.0, DIM, right, assists),
-            roster_stat("DEATHS".into(), 11.0, DIM, right),
-            roster_stat("DAMAGE".into(), 11.0, DIM, right),
+            roster_stat_if("DEATHS".into(), 11.0, DIM, right, !course),
+            roster_stat_if("DAMAGE".into(), 11.0, DIM, right, !course),
+            roster_stat_if("CP".into(), 11.0, DIM, right, course),
+            roster_time("TIME".into(), 11.0, DIM, course),
         ],
     )
 }
@@ -758,18 +775,31 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey, right: bool) 
                 outer_justify(right),
                 Node { flex_grow: 1.0, ..default() },
             ),
-            roster_stat(player.kills.to_string(), 16.0, TEXT, right),
+            roster_stat_if(player.kills.to_string(), 16.0, TEXT, right, !key.course),
             roster_stat_if(player.assists.to_string(), 16.0, DIM, right, key.team_mode),
-            roster_stat(player.deaths.to_string(), 16.0, DIM, right),
-            roster_stat(player.damage.to_string(), 16.0, DIM, right),
+            roster_stat_if(player.deaths.to_string(), 16.0, DIM, right, !key.course),
+            roster_stat_if(player.damage.to_string(), 16.0, DIM, right, !key.course),
+            roster_stat_if(player.gates.to_string(), 16.0, DIM, right, key.course),
+            roster_time(player.time.map_or("-".to_string(), format_time), 16.0, TEXT, key.course),
         ],
     )
 }
 
 /// Who goes higher on the scoreboard: the most kills, then the most assists,
-/// then the fewest deaths.
-fn ranking(a: &PlayerInfo, b: &PlayerInfo) -> std::cmp::Ordering {
-    b.kills.cmp(&a.kills).then(b.assists.cmp(&a.assists)).then(a.deaths.cmp(&b.deaths))
+/// then the fewest deaths. On a course: the best time, then (those with
+/// none yet) the most checkpoints.
+fn ranking(mode: u8) -> impl Fn(&PlayerInfo, &PlayerInfo) -> std::cmp::Ordering {
+    move |a, b| {
+        if is_course_mode(mode) {
+            return match (a.time, b.time) {
+                (Some(a), Some(b)) => a.total_cmp(&b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => b.gates.cmp(&a.gates),
+            };
+        }
+        b.kills.cmp(&a.kills).then(b.assists.cmp(&a.assists)).then(a.deaths.cmp(&b.deaths))
+    }
 }
 
 /// Rebuilds the rows of every player list whose players or scores changed.
@@ -786,7 +816,7 @@ fn update_rosters(
     }
     let key_of = |roster: &[PlayerInfo], mode: u8, my_team: u8, team_scores: [u32; 2]| {
         let mut roster = roster.to_vec();
-        roster.sort_by(ranking);
+        roster.sort_by(ranking(mode));
         let colors = roster
             .iter()
             .map(|player| match &my_paint {
@@ -799,6 +829,7 @@ fn update_rosters(
             my_id: session.my_id,
             leader: session.leader,
             team_mode: is_team_mode(mode),
+            course: is_course_mode(mode),
             my_team,
             team_scores,
             colors,
@@ -841,7 +872,7 @@ fn update_rosters(
                             });
                         }
                         sides.spawn(column()).with_children(|rows| {
-                            rows.spawn(roster_heading("PLAYER".into(), DIM, false, false));
+                            rows.spawn(roster_heading("PLAYER".into(), DIM, false, false, key.course));
                             for (player, color) in players {
                                 rows.spawn(roster_row(player, palette_color(**color), &key, false));
                             }
@@ -861,7 +892,7 @@ fn update_rosters(
                     sides.spawn(column()).with_children(|rows| {
                         let name = format!("{} team", team_name(mine, team));
                         rows.spawn(roster_team_banner(&name, key.team_scores[team as usize], color, right));
-                        rows.spawn(roster_heading("PLAYER".into(), DIM, right, true));
+                        rows.spawn(roster_heading("PLAYER".into(), DIM, right, true, false));
                         for player in key.roster.iter().filter(|player| player.team & 1 == team) {
                             rows.spawn(roster_row(player, color, &key, right));
                         }
@@ -911,6 +942,14 @@ struct GuestOnly;
 /// Shown only in the team modes.
 #[derive(Component)]
 struct TeamModeOnly;
+
+/// Shown only where there is fighting (and so bots): not in the racing modes.
+#[derive(Component)]
+pub struct ArmedOnly;
+
+/// Shown only in the racing modes.
+#[derive(Component)]
+struct CourseOnly;
 
 /// The box with how the last match ended; hidden before the first.
 #[derive(Component)]
@@ -1130,7 +1169,13 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                     };
                                     picker.spawn(group()).with_children(|group| {
                                         group.spawn(section("Mode"));
-                                        group.spawn(Node { column_gap: px(6), ..default() }).with_children(|row| {
+                                        group.spawn(Node {
+                                            column_gap: px(6),
+                                            row_gap: px(6),
+                                            flex_wrap: FlexWrap::Wrap,
+                                            ..default()
+                                        })
+                                        .with_children(|row| {
                                             for chip in modes {
                                                 row.spawn(chip);
                                             }
@@ -1161,7 +1206,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                             }
                                         });
                                     });
-                                    picker.spawn(group()).with_children(|group| {
+                                    picker.spawn((group(), ArmedOnly)).with_children(|group| {
                                         group.spawn(section("Bots"));
                                         group.spawn(Node {
                                             column_gap: px(6),
@@ -1197,7 +1242,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                             }
                                         });
                                     });
-                                    picker.spawn(group()).with_children(|group| {
+                                    picker.spawn((group(), ArmedOnly)).with_children(|group| {
                                         group.spawn(section("Bot skill"));
                                         group.spawn(Node { column_gap: px(6), ..default() }).with_children(|chips| {
                                             for chip in bot_skill {
@@ -1272,7 +1317,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                         },
                         children![
                             (danger_button("‹  Leave lobby"), observe(on_leave)),
-                            loadout_summary(),
+                            (loadout_summary(), ArmedOnly),
                             (button("Paint yourself"), observe(on_open_paint)),
                             (button("Settings"), observe(on_open_settings)),
                             Node { flex_grow: 1.0, ..default() },
@@ -1556,6 +1601,7 @@ fn update_lobby(
         Query<&mut Node, With<ResultBanner>>,
         Query<&mut Node, Or<(With<MatchPicker>, With<PickerCatcher>)>>,
         Query<&mut Node, With<FinalScoresPanel>>,
+        Query<&mut Node, With<ArmedOnly>>,
     )>,
 ) {
     if picker.0 && keys.just_pressed(KeyCode::Escape) {
@@ -1573,6 +1619,9 @@ fn update_lobby(
             LobbyText::MatchHint if session.is_leader() => "MATCH  ·  CLICK TO CHANGE".to_string(),
             LobbyText::MatchHint => "MATCH  ·  CLICK TO SEE THE CHOICES".to_string(),
             LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_uppercase(),
+            LobbyText::MatchLine if is_course_mode(session.mode) => {
+                format!("{map_name}  ·  air accel {}  ·  no guns, no bots", session.air_accel() as u16)
+            }
             LobbyText::MatchLine => {
                 let bots = if session.bots_hold_fire { "  ·  bots hold fire" } else { "" };
                 // Only when there are bots to be easy or hard.
@@ -1630,6 +1679,9 @@ fn update_lobby(
     }
     for mut node in &mut shown.p5() {
         set_shown(&mut node, final_scores.0);
+    }
+    for mut node in &mut shown.p6() {
+        set_shown(&mut node, !is_course_mode(session.mode));
     }
 }
 
@@ -2036,6 +2088,12 @@ enum Hud {
     Countdown,
     /// The line over the countdown.
     CountdownLabel,
+    /// The racing modes: our run's clock, and the checkpoints under it.
+    RunClock,
+    RunInfo,
+    /// The pause menu in the racing modes: our time, and checkpoints.
+    PauseTime,
+    PauseGates,
 }
 
 /// The part of a bar that grows and shrinks.
@@ -2429,6 +2487,12 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     // Before our first spawn, a bit above the middle of the screen.
     commands.spawn((hud_line(30.0), children![hud_text(30.0, DANGER, Hud::Center)]));
 
+    // The racing modes: our run's clock, low in the middle.
+    commands.spawn((
+        hud_line(74.0),
+        children![hud_text(40.0, TEXT, Hud::RunClock), hud_text(15.0, DIM, Hud::RunInfo)],
+    ));
+
     // Kill announcements, a bit below it.
     commands.spawn((
         hud_line(60.0),
@@ -2501,9 +2565,11 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     ));
 
     // Health, bottom left. Hidden on the death screen, like the speed and the
-    // weapon panel, which would be in the way of its buttons.
+    // weapon panel, which would be in the way of its buttons; and on a
+    // course, where nobody is hurt.
     commands.spawn((
         HiddenWhenDead,
+        ArmedOnly,
         hud_anchor(Node {
             left: px(20),
             bottom: px(18),
@@ -2889,14 +2955,16 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                     },
                     children![
                         pause_fact("Place", Hud::PausePlace),
-                        pause_fact("Kills", Hud::PauseKills),
+                        (pause_fact("Kills", Hud::PauseKills), ArmedOnly),
                         (pause_fact("Assists", Hud::PauseAssists), TeamModeOnly),
-                        pause_fact("Deaths", Hud::PauseDeaths),
-                        pause_fact("Damage", Hud::PauseDamage),
+                        (pause_fact("Deaths", Hud::PauseDeaths), ArmedOnly),
+                        (pause_fact("Damage", Hud::PauseDamage), ArmedOnly),
+                        (pause_fact("Time", Hud::PauseTime), CourseOnly),
+                        (pause_fact("Checkpoints", Hud::PauseGates), CourseOnly),
                     ],
                 ),
                 (primary_button("Resume"), observe(on_resume)),
-                (button("Loadout"), observe(on_open_loadout)),
+                ((button("Loadout"), observe(on_open_loadout)), ArmedOnly),
                 (button("Settings"), observe(on_open_settings)),
                 (
                     button("End match for everyone"),
@@ -3102,12 +3170,43 @@ impl FpsCounter {
 /// What goes either side of the clock, and under it.
 struct TopBar {
     labels: [String; 2],
-    scores: [u32; 2],
+    scores: [String; 2],
     colors: [Color; 2],
     info: String,
 }
 
 fn top_bar(session: &Session) -> TopBar {
+    if is_course_mode(session.mode) {
+        let me = session.roster.iter().find(|p| p.id == session.my_id);
+        let best = session.roster.iter().filter_map(|p| Some((p.time?, p))).min_by(|a, b| a.0.total_cmp(&b.0));
+        let time = |time: Option<f32>| time.map_or("-".to_string(), format_time);
+        if session.mode == MODE_RACE {
+            let mut order: Vec<_> = session.roster.iter().collect();
+            order.sort_by(|a, b| ranking(session.mode)(a, b));
+            let place = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
+            let finished = session.roster.iter().filter(|p| p.time.is_some()).count();
+            let info = match best {
+                Some((time, p)) => format!("race   |   {} won in {}", p.name, format_time(time)),
+                None => "race   |   first through the finish wins".to_string(),
+            };
+            return TopBar {
+                labels: ["PLACE".to_string(), "FINISHED".to_string()],
+                scores: [ordinal(place), format!("{finished}/{}", session.roster.len())],
+                colors: [ACCENT, TEXT],
+                info,
+            };
+        }
+        let info = match best {
+            Some((_, p)) => format!("time trial   |   {} has the best time", p.name),
+            None => "time trial   |   the best time wins".to_string(),
+        };
+        return TopBar {
+            labels: ["YOUR BEST".to_string(), "BEST".to_string()],
+            scores: [time(me.and_then(|p| p.time)), time(best.map(|(time, _)| time))],
+            colors: [ACCENT, TEXT],
+            info,
+        };
+    }
     if !session.team_mode() {
         let my_kills = session
             .roster
@@ -3121,7 +3220,7 @@ fn top_bar(session: &Session) -> TopBar {
         };
         return TopBar {
             labels: ["YOU".to_string(), "BEST".to_string()],
-            scores: [my_kills as u32, leader.map_or(0, |p| p.kills) as u32],
+            scores: [my_kills.to_string(), leader.map_or(0, |p| p.kills).to_string()],
             colors: [ACCENT, TEXT],
             info: format!("first to {}   |   {lead}", session.score_limit),
         };
@@ -3146,7 +3245,7 @@ fn top_bar(session: &Session) -> TopBar {
     }
     TopBar {
         labels: ["YOUR TEAM".to_string(), "ENEMY".to_string()],
-        scores: [session.team_scores[mine], session.team_scores[mine ^ 1]],
+        scores: [session.team_scores[mine].to_string(), session.team_scores[mine ^ 1].to_string()],
         colors: [BLUE, RED],
         info,
     }
@@ -3175,16 +3274,12 @@ fn update_hud(
     // Where we stand: best score first, as on the scoreboard.
     let place = {
         let mut order: Vec<_> = session.roster.iter().collect();
-        order.sort_by(|a, b| ranking(a, b));
+        order.sort_by(|a, b| ranking(session.mode)(a, b));
         let at = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
-        let suffix = match (at % 10, at % 100) {
-            (1, n) if n != 11 => "st",
-            (2, n) if n != 12 => "nd",
-            (3, n) if n != 13 => "rd",
-            _ => "th",
-        };
-        format!("{at}{suffix} of {}", order.len())
+        format!("{} of {}", ordinal(at), order.len())
     };
+    let gates = map.0.course.as_ref().map_or(0, |course| course.gates.len());
+    let restart = settings.key_name(Action::Reload).to_uppercase();
     // Who killed us, without the bot tag, and how many kills they have.
     let killer_name = player.killed_by.as_deref().unwrap_or("?");
     let killer = killer_name.strip_prefix("[bot] ").unwrap_or(killer_name).to_string();
@@ -3210,7 +3305,7 @@ fn update_hud(
                 if session.time_left <= 30.0 { DANGER } else { TEXT },
             ),
             Hud::ScoreLabel(side) => (top.labels[side].clone(), top.colors[side].with_alpha(0.8)),
-            Hud::Score(side) => (top.scores[side].to_string(), top.colors[side]),
+            Hud::Score(side) => (top.scores[side].clone(), top.colors[side]),
             Hud::Info => (top.info.clone(), DIM),
             Hud::Fps => (
                 format!("{:.0}", fps.shown),
@@ -3317,6 +3412,10 @@ fn update_hud(
             Hud::ScoreCaption => {
                 let wins = if session.mode == MODE_CONQUEST {
                     format!("{} TICKETS", session.score_limit)
+                } else if session.mode == MODE_RACE {
+                    "FIRST THROUGH THE FINISH".to_string()
+                } else if session.mode == MODE_TRIAL {
+                    "BEST TIME".to_string()
                 } else {
                     format!("FIRST TO {}", session.score_limit)
                 };
@@ -3345,9 +3444,40 @@ fn update_hud(
                 _ => (String::new(), ACCENT),
             },
             Hud::CountdownLabel => (
-                if session.frozen() { "MATCH STARTS IN" } else { "" }.to_string(),
+                match (session.frozen(), session.mode) {
+                    (false, _) => "",
+                    (true, MODE_RACE) => "RACE STARTS IN",
+                    (true, _) => "MATCH STARTS IN",
+                }
+                .to_string(),
                 TEXT,
             ),
+            Hud::RunClock => match (player.racing, player.run.finished, player.run.clock) {
+                (Racing::No, ..) => (String::new(), TEXT),
+                (_, Some(time), _) => (format_time(time), GOOD),
+                (_, None, Some(time)) => (format_time(time), TEXT),
+                (_, None, None) => (format_time(0.0), DIM),
+            },
+            Hud::RunInfo => {
+                let line = match (player.racing, player.run.finished, player.run.clock) {
+                    (Racing::No, ..) => String::new(),
+                    _ if !player.alive || session.frozen() => String::new(),
+                    (Racing::Trial, Some(_), _) => {
+                        format!("back to the start in {:.0}", (BACK_TO_START - player.finished_for).max(0.0).ceil())
+                    }
+                    (Racing::Race, Some(_), _) => "through the finish".to_string(),
+                    (Racing::Trial, None, None) => format!("leave the start to begin   ·   {restart}  back to the start"),
+                    (Racing::Trial, None, Some(_)) => {
+                        format!("checkpoint {}/{gates}   ·   {restart}  back to the start", player.run.passed)
+                    }
+                    (Racing::Race, None, _) => {
+                        format!("checkpoint {}/{gates}   ·   {restart}  back to the last one", player.run.passed)
+                    }
+                };
+                (line, DIM)
+            }
+            Hud::PauseTime => (me.and_then(|p| p.time).map_or("-".to_string(), format_time), TEXT),
+            Hud::PauseGates => (format!("{}/{gates}", player.run.passed), TEXT),
         };
         set_text(&mut text, value);
         if color.0 != wanted {
@@ -3633,8 +3763,10 @@ fn update_overlays(
         Single<&mut Node, With<PausePanel>>,
         Query<&mut Node, With<LeaderOnly>>,
         Single<&mut Node, With<DeathScreen>>,
-        Query<&mut Node, With<HiddenWhenDead>>,
+        Query<(&mut Node, Has<ArmedOnly>), With<HiddenWhenDead>>,
         Query<&mut Node, With<TeamModeOnly>>,
+        Query<&mut Node, (With<ArmedOnly>, Without<HiddenWhenDead>)>,
+        Query<&mut Node, With<CourseOnly>>,
     )>,
 ) {
     // White ticks for a hit, yellow for a headshot; red, and held a little
@@ -3665,8 +3797,15 @@ fn update_overlays(
     let paused = !controls.captured && !show_scores;
     let dead = player.on_death_screen() && !paused && !show_scores;
     set_shown(&mut nodes.p3(), dead);
-    for mut node in &mut nodes.p4() {
-        set_shown(&mut node, !player.on_death_screen());
+    let armed = !is_course_mode(session.mode);
+    for (mut node, armed_only) in &mut nodes.p4() {
+        set_shown(&mut node, !player.on_death_screen() && (armed || !armed_only));
+    }
+    for mut node in &mut nodes.p6() {
+        set_shown(&mut node, armed);
+    }
+    for mut node in &mut nodes.p7() {
+        set_shown(&mut node, !armed);
     }
     set_shown(&mut nodes.p0(), show_scores);
     set_shown(&mut nodes.p1(), paused);

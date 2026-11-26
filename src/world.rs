@@ -396,6 +396,60 @@ fn build_map(
         }
     }
 
+    // A course's start line, checkpoints and finish: a glowing frame round
+    // each, with a faint curtain across it.
+    if let Some(course) = &map.0.course {
+        let mut gate = |zone: &crate::course::Zone, forward: f32, color: LinearRgba| {
+            let frame = materials.add(StandardMaterial {
+                base_color: Color::BLACK,
+                emissive: color * 4.0,
+                ..default()
+            });
+            let curtain = materials.add(StandardMaterial {
+                base_color: Color::LinearRgba(color.with_alpha(0.08)),
+                emissive: color * 0.25,
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                cull_mode: None,
+                ..default()
+            });
+            let turn = Quat::from_rotation_y(zone.yaw);
+            let center = zone.center + turn * Vec3::NEG_Z * zone.half.z * forward;
+            let (across, up) = (turn * Vec3::X * zone.half.x, Vec3::Y * zone.half.y);
+            const BAR: f32 = 0.35;
+            let bars = [
+                (center + up, Vec3::new(zone.half.x * 2.0 + BAR, BAR, BAR)),
+                (center - up, Vec3::new(zone.half.x * 2.0 + BAR, BAR, BAR)),
+                (center + across, Vec3::new(BAR, zone.half.y * 2.0, BAR)),
+                (center - across, Vec3::new(BAR, zone.half.y * 2.0, BAR)),
+            ];
+            for (at, size) in bars {
+                commands.spawn((
+                    MapGeometry,
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(frame.clone()),
+                    Transform::from_translation(at).with_rotation(turn).with_scale(size),
+                    NotShadowCaster,
+                ));
+            }
+            commands.spawn((
+                MapGeometry,
+                Mesh3d(assets.cube.clone()),
+                MeshMaterial3d(curtain),
+                Transform::from_translation(center)
+                    .with_rotation(turn)
+                    .with_scale(Vec3::new(zone.half.x * 2.0, zone.half.y * 2.0, 0.02)),
+                NotShadowCaster,
+            ));
+        };
+        // The start's front, where you leave it.
+        gate(&course.start, 1.0, LinearRgba::rgb(0.2, 1.0, 0.35));
+        for (zone, _) in &course.gates {
+            gate(zone, 0.0, LinearRgba::rgb(0.2, 0.75, 1.0));
+        }
+        gate(&course.finish, 0.0, LinearRgba::rgb(1.0, 0.75, 0.15));
+    }
+
     for (index, spot) in map.0.armor_spots.iter().enumerate() {
         commands.spawn((
             MapGeometry,

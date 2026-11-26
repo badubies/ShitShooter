@@ -1,5 +1,72 @@
 # Plan
 
+## Round 5: a surf course, and racing on it
+
+Asked for on 2026-11-26: a better surf map, an obstacle course of chained
+ramps, curved and straight, and two modes on it with no weapons and no
+bots: a race, and a time trial with a start and a finish.
+
+- [x] Gauntlet (`src/gauntlet.rs`, map 5), high over a pit: a start deck,
+  three chutes (a V of two 60° walls, ridden like a bobsled run: a wide
+  bend, an S, a hairpin), a ridge with a kicker over the widest gap, a long
+  ridge and two short ones to hop between, and a finish deck. Four
+  checkpoints, in the gaps. Pillars hold it up. Played in the racing modes
+  only, and they only there (`map::plays`).
+- [x] Race (`MODE_RACE`): everybody leaves the start deck at "GO", first
+  through the finish wins. After the first finish the rest have 30 s
+  (`RACE_FINISH_GRACE`); once everybody is through it ends 4 s later.
+- [x] Time trial (`MODE_TRIAL`): your clock starts as you leave the start
+  deck, and stops at the finish; going back into the start ends the run.
+  As many runs as the match lasts, best time wins. Three seconds after a
+  finish you are put back at the start.
+- [x] No weapons and no bots in either: nothing in hand, no aiming, the
+  server ignores shots and grenades, refuses bots and sends away the ones
+  there when the mode is picked. The guns, health, loadout and bot controls
+  are hidden.
+- [x] Falling below the part of the course you are on puts you back at
+  your last checkpoint, moving down the ramp after it (at the start, with
+  none). The reload key does it by hand; in a time trial it goes back to the
+  start.
+- [x] HUD: the run's clock and checkpoints low in the middle, splits
+  against your best run at each checkpoint, place or best times beside the
+  match clock, times and checkpoints on the scoreboard. Protocol bumped to
+  21.
+
+Worth knowing:
+
+- Each client times its own run, step by step of its movement
+  (`course::Run`, called from `player::advance`), so times are as exact as
+  movement, whatever the ping. It tells the server (`ClientMsg::Run`); the
+  server takes checkpoints only in order, a finish only after the last,
+  and no time longer than the match has run (`Server::handle_run`), and
+  passes what it takes on (`ServerMsg::Run`). Movement is the client's
+  anyway, so this trusts it no further.
+- How the ramps are built so they ride smoothly: every piece is a prism
+  with the same section as the one before, so faces meet without a step.
+  Bends are level (a sloped bend's faces would not be flat); hills and
+  hollows are straight from above. Where a face folds towards the rider (a
+  hollow, the outside wall of a bend) each piece reaches back 0.5 m into the
+  one before (`OVERLAP`): otherwise a box riding the face can touch the end
+  of the next piece first, and the push out of that end takes away all its
+  speed along the ramp.
+- Big drops onto a 60° face cannot be ridden out: a fall of 25 m sends you
+  down and off it however hard you strafe. So the gaps are measured from
+  where the ramp would have gone on (`Builder::gap`), and the one place the
+  course goes from a chute to a ridge, the ridge carries on the chute's
+  outside wall as its own face, 3.5 m lower.
+- `player::tests::the_gauntlet_can_be_ridden_from_start_to_finish` rides it
+  with a simple autopilot (look along the ramp, strafe into the face, ease
+  off near the top) at every air acceleration, from the start and from each
+  checkpoint. It takes about 30 s from the start. Change the course and run
+  it. `cargo test gauntlet::tests::print_layout -- --ignored --nocapture`
+  prints the line, checkpoints and floors.
+- `--selftest <dir> --host --mode race` (or `trial`) plays a short script on
+  the course: the start, a checkpoint the server takes, the view from every
+  checkpoint, the finish, and the whole course without the HUD
+  (`course_overview.png`, which `assets/ui/maps/gauntlet.jpg` was cut from).
+- Every number in the course is a first guess that the autopilot gets
+  through; how it feels is for the user to say.
+
 ## Round 4: original weapons
 
 Round 4 is done. The pistol, the SMG, the rifle and the sniper are built

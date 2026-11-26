@@ -26,6 +26,16 @@ pub struct NavGrid {
 }
 
 impl NavGrid {
+    /// Nowhere to walk at all: for a map with no bots on it.
+    pub fn empty() -> NavGrid {
+        NavGrid {
+            origin: Vec2::ZERO,
+            nx: 0,
+            nz: 0,
+            walkable: Vec::new(),
+        }
+    }
+
     pub fn new(map: &Map) -> NavGrid {
         let [min, max] = map.bounds;
         let (min, max) = (min - Vec2::splat(8.0), max + Vec2::splat(8.0));

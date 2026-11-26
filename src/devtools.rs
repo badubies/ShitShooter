@@ -20,7 +20,7 @@ use crate::{
     paint::{MyPaint, PlayerModel},
     paint_editor::PaintEditor,
     player::{Controls, DroppedMagazine, GunSlot, LocalPlayer, PlayerSystems},
-    protocol::{ClientMsg, MODE_CONQUEST},
+    protocol::{ClientMsg, MODE_CONQUEST, is_course_mode},
     map::PLAYER_HALF,
     loadout::{Choice, LoadoutScreen},
     remote::{Corpse, RemotePlayer, Spectate},
@@ -43,7 +43,7 @@ impl Plugin for DevToolsPlugin {
         let add_bots = if launch.bots.is_some() { 0 } else { 3 };
         let bots_hold_fire = launch.server.bots_hold_fire;
         let mode = launch.server.mode;
-        let map = launch.map.unwrap_or(1);
+        let map = launch.map.unwrap_or(if is_course_mode(mode) { crate::map::GAUNTLET } else { 1 });
         if let Some(dir) = selftest {
             let dir = PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);
@@ -58,8 +58,10 @@ impl Plugin for DevToolsPlugin {
                 bots_hold_fire,
                 mode,
                 map,
+                hide_hud: false,
             })
             .add_systems(First, draw_to_canvas)
+            .add_systems(PostUpdate, hide_hud)
             .add_systems(Last, take_picture)
             // Sounds are still created and decoded, just not heard.
             .insert_resource(GlobalVolume::new(bevy::audio::Volume::SILENT))
@@ -118,6 +120,17 @@ struct SelfTest {
     mode: u8,
     /// The map it leaves the lobby with (`--map`, or Depot).
     map: u8,
+    /// Hides everything on the screen but the world, for a map's picture.
+    hide_hud: bool,
+}
+
+/// While asked to, nothing is drawn over the world.
+fn hide_hud(test: Res<SelfTest>, mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>)>) {
+    if test.hide_hud {
+        for mut visibility in &mut roots {
+            visibility.set_if_neq(Visibility::Hidden);
+        }
+    }
 }
 
 impl SelfTest {
@@ -340,13 +353,15 @@ fn selftest_lobby(
         match_choices.iter().find(|(choice, _)| **choice == target).map(|(_, at)| at.translation / scale)
     };
     let hold = test.bots_hold_fire;
+    // The racing modes have no bots, nor their chips to click.
+    let course = is_course_mode(test.mode);
     let clicks = [
         MatchChoice::Mode(1),
         MatchChoice::Map(0),
         MatchChoice::BotsHoldFire(!hold),
         MatchChoice::Mode(test.mode),
         MatchChoice::Map(test.map),
-        MatchChoice::BotsHoldFire(hold),
+        if course { MatchChoice::Mode(test.mode) } else { MatchChoice::BotsHoldFire(hold) },
     ];
     for (index, target) in clicks.into_iter().enumerate() {
         let at = 1.7 + index as f32 * 0.2;
@@ -381,7 +396,7 @@ fn selftest_lobby(
         && answered_at.is_none()
         && session.mode == test.mode
         && map.0.id == test.map
-        && session.bots_hold_fire == test.bots_hold_fire
+        && (course || session.bots_hold_fire == test.bots_hold_fire)
     {
         *answered_at = Some(test.clock);
     }
@@ -502,6 +517,10 @@ fn selftest_play(
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut captured: Local<Captured>,
 ) {
+    if is_course_mode(session.mode) {
+        selftest_course(&time, &session, &mut test, &mut player, &map, &mut connection, &mut captured);
+        return;
+    }
     // The script starts once the countdown is over.
     if session.frozen() {
         if session.countdown < 2.5 && !captured.countdown {
@@ -939,6 +958,115 @@ fn selftest_play(
         println!("[selftest] sound cues (own, others): {:?}", *cue_count);
         println!("[selftest] dropped magazines: {:?}", dropped.iter().map(|(magazine, at)| (magazine.landed, at.translation.y)).collect::<Vec<_>>());
         println!("[selftest] mode {} team scores {:?} my team {}", session.mode, session.team_scores, session.team_of(session.my_id));
+        connection.send(&ClientMsg::EndMatch);
+    }
+}
+
+/// The racing modes' script, with no guns and no bots: the start, a run
+/// through the first checkpoint (which the server takes), the view down the
+/// course from each checkpoint, the finish, and the whole course from
+/// above and behind the start.
+fn selftest_course(
+    time: &Time,
+    session: &Session,
+    test: &mut SelfTest,
+    player: &mut LocalPlayer,
+    map: &GameMap,
+    connection: &mut Connection,
+    captured: &mut Captured,
+) {
+    let Some(course) = &map.0.course else {
+        return;
+    };
+    if session.frozen() {
+        if session.countdown < 2.5 && !captured.countdown {
+            captured.countdown = true;
+            println!("[selftest] countdown {:.1}, alive {}, unarmed {}", session.countdown, player.alive, player.unarmed);
+            test.capture("course_countdown.png");
+        }
+        return;
+    }
+    test.clock += time.delta_secs();
+    let gates = course.gates.len();
+    // Somewhere `back` metres before zone `zone`, moving through it at `speed`.
+    let through = |player: &mut LocalPlayer, zone: &crate::course::Zone, back: f32, speed: f32| {
+        let along = Quat::from_rotation_y(zone.yaw) * Vec3::NEG_Z;
+        player.teleport(zone.center - Vec3::Y * 4.0 - along * back);
+        player.vel = along * speed;
+        player.yaw = zone.yaw;
+        player.pitch = -0.2;
+    };
+    if test.reached(0, 0.4) {
+        player.pitch = -0.12;
+        test.capture("course_start.png");
+    }
+    // Off the front of the start (which starts a time trial's clock), then
+    // across the first checkpoint: the client times it, the server takes it.
+    if test.reached(1, 0.5) {
+        let along = Quat::from_rotation_y(course.start.yaw) * Vec3::NEG_Z;
+        let middle = course.start.center.with_y(course.start_point.pos.y);
+        player.teleport(middle + along * (course.start.half.z - 0.3));
+        player.vel = along * 10.0;
+    }
+    if test.reached(2, 0.6) {
+        println!("[selftest] off the start: run {:?}", player.run.clock);
+        through(player, &course.gates[0].0, 6.0, 30.0);
+    }
+    if test.reached(3, 0.9) {
+        test.capture("course_checkpoint.png");
+    }
+    if test.reached(4, 1.6) {
+        let me = session.roster.iter().find(|p| p.id == session.my_id);
+        println!(
+            "[selftest] run {:?} through {}, the server has us through {:?}",
+            player.run.clock,
+            player.run.passed,
+            me.map(|p| p.gates)
+        );
+    }
+    // The view down the course from each checkpoint.
+    for index in 0..gates {
+        let at = 1.8 + index as f32 * 0.8;
+        if test.reached(5 + 2 * index as u32, at) {
+            let respawn = course.gates[index].1;
+            player.run.passed = index + 1;
+            player.teleport(respawn.pos);
+            player.vel = respawn.vel;
+            player.yaw = respawn.yaw;
+            player.pitch = -0.25;
+        }
+        if test.reached(6 + 2 * index as u32, at + 0.5) {
+            test.capture(&format!("course_gate_{}.png", index + 1));
+        }
+    }
+    let step = 5 + 2 * gates as u32;
+    let at = 1.8 + gates as f32 * 0.8;
+    // Through the finish, as far as our own game goes (the server has not
+    // seen the other checkpoints), and the deck it comes down on.
+    if test.reached(step, at) {
+        player.run.passed = gates;
+        through(player, &course.finish, 6.0, 30.0);
+    }
+    if test.reached(step + 1, at + 1.2) {
+        println!("[selftest] finished {:?}", player.run.finished);
+        test.capture("course_finish.png");
+    }
+    // The whole course, from high behind the start, with nothing over it:
+    // the map's picture in the lobby.
+    if test.reached(step + 2, at + 1.4) {
+        let [lo, hi] = map.0.bounds;
+        let middle = Vec3::new((lo.x + hi.x) / 2.0, 70.0, (lo.y + hi.y) / 2.0);
+        player.teleport(Vec3::new(lo.x + 30.0, 215.0, lo.y - 10.0));
+        let to = middle - player.eye();
+        player.yaw = (-to.x).atan2(-to.z);
+        player.pitch = to.y.atan2(to.with_y(0.0).length());
+        test.hide_hud = true;
+    }
+    if test.reached(step + 3, at + 1.6) {
+        test.capture("course_overview.png");
+    }
+    if test.reached(step + 4, at + 1.9) {
+        test.hide_hud = false;
         connection.send(&ClientMsg::EndMatch);
     }
 }

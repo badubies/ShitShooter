@@ -20,7 +20,7 @@ use crate::{
         title_bar,
     },
     net::{self, MenuStatus},
-    protocol::{DEFAULT_PORT, MAX_PLAYERS, MODE_NAMES, protocol_id},
+    protocol::{DEFAULT_PORT, MAX_PLAYERS, MODE_NAMES, MODE_RACE, MODE_TRIAL, protocol_id},
     settings::Settings,
     ui::{
         ACCENT, BUTTON, ButtonKind, DIM, GOOD, PANEL, PANEL_EDGE, TEXT, field_sized, heading, label,
@@ -257,6 +257,8 @@ pub fn online_page(prefs: &MenuPrefs) -> impl Bundle {
                     mode_filter(Some(1), mode_name(1)),
                     mode_filter(Some(2), mode_name(2)),
                     mode_filter(Some(3), mode_name(3)),
+                    mode_filter(Some(MODE_RACE), mode_name(MODE_RACE)),
+                    mode_filter(Some(MODE_TRIAL), mode_name(MODE_TRIAL)),
                     (
                         Node {
                             flex_grow: 1.0,

@@ -444,6 +444,12 @@ struct Player {
     step_from: Vec3,
     step_clock: f32,
     stride: f32,
+    /// The racing modes: how many checkpoints they are through on the run
+    /// they are on, and (a time trial) whether they are on one.
+    run_passed: usize,
+    run_on: bool,
+    /// A race's finishing time, or a time trial's best.
+    run_time: Option<f32>,
     bot: Option<Bot>,
 }
 
@@ -483,6 +489,8 @@ pub struct Server {
     /// Seconds of the starting countdown left; 0 once the match is under way.
     countdown: f32,
     time_left: f32,
+    /// Seconds played since the countdown ended: a race's clock.
+    elapsed: f32,
     join_counter: u64,
     next_bot_id: PlayerId,
     snapshot_timer: f32,
@@ -568,7 +576,7 @@ impl Server {
         let mut server = Server {
             renet: RenetServer::new(ConnectionConfig::default()),
             transport,
-            nav: NavGrid::new(&map),
+            nav: nav_for(&map, settings.mode),
             bot_range: typical_range(&map, settings.mode),
             map,
             flags: Vec::new(),
@@ -588,6 +596,7 @@ impl Server {
             phase: Phase::Lobby,
             countdown: 0.0,
             time_left: 0.0,
+            elapsed: 0.0,
             join_counter: 0,
             next_bot_id: 1,
             snapshot_timer: 0.0,
@@ -732,6 +741,11 @@ impl Server {
         self.phase == Phase::Playing && self.countdown <= 0.0
     }
 
+    /// The match is live and there is fighting in it: not on a course.
+    fn armed(&self) -> bool {
+        self.live() && !is_course_mode(self.settings.mode)
+    }
+
     fn update_match(&mut self, dt: f32) {
         // Everybody is in place, frozen, while the countdown runs.
         if self.countdown > 0.0 {
@@ -740,6 +754,7 @@ impl Server {
             return;
         }
         self.time_left -= dt;
+        self.elapsed += dt;
 
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
         for id in &ids {
@@ -795,22 +810,30 @@ impl Server {
         self.send_snapshot(dt);
 
         if self.time_left <= 0.0 {
-            // Time is up: the best score wins, a tie has no winner.
-            let winner = if is_team_mode(self.settings.mode) {
-                match self.team_scores[0].cmp(&self.team_scores[1]) {
-                    std::cmp::Ordering::Greater => Winner::Team(0),
-                    std::cmp::Ordering::Less => Winner::Team(1),
-                    std::cmp::Ordering::Equal => Winner::Nobody,
-                }
-            } else {
-                let best = self.players.values().map(|p| p.kills).max().unwrap_or(0);
-                let mut leaders = self.players.iter().filter(|(_, p)| p.kills == best);
-                match (leaders.next(), leaders.next()) {
-                    (Some((id, _)), None) => Winner::Player(*id),
-                    _ => Winner::Nobody,
-                }
-            };
+            let winner = self.time_up_winner();
             self.end_match(winner);
+        }
+    }
+
+    /// Who wins when time is up: the best score, a tie has no winner. On a
+    /// course, the best time.
+    fn time_up_winner(&self) -> Winner {
+        if is_course_mode(self.settings.mode) {
+            let best = self.players.iter().filter_map(|(id, p)| Some((*id, p.run_time?))).min_by(|a, b| a.1.total_cmp(&b.1));
+            return best.map_or(Winner::Nobody, |(id, _)| Winner::Player(id));
+        }
+        if is_team_mode(self.settings.mode) {
+            return match self.team_scores[0].cmp(&self.team_scores[1]) {
+                std::cmp::Ordering::Greater => Winner::Team(0),
+                std::cmp::Ordering::Less => Winner::Team(1),
+                std::cmp::Ordering::Equal => Winner::Nobody,
+            };
+        }
+        let best = self.players.values().map(|p| p.kills).max().unwrap_or(0);
+        let mut leaders = self.players.iter().filter(|(_, p)| p.kills == best);
+        match (leaders.next(), leaders.next()) {
+            (Some((id, _)), None) => Winner::Player(*id),
+            _ => Winner::Nobody,
         }
     }
 
@@ -1016,6 +1039,7 @@ impl Server {
                             score_limit: score_limit(self.settings.mode, self.settings.frag_limit),
                             time_left: self.time_left,
                             countdown: self.countdown,
+                            elapsed: self.elapsed,
                         },
                     );
                     self.spawn_player(id);
@@ -1114,6 +1138,7 @@ impl Server {
                     player.spawn_at = point;
                 }
             }
+            ClientMsg::Run(event) => self.handle_run(id, event),
             ClientMsg::Respawn if self.phase == Phase::Playing && early_respawn(self.settings.mode) => {
                 if let Some(player) = self.players.get_mut(&id)
                     && !player.alive
@@ -1127,12 +1152,62 @@ impl Server {
         }
     }
 
+    /// The racing modes: a player's run, as their game timed it. Taken if
+    /// it follows on from what they told us before (checkpoints in order,
+    /// the finish after the last) and is no longer than the match has been
+    /// on; then passed on to everybody. A race's first finish leaves the
+    /// rest `RACE_FINISH_GRACE` to follow, and once everybody is through it
+    /// ends.
+    fn handle_run(&mut self, id: PlayerId, event: RunEvent) {
+        let mode = self.settings.mode;
+        if !self.live() || !is_course_mode(mode) {
+            return;
+        }
+        let Some(course) = &self.map.course else { return };
+        let gates = course.gates.len();
+        let elapsed = self.elapsed;
+        let plausible = |time: f32| time.is_finite() && time > 0.0 && time <= elapsed + 0.5;
+        let Some(player) = self.players.get_mut(&id).filter(|p| p.alive) else { return };
+        let trial = mode == MODE_TRIAL;
+        let on = !trial || player.run_on;
+        let finished = !trial && player.run_time.is_some();
+        match event {
+            RunEvent::Started if trial => {
+                player.run_on = true;
+                player.run_passed = 0;
+            }
+            RunEvent::Abandoned if trial => {
+                player.run_on = false;
+                player.run_passed = 0;
+            }
+            RunEvent::Gate { gate, time } if on && !finished && gate as usize == player.run_passed && plausible(time) => {
+                player.run_passed += 1;
+            }
+            RunEvent::Finished { time } if on && !finished && player.run_passed == gates && plausible(time) => {
+                if trial {
+                    player.run_on = false;
+                    player.run_passed = 0;
+                }
+                player.run_time = Some(player.run_time.map_or(time, |best| best.min(time)));
+            }
+            _ => return,
+        }
+        self.roster_dirty = true;
+        self.broadcast(&ServerMsg::Run { id, event });
+        if mode != MODE_RACE || !matches!(event, RunEvent::Finished { .. }) {
+            return;
+        }
+        let everybody = self.players.values().filter(|p| p.bot.is_none()).all(|p| p.run_time.is_some());
+        let wait = if everybody { RACE_END_DELAY } else { RACE_FINISH_GRACE };
+        self.time_left = self.time_left.min(wait);
+    }
+
     /// A shot or knife swing. Checked against the weapon's fire rate, counted
     /// towards the hits this player may claim, and shown to everyone else.
     fn handle_fire(&mut self, shooter_id: PlayerId, weapon_id: WeaponId, origin: [f32; 3], dirs: Vec<[f32; 3]>) {
         let stats = weapon(weapon_id);
         let origin_v = Vec3::from(origin);
-        if !self.live()
+        if !self.armed()
             || weapon_id as usize >= WEAPONS.len()
             || dirs.len() != stats.pellets
             || !origin_v.is_finite()
@@ -1170,7 +1245,7 @@ impl Server {
     /// `victim_id`. Accepted if the shooter really had a bullet in the air (or
     /// a knife swing going and the victim within reach).
     fn handle_hit(&mut self, shooter_id: PlayerId, victim_id: PlayerId, weapon_id: WeaponId, headshot: bool) {
-        if !self.live() || shooter_id == victim_id || weapon_id as usize >= WEAPONS.len() {
+        if !self.armed() || shooter_id == victim_id || weapon_id as usize >= WEAPONS.len() {
             return;
         }
         let Some(victim_pos) = self.players.get(&victim_id).filter(|v| v.alive).map(|v| v.pos) else {
@@ -1199,7 +1274,7 @@ impl Server {
 
     /// A frag's pin is pulled: the fuse burns from now, thrown or not.
     fn handle_cook(&mut self, id: PlayerId) {
-        if !self.live() {
+        if !self.armed() {
             return;
         }
         let Some(player) = self.players.get_mut(&id) else {
@@ -1217,7 +1292,7 @@ impl Server {
     /// what the thrower carries. Only the kind in their loadout can be thrown.
     fn handle_grenade(&mut self, thrower_id: PlayerId, kind: GrenadeKind, origin: [f32; 3], vel: [f32; 3]) {
         let (pos, vel) = (Vec3::from(origin), Vec3::from(vel));
-        if !self.live() || !pos.is_finite() || !vel.is_finite() {
+        if !self.armed() || !pos.is_finite() || !vel.is_finite() {
             return;
         }
         let Some(thrower) = self.players.get_mut(&thrower_id) else {
@@ -1563,6 +1638,7 @@ impl Server {
         self.phase = Phase::Playing;
         self.countdown = COUNTDOWN;
         self.time_left = self.settings.match_minutes * 60.0;
+        self.elapsed = 0.0;
         self.grenades.clear();
         self.smokes.clear();
         self.bullets.clear();
@@ -1585,6 +1661,9 @@ impl Server {
             player.damage = 0;
             player.hurt_by.clear();
             player.alive = false;
+            player.run_passed = 0;
+            player.run_on = false;
+            player.run_time = None;
         }
         if is_team_mode(self.settings.mode) {
             self.balance_bots();
@@ -1595,6 +1674,7 @@ impl Server {
             score_limit: score_limit(self.settings.mode, self.settings.frag_limit),
             time_left: self.time_left,
             countdown: self.countdown,
+            elapsed: self.elapsed,
         });
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
         for id in ids {
@@ -1787,6 +1867,10 @@ impl Server {
             return;
         }
         self.settings.mode = mode;
+        // Nobody races bots.
+        if is_course_mode(mode) {
+            self.players.retain(|_, player| player.bot.is_none());
+        }
         if !map::plays(self.settings.map, mode) {
             let maps = map::MAP_NAMES.len() as u8;
             if let Some(id) = (0..maps).find(|id| map::plays(*id, mode)) {
@@ -1812,11 +1896,11 @@ impl Server {
 
     fn rebuild_map(&mut self) {
         self.map = Map::for_game(self.settings.map, self.settings.mode);
-        self.nav = NavGrid::new(&self.map);
+        self.nav = nav_for(&self.map, self.settings.mode);
     }
 
     fn add_bot(&mut self) {
-        if self.players.len() >= MAX_PLAYERS {
+        if self.players.len() >= MAX_PLAYERS || is_course_mode(self.settings.mode) {
             return;
         }
         let id = self.next_bot_id;
@@ -2040,6 +2124,9 @@ impl Server {
             step_from: Vec3::ZERO,
             step_clock: 0.0,
             stride: 0.0,
+            run_passed: 0,
+            run_on: false,
+            run_time: None,
             bot,
         }
     }
@@ -2069,6 +2156,8 @@ impl Server {
                     assists: p.assists,
                     damage: p.damage,
                     is_bot: p.bot.is_some(),
+                    time: p.run_time,
+                    gates: p.run_passed.min(u8::MAX as usize) as u8,
                 })
                 .collect(),
             leader: self.leader().unwrap_or(0),
@@ -2131,6 +2220,11 @@ impl Drop for ServerHandle {
 
 /// True if a player coming in with their box centred at `spawn` would be
 /// inside, or right up against, one whose box is centred at `body`.
+/// Where bots can walk: nowhere on a course, where there are none.
+fn nav_for(map: &Map, mode: u8) -> NavGrid {
+    if is_course_mode(mode) { NavGrid::empty() } else { NavGrid::new(map) }
+}
+
 fn crowds(body: Vec3, spawn: Vec3) -> bool {
     let apart = body - spawn;
     apart.with_y(0.0).length() < SPAWN_CLEARANCE && apart.y.abs() < 2.0 * map::PLAYER_HALF.y
@@ -3176,8 +3270,15 @@ mod tests {
         for map in 0..map::MAP_NAMES.len() as u8 {
             for mode in (0..MODE_NAMES.len() as u8).filter(|mode| map::plays(map, *mode)) {
                 let mut server = Server::bind(ServerSettings { port: 0, mode, map, ..ServerSettings::default() }).unwrap();
+                // Nobody races bots: a course fills up with people.
                 while server.players.len() < MAX_PLAYERS {
-                    server.add_bot();
+                    if is_course_mode(mode) {
+                        server.join_counter += 1;
+                        let person = server.new_player(format!("Racer {}", server.players.len()), None);
+                        server.players.insert(1000 + server.players.len() as PlayerId, person);
+                    } else {
+                        server.add_bot();
+                    }
                 }
                 for round in 0..20 {
                     server.start_match();
@@ -3998,5 +4099,130 @@ mod tests {
         // No armor: straight to health, never below zero.
         assert_eq!(take_damage(40, 0, 20), (20, 0));
         assert_eq!(take_damage(30, 10, 90), (0, 0));
+    }
+
+    /// A match on the course, in `mode`, with `people` in it and the
+    /// countdown over.
+    fn course_match(mode: u8, people: usize) -> (Server, Vec<PlayerId>) {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            mode,
+            map: map::GAUNTLET,
+            bots: 3,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        let ids = (0..people as PlayerId)
+            .map(|i| {
+                server.join_counter += 1;
+                let person = server.new_player(format!("Racer {i}"), None);
+                server.players.insert(1000 + i, person);
+                1000 + i
+            })
+            .collect();
+        server.start_match();
+        server.countdown = 0.0;
+        (server, ids)
+    }
+
+    fn gates(server: &Server) -> u8 {
+        server.map.course.as_ref().unwrap().gates.len() as u8
+    }
+
+    /// Through every checkpoint, the first at `from` seconds, one a second.
+    fn through_the_gates(server: &mut Server, id: PlayerId, from: f32) {
+        for gate in 0..gates(server) {
+            server.handle_message(id, ClientMsg::Run(RunEvent::Gate { gate, time: from + gate as f32 }));
+        }
+    }
+
+    fn run(server: &mut Server, id: PlayerId, event: RunEvent) {
+        server.handle_message(id, ClientMsg::Run(event));
+    }
+
+    #[test]
+    fn nobody_races_bots_or_carries_a_gun() {
+        let (mut server, ids) = course_match(MODE_RACE, 2);
+        assert_eq!(server.players.len(), 2, "the bots asked for came in");
+        server.handle_message(ids[0], ClientMsg::AddBot);
+        assert_eq!(server.players.len(), 2);
+        let eye = server.players[&ids[0]].pos;
+        server.handle_message(ids[0], ClientMsg::Fire { weapon: 0, origin: eye.to_array(), dirs: vec![[0.0, 0.0, -1.0]] });
+        server.handle_message(ids[0], ClientMsg::Hit { victim: ids[1], weapon: 0, headshot: true });
+        assert_eq!(server.players[&ids[1]].health, MAX_HEALTH);
+    }
+
+    #[test]
+    fn picking_a_racing_mode_sends_the_bots_home_and_goes_to_the_course() {
+        let mut server = Server::bind(ServerSettings { port: 0, bots: 3, ..ServerSettings::default() }).unwrap();
+        server.join_counter += 1;
+        let person = server.new_player("Leader".into(), None);
+        server.players.insert(1000, person);
+        server.handle_message(1000, ClientMsg::SetMode(MODE_TRIAL));
+        assert_eq!(server.settings.map, map::GAUNTLET);
+        assert!(server.map.course.is_some());
+        assert_eq!(server.players.len(), 1);
+        // And back: to a map with a fight on it.
+        server.handle_message(1000, ClientMsg::SetMode(MODE_FFA));
+        assert_ne!(server.settings.map, map::GAUNTLET);
+        server.handle_message(1000, ClientMsg::SetMap(map::GAUNTLET));
+        assert_ne!(server.settings.map, map::GAUNTLET);
+    }
+
+    #[test]
+    fn a_race_takes_checkpoints_in_order_and_the_first_through_wins() {
+        let (mut server, ids) = course_match(MODE_RACE, 3);
+        server.elapsed = 40.0;
+        // Out of order, or the finish before the checkpoints: not taken.
+        run(&mut server, ids[0], RunEvent::Gate { gate: 1, time: 5.0 });
+        run(&mut server, ids[0], RunEvent::Finished { time: 9.0 });
+        assert_eq!((server.players[&ids[0]].run_passed, server.players[&ids[0]].run_time), (0, None));
+        through_the_gates(&mut server, ids[0], 5.0);
+        assert_eq!(server.players[&ids[0]].run_passed, gates(&server) as usize);
+        // Longer than the race has been on: not taken.
+        run(&mut server, ids[0], RunEvent::Finished { time: 99.0 });
+        assert_eq!(server.players[&ids[0]].run_time, None);
+        run(&mut server, ids[0], RunEvent::Finished { time: 30.0 });
+        assert_eq!(server.players[&ids[0]].run_time, Some(30.0));
+        assert!(server.time_left <= RACE_FINISH_GRACE);
+        // Only one finish each.
+        run(&mut server, ids[0], RunEvent::Finished { time: 20.0 });
+        assert_eq!(server.players[&ids[0]].run_time, Some(30.0));
+        // A slower one; the race goes on for the last.
+        through_the_gates(&mut server, ids[1], 6.0);
+        run(&mut server, ids[1], RunEvent::Finished { time: 33.0 });
+        assert!(server.time_left > RACE_END_DELAY);
+        assert_eq!(server.time_up_winner(), Winner::Player(ids[0]));
+        // Everybody through: it ends soon after.
+        through_the_gates(&mut server, ids[2], 7.0);
+        run(&mut server, ids[2], RunEvent::Finished { time: 35.0 });
+        assert!(server.time_left <= RACE_END_DELAY);
+        server.update_match(RACE_END_DELAY + 0.1);
+        assert!(server.phase == Phase::Lobby);
+    }
+
+    #[test]
+    fn a_time_trial_keeps_everybodys_best_run() {
+        let (mut server, ids) = course_match(MODE_TRIAL, 2);
+        server.elapsed = 300.0;
+        // Not on a run: nothing counts.
+        run(&mut server, ids[0], RunEvent::Gate { gate: 0, time: 3.0 });
+        assert_eq!(server.players[&ids[0]].run_passed, 0);
+        for (time, best) in [(40.0, 40.0), (45.0, 40.0), (38.0, 38.0)] {
+            run(&mut server, ids[0], RunEvent::Started);
+            through_the_gates(&mut server, ids[0], 5.0);
+            run(&mut server, ids[0], RunEvent::Finished { time });
+            let player = &server.players[&ids[0]];
+            assert_eq!((player.run_time, player.run_on, player.run_passed), (Some(best), false, 0));
+        }
+        // A run given up counts for nothing.
+        run(&mut server, ids[1], RunEvent::Started);
+        run(&mut server, ids[1], RunEvent::Gate { gate: 0, time: 3.0 });
+        run(&mut server, ids[1], RunEvent::Abandoned);
+        run(&mut server, ids[1], RunEvent::Gate { gate: 1, time: 4.0 });
+        assert_eq!((server.players[&ids[1]].run_passed, server.players[&ids[1]].run_time), (0, None));
+        // A finish does not run the clock down.
+        assert!(server.time_left > 60.0);
+        assert_eq!(server.time_up_winner(), Winner::Player(ids[0]));
     }
 }

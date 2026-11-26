@@ -104,7 +104,7 @@ impl KillFeed {
         }
     }
 
-    fn say(&mut self, text: String) {
+    pub(crate) fn say(&mut self, text: String) {
         self.push(FeedLine {
             left: 6.0,
             killer: None,
@@ -213,9 +213,10 @@ fn fire(
         player.hand = None;
         return;
     }
-    // Nothing to fight with until the countdown is over.
-    if session.frozen() {
+    // Nothing to fight with until the countdown is over, nor at all on a course.
+    if session.frozen() || player.unarmed {
         *trigger_buffer = 0.0;
+        player.hand = None;
         return;
     }
 
