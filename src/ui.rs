@@ -655,10 +655,16 @@ fn outer_justify(right: bool) -> TextLayout {
 /// A number in one of the columns beside the names. They keep to the names'
 /// side, so on the mirrored team they line up on their left.
 fn roster_stat(text: String, size: f32, color: Color, right: bool) -> impl Bundle {
+    roster_stat_if(text, size, color, right, true)
+}
+
+/// A `roster_stat` that takes no room at all unless `shown`.
+fn roster_stat_if(text: String, size: f32, color: Color, right: bool, shown: bool) -> impl Bundle {
     (
         label(text, size, color),
         TextLayout::justify(if right { Justify::Left } else { Justify::Right }),
         Node {
+            display: if shown { Display::Flex } else { Display::None },
             width: px(STAT_WIDTH),
             flex_shrink: 0.0,
             ..default()
@@ -679,13 +685,14 @@ fn roster_row_node(right: bool) -> Node {
 }
 
 /// The line over a group of players: a title, and the names of the columns.
-fn roster_heading(title: String, color: Color, right: bool) -> impl Bundle {
+/// Free for all has no assists, so no column for them.
+fn roster_heading(title: String, color: Color, right: bool, assists: bool) -> impl Bundle {
     (
         roster_row_node(right),
         children![
             (weighted(title, 11.0, 700, color), outer_justify(right), Node { flex_grow: 1.0, ..default() }),
             roster_stat("KILLS".into(), 11.0, DIM, right),
-            roster_stat("ASSISTS".into(), 11.0, DIM, right),
+            roster_stat_if("ASSISTS".into(), 11.0, DIM, right, assists),
             roster_stat("DEATHS".into(), 11.0, DIM, right),
             roster_stat("DAMAGE".into(), 11.0, DIM, right),
         ],
@@ -752,7 +759,7 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey, right: bool) 
                 Node { flex_grow: 1.0, ..default() },
             ),
             roster_stat(player.kills.to_string(), 16.0, TEXT, right),
-            roster_stat(player.assists.to_string(), 16.0, DIM, right),
+            roster_stat_if(player.assists.to_string(), 16.0, DIM, right, key.team_mode),
             roster_stat(player.deaths.to_string(), 16.0, DIM, right),
             roster_stat(player.damage.to_string(), 16.0, DIM, right),
         ],
@@ -834,7 +841,7 @@ fn update_rosters(
                             });
                         }
                         sides.spawn(column()).with_children(|rows| {
-                            rows.spawn(roster_heading("PLAYER".into(), DIM, false));
+                            rows.spawn(roster_heading("PLAYER".into(), DIM, false, false));
                             for (player, color) in players {
                                 rows.spawn(roster_row(player, palette_color(**color), &key, false));
                             }
@@ -854,7 +861,7 @@ fn update_rosters(
                     sides.spawn(column()).with_children(|rows| {
                         let name = format!("{} team", team_name(mine, team));
                         rows.spawn(roster_team_banner(&name, key.team_scores[team as usize], color, right));
-                        rows.spawn(roster_heading("PLAYER".into(), DIM, right));
+                        rows.spawn(roster_heading("PLAYER".into(), DIM, right, true));
                         for player in key.roster.iter().filter(|player| player.team & 1 == team) {
                             rows.spawn(roster_row(player, color, &key, right));
                         }
@@ -2883,7 +2890,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                     children![
                         pause_fact("Place", Hud::PausePlace),
                         pause_fact("Kills", Hud::PauseKills),
-                        pause_fact("Assists", Hud::PauseAssists),
+                        (pause_fact("Assists", Hud::PauseAssists), TeamModeOnly),
                         pause_fact("Deaths", Hud::PauseDeaths),
                         pause_fact("Damage", Hud::PauseDamage),
                     ],
@@ -3627,6 +3634,7 @@ fn update_overlays(
         Query<&mut Node, With<LeaderOnly>>,
         Single<&mut Node, With<DeathScreen>>,
         Query<&mut Node, With<HiddenWhenDead>>,
+        Query<&mut Node, With<TeamModeOnly>>,
     )>,
 ) {
     // White ticks for a hit, yellow for a headshot; red, and held a little
@@ -3664,6 +3672,9 @@ fn update_overlays(
     set_shown(&mut nodes.p1(), paused);
     for mut node in &mut nodes.p2() {
         set_shown(&mut node, session.is_leader());
+    }
+    for mut node in &mut nodes.p5() {
+        set_shown(&mut node, session.team_mode());
     }
 }
 
