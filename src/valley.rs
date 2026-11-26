@@ -83,6 +83,12 @@ const CREEK: [(f32, f32); 8] = [
     (20.0, 200.0),
 ];
 const BRIDGE_AT: (f32, f32) = (25.0, -2.0);
+/// How far the creek's bed lies below its banks, and its water above the bed.
+const CREEK_DEPTH: f32 = 2.2;
+const WATER_DEPTH: f32 = 0.55;
+/// Wide enough that the water's edges tuck under the banks: the banks reach
+/// its surface about 4.8 m out from the middle.
+const WATER_WIDTH: f32 = 11.0;
 
 /// Flattened ground: building sites, flags, bases (centre, half size, round).
 struct Pad {
@@ -225,13 +231,21 @@ pub fn valley() -> Map {
         }
         pad_heights.push(h);
     }
-    let mut terrain = Terrain::generate(GRID, CELL, |x, z| {
+    let levelled = |x: f32, z: f32| {
         let mut h = shaped(x, z);
         for (pad, target) in pads.iter().zip(&pad_heights) {
             h += (target - h) * pad.weight(Vec2::new(x, z), 5.0);
         }
-        let (distance, _) = creek.nearest(Vec2::new(x, z), None);
-        h - 2.2 * (1.0 - smoothstep(3.5, 7.5, distance))
+        h
+    };
+    // The creek's banks stand at the ground's height along it, smoothed, the
+    // same on both sides, so its bed is level across and the water meets
+    // both banks even where it runs along a hillside.
+    let banks = profile(&creek, levelled);
+    let mut terrain = Terrain::generate(GRID, CELL, |x, z| {
+        let (distance, bank) = creek.nearest(Vec2::new(x, z), Some(&banks));
+        let channel = bank - CREEK_DEPTH * (1.0 - smoothstep(3.5, 7.5, distance));
+        channel + (levelled(x, z) - channel) * smoothstep(7.5, 13.0, distance)
     });
     terrain.colors = ground_colors(&terrain, &roads, &creek, &pads);
 
@@ -243,7 +257,7 @@ pub fn valley() -> Map {
             paved: road.paved,
         })
         .collect();
-    map.water = vec![(water_line(&terrain, &creek), 6.0)];
+    map.water = vec![(water_line(&creek, &banks), WATER_WIDTH)];
     let ground = |x: f32, z: f32| terrain.height(x, z);
 
     // The bridge sits on the road where the creek crosses it.
@@ -362,20 +376,7 @@ const PROFILE_STEP: f32 = 2.0;
 fn roads() -> Vec<RoadShape> {
     let shape = |points: &[(f32, f32)], width: f32, paved: bool| {
         let line = Polyline::new(points.iter().map(|&(x, z)| Vec2::new(x, z)).collect());
-        let samples = (line.length() / PROFILE_STEP).ceil() as usize + 1;
-        let raw: Vec<f32> = (0..samples)
-            .map(|i| {
-                let (p, _) = line.at(i as f32 * PROFILE_STEP);
-                base(p.x, p.y)
-            })
-            .collect();
-        let profile = (0..samples)
-            .map(|i| {
-                let lo = i.saturating_sub(10);
-                let hi = (i + 10).min(samples - 1);
-                raw[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32
-            })
-            .collect();
+        let profile = profile(&line, base);
         RoadShape {
             line,
             width,
@@ -386,6 +387,25 @@ fn roads() -> Vec<RoadShape> {
     let mut roads = vec![shape(&MAIN_ROAD, 7.0, true)];
     roads.extend(DIRT_ROADS.iter().map(|points| shape(points, 4.0, false)));
     roads
+}
+
+/// The height of the ground along a line, every `PROFILE_STEP` m, averaged
+/// over 20 m either way so it climbs gently.
+fn profile(line: &Polyline, height: impl Fn(f32, f32) -> f32) -> Vec<f32> {
+    let samples = (line.length() / PROFILE_STEP).ceil() as usize + 1;
+    let raw: Vec<f32> = (0..samples)
+        .map(|i| {
+            let (p, _) = line.at(i as f32 * PROFILE_STEP);
+            height(p.x, p.y)
+        })
+        .collect();
+    (0..samples)
+        .map(|i| {
+            let lo = i.saturating_sub(10);
+            let hi = (i + 10).min(samples - 1);
+            raw[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32
+        })
+        .collect()
 }
 
 fn pads() -> Vec<Pad> {
@@ -540,12 +560,13 @@ fn scatter(map: &mut Map, terrain: &Terrain, roads: &[RoadShape], creek: &Polyli
 }
 
 /// The creek's water: along its centre line, a little above the bed.
-fn water_line(terrain: &Terrain, creek: &Polyline) -> Vec<Vec3> {
+fn water_line(creek: &Polyline, banks: &[f32]) -> Vec<Vec3> {
     let mut points = Vec::new();
     let mut along = 0.0;
     while along <= creek.length() {
         let (p, _) = creek.at(along);
-        points.push(Vec3::new(p.x, terrain.height(p.x, p.y) + 0.55, p.y));
+        let (_, bank) = creek.nearest(p, Some(banks));
+        points.push(Vec3::new(p.x, bank - CREEK_DEPTH + WATER_DEPTH, p.y));
         along += 3.0;
     }
     points
@@ -771,6 +792,28 @@ mod tests {
     }
 
     #[test]
+    fn the_creek_is_full_to_its_banks() {
+        let map = valley();
+        let terrain = map.terrain.as_ref().unwrap();
+        let (points, width) = &map.water[0];
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if a.z.abs() > PLAY {
+                continue;
+            }
+            let at = Vec2::new(a.x, a.z);
+            let along = Vec2::new(b.x - a.x, b.z - a.z).normalize();
+            let side = Vec2::new(along.y, -along.x);
+            assert!(terrain.height(at.x, at.y) < a.y - 0.3, "the creek is dry at {at}");
+            // Both edges of the water are under the bank, so none of the bed shows.
+            for edge in [at + side * (width / 2.0), at - side * (width / 2.0)] {
+                let bank = terrain.height(edge.x, edge.y);
+                assert!(bank > a.y + 0.1, "the water stops short of the bank at {edge}: bank {bank:.2}, water {:.2}", a.y);
+            }
+        }
+    }
+
+    #[test]
     fn the_valley_builds_quickly_and_the_same_every_time() {
         let started = std::time::Instant::now();
         let a = valley();
@@ -783,3 +826,4 @@ mod tests {
         println!("valley: {} blocks, {} props, built in {elapsed:?}", a.blocks.len(), a.props.len());
     }
 }
+
