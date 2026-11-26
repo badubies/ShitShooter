@@ -41,7 +41,8 @@ impl NavGrid {
             for i in 0..nx {
                 let at = grid.center(map, i, j);
                 let body = at + Vec3::Y * (ABOVE_GROUND + CLEARANCE.y);
-                grid.walkable[j * nx + i] = map.is_free(body, CLEARANCE);
+                let steep = map.terrain.is_some() && !map.walkable_ground(at.x, at.z);
+                grid.walkable[j * nx + i] = !steep && map.is_free(body, CLEARANCE);
             }
         }
         grid

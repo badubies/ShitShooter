@@ -735,18 +735,58 @@ impl Map {
                 }
             }
             grounded |= self.slide_off_ramps(pos, vel, half);
-            // The ground holds up the middle of the box.
-            if let Some(ground) = self.ground(pos.x, pos.z)
-                && pos.y - half.y < ground + 1e-3
-            {
-                pos.y = pos.y.max(ground + half.y);
-                if vel.y <= 0.0 {
-                    vel.y = 0.0;
-                    grounded = true;
-                }
-            }
+            grounded |= self.slide_off_ground(pos, vel, half);
         }
         grounded
+    }
+
+    /// The ground holds up the middle of the box. Where it is gentle enough
+    /// to walk, the box is lifted straight out of it and stands; where it
+    /// is steeper, like a steep ramp, the box is pushed square out of it and
+    /// only loses the velocity into it, so it slides down (or surfs it).
+    /// Returns true if it stands.
+    fn slide_off_ground(&self, pos: &mut Vec3, vel: &mut Vec3, half: Vec3) -> bool {
+        let Some(terrain) = &self.terrain else {
+            return false;
+        };
+        // A few times over, for where the box slides onto another slope.
+        for _ in 0..3 {
+            let depth = terrain.height(pos.x, pos.z) - (pos.y - half.y);
+            if depth < -1e-3 {
+                return false;
+            }
+            let normal = terrain.normal(pos.x, pos.z);
+            if normal.y >= WALKABLE {
+                pos.y += depth.max(0.0);
+                if vel.y > 0.0 {
+                    return false;
+                }
+                vel.y = 0.0;
+                return true;
+            }
+            // Square out of the slope, as far as the middle of the box is in it.
+            *pos += normal * depth.max(0.0) * normal.y;
+            let into = vel.dot(normal);
+            if into < 0.0 {
+                *vel -= normal * into;
+            }
+            if depth <= 1e-4 {
+                return false;
+            }
+        }
+        // Still in it: wedged in a fold between steep slopes. It rests there.
+        let ground = terrain.height(pos.x, pos.z);
+        if pos.y - half.y < ground - 1e-3 {
+            pos.y = ground + half.y;
+            vel.y = vel.y.max(0.0);
+            return true;
+        }
+        false
+    }
+
+    /// True if the ground under (x, z) is gentle enough to stand on.
+    pub fn walkable_ground(&self, x: f32, z: f32) -> bool {
+        self.terrain.as_ref().is_some_and(|terrain| terrain.normal(x, z).y >= WALKABLE)
     }
 
     /// The first ramp a box at `center` overlaps: which way to push it out, and how far.
@@ -828,7 +868,10 @@ impl Map {
     /// off it. Returns true if it did.
     pub fn snap_to_ground(&self, pos: &mut Vec3, half: Vec3, drop: f32) -> bool {
         let feet = pos.y - half.y;
-        let mut floor = self.ground(pos.x, pos.z).filter(|ground| *ground <= feet + 1e-3);
+        // Not down a slope too steep to stand on: you slide off that.
+        let mut floor = self
+            .ground(pos.x, pos.z)
+            .filter(|ground| *ground <= feet + 1e-3 && self.walkable_ground(pos.x, pos.z));
         let (min, max) = (*pos - half.with_y(0.0) - Vec3::Y * (half.y + drop), *pos + half);
         let center = *pos;
         self.near(min, max, |block| {
@@ -1364,6 +1407,15 @@ mod tests {
         assert!(vel.length() < 0.5, "still moving at {vel:?}");
     }
 
+    /// Flat ground for x < 0, then a 56° slope rising 1.5 m per metre.
+    fn cliff() -> Map {
+        Map {
+            terrain: Some(Terrain::generate(41, 2.0, |x, _| (x * 1.5).max(0.0))),
+            ..Map::empty(0)
+        }
+        .finish()
+    }
+
     /// Flat ground for x < 0, then a hill rising 0.4 m per metre.
     fn hillside() -> Map {
         Map {
@@ -1404,6 +1456,27 @@ mod tests {
         // ...and back down it, without skipping off.
         assert_eq!(run_for(&map, &mut pos, Vec3::new(-9.5, 0.0, 0.0), 180), 0);
         assert!((pos.y - PLAYER_HALF.y).abs() < 0.01, "{pos}");
+    }
+
+    /// Ground steeper than about 45° is no floor: a body on it slides to the
+    /// bottom without ever standing (and never sinks into it).
+    #[test]
+    fn steep_ground_is_slid_down_not_stood_on() {
+        let map = cliff();
+        assert!(!map.walkable_ground(5.0, 0.0) && map.walkable_ground(-5.0, 0.0));
+        let dt = 1.0 / 60.0;
+        let mut pos = Vec3::new(6.0, 9.0 + PLAYER_HALF.y, 0.0);
+        let mut vel = Vec3::ZERO;
+        for frame in 0..180 {
+            vel.y -= 22.0 * dt;
+            let grounded = map.move_and_slide(&mut pos, &mut vel, PLAYER_HALF, dt);
+            let feet = pos.y - PLAYER_HALF.y;
+            assert!(feet >= map.ground(pos.x, pos.z).unwrap() - 0.02, "in the slope at {pos}");
+            if pos.x > 0.5 {
+                assert!(!grounded, "stood on the slope at {pos}, frame {frame}");
+            }
+        }
+        assert!(pos.x < 0.5 && (pos.y - PLAYER_HALF.y).abs() < 0.05, "came to rest at {pos}");
     }
 
     #[test]
@@ -1594,3 +1667,4 @@ mod tests {
         assert!(vel.length() < 0.5, "still moving at {vel:?}");
     }
 }
+

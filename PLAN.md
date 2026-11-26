@@ -395,6 +395,11 @@ Done so far, worth knowing:
   is the hull of its furthest points in 42 directions. Walking into the
   steep side of a ramp no higher than `STEP_UP` steps onto it, as onto a
   ledge, if the face you land on is walkable.
+- Terrain steeper than `WALKABLE` is no floor: it is surfed like a steep
+  ramp, and bots' nav grid leaves it out. Holding into any steep face
+  (ramp or ground) creeps you up it at about 1.4 m/s: air acceleration
+  tops your speed along the key back up to 1 m/s each tick, and the face
+  turns that up the slope.
 - `src/valley.rs` tests walk a player up the stairs of the tall house, the
   barn loft, the warehouse mezzanine and the chapel tower to the belfry.
 - Re-run `art/map_props.py` after changing a model; it rewrites

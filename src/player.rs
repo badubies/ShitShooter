@@ -1771,6 +1771,33 @@ mod tests {
         assert!(p.grounded && p.feet().y.abs() < 0.01, "still up at {}", p.pos);
     }
 
+    /// Ground steeper than about 45° is surfed like a steep ramp: running
+    /// at it you are never on your feet on it, and let go you slide back
+    /// down to its foot.
+    #[test]
+    fn steep_ground_is_surfed_not_walked() {
+        // Flat for x < 0, then a 56° slope.
+        let mut map = Map::empty(0);
+        map.terrain = Some(crate::terrain::Terrain::generate(41, 2.0, |x, _| (x * 1.5).max(0.0)));
+        let map = map.finish();
+        let mut p = LocalPlayer { alive: true, grounded: true, ..default() };
+        p.teleport(Vec3::new(-6.0, PLAYER_HALF.y, 0.0));
+        // Looking along +x, at the slope.
+        p.yaw = -FRAC_PI_2;
+        let mut top = 0.0_f32;
+        play(&mut p, &map, 144.0, 1.5, |p, _| {
+            assert!(!p.grounded || p.pos.x < 0.5, "stood on the slope at {}", p.pos);
+            top = top.max(p.feet().y);
+            Vec2::Y
+        });
+        assert!(top > 1.0, "never got onto the slope: {}", p.pos);
+        play(&mut p, &map, 144.0, 2.0, |p, _| {
+            assert!(!p.grounded || p.pos.x < 0.5, "stood on the slope at {}", p.pos);
+            Vec2::ZERO
+        });
+        assert!(p.grounded && p.feet().y < 0.05, "still up it at {}", p.pos);
+    }
+
     /// Strafing right in the air at 12 m/s while turning right at a steady
     /// rate, as a mouse does: the speed gained in a second.
     fn strafe_gain(fps: f32) -> f32 {
