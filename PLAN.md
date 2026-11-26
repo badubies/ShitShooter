@@ -386,9 +386,15 @@ trees, and a new mode, Conquest, played on capture points.
 Done so far, worth knowing:
 
 - Colliding models only turn by quarter turns, so their boxes stay upright.
-  Roofs collide as a stepped shell, hollow inside. Stairs need a metre of
-  floor in front of the first step: you cannot step onto a stair from the
-  side (the box spans two steps, 0.67 m).
+  Roofs, rocks and flights of stairs collide as hidden ramps: convex
+  solids (`Prop::solid` in `art/map_props.py` takes the hull of points).
+  Pitched roofs (34-37°) lie on the roof's top, solid down to the ceiling
+  under it, so you walk up them and over the ridge. A flight is one slope
+  over the front edges of its steps, starting a step out in front of the
+  first; keep stairs under 45° (`WALKABLE`) or they are slid down. A rock
+  is the hull of its furthest points in 42 directions. Walking into the
+  steep side of a ramp no higher than `STEP_UP` steps onto it, as onto a
+  ledge, if the face you land on is walkable.
 - `src/valley.rs` tests walk a player up the stairs of the tall house, the
   barn loft, the warehouse mezzanine and the chapel tower to the belfry.
 - Re-run `art/map_props.py` after changing a model; it rewrites

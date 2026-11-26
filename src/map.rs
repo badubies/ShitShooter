@@ -26,7 +26,7 @@ pub const BOUNCE_SOUND: f32 = 3.0;
 /// Walking into a ledge at most this high above your feet (a stair, a kerb)
 /// lifts you onto it, and walking off one this high keeps you on the ground.
 pub const STEP_UP: f32 = 0.5;
-/// Side of a cell of the grid that finds the blocks near a point quickly.
+/// Side of a cell of the grids that find the blocks and ramps near a point quickly.
 const GRID_CELL: f32 = 8.0;
 
 pub const MAP_NAMES: [&str; 5] = ["Arena", "Depot", "Valley", "Hamlet", "Surf"];
@@ -105,7 +105,7 @@ pub struct Spawn {
 }
 
 /// A model from `props::PROPS` standing on the map. Its collision boxes are
-/// among the map's (invisible) blocks.
+/// among the map's (invisible) blocks, and its solids among its (hidden) ramps.
 pub struct Prop {
     pub model: usize,
     /// Where its origin stands.
@@ -124,6 +124,18 @@ impl Prop {
             let a = turn * (Vec3::new(*x0, *y0, *z0) * self.scale) + self.pos;
             let b = turn * (Vec3::new(*x1, *y1, *z1) * self.scale) + self.pos;
             (a.min(b), a.max(b))
+        })
+    }
+
+    /// Its solids (roofs, rocks, stairs) as hidden ramps, where it stands.
+    pub fn ramps(&self) -> impl Iterator<Item = Ramp> + '_ {
+        let turn = Quat::from_rotation_y(self.yaw);
+        PROPS[self.model].solids.iter().map(move |solid| {
+            let corners = solid.corners.iter().map(|c| turn * (Vec3::from(*c) * self.scale) + self.pos).collect();
+            let faces = solid.faces.iter().map(|face| face.iter().map(|&i| i as usize).collect()).collect();
+            let mut ramp = Ramp::solid(corners, faces, [0.0; 3]);
+            ramp.visible = false;
+            ramp
         })
     }
 }
@@ -190,7 +202,8 @@ pub struct Map {
     pub id: u8,
     /// Do not change after `finish`: the grid indexes them.
     pub blocks: Vec<Block>,
-    /// Sloped wedges, to stand on or (the steep ones) to surf.
+    /// Sloped solids, to stand on or (the steep ones) to surf. Do not
+    /// change after `finish` either.
     pub ramps: Vec<Ramp>,
     /// The ground of the outdoor maps. Indoor maps stand on a floor block.
     pub terrain: Option<Terrain>,
@@ -215,26 +228,30 @@ pub struct Map {
     pub bases: [Vec<Spawn>; 2],
     pub look: Look,
     grid: BlockGrid,
+    ramp_grid: BlockGrid,
 }
 
-/// Which blocks are near which part of the map: the blocks touching each
-/// square cell of a grid over the map's footprint.
+/// Which blocks (or ramps) are near which part of the map: the ones whose
+/// bounds touch each square cell of a grid over the map's footprint.
 #[derive(Default)]
 struct BlockGrid {
     origin: Vec2,
     nx: usize,
     nz: usize,
     cells: Vec<Vec<u32>>,
+    /// How many things it indexes.
+    count: usize,
 }
 
 impl BlockGrid {
-    fn new(blocks: &[Block]) -> BlockGrid {
+    /// A grid over things with these bounds (min, max).
+    fn new(bounds: &[(Vec3, Vec3)]) -> BlockGrid {
         let (mut min, mut max) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-        for block in blocks {
-            min = min.min(Vec2::new(block.min.x, block.min.z));
-            max = max.max(Vec2::new(block.max.x, block.max.z));
+        for (lo, hi) in bounds {
+            min = min.min(Vec2::new(lo.x, lo.z));
+            max = max.max(Vec2::new(hi.x, hi.z));
         }
-        if blocks.is_empty() {
+        if bounds.is_empty() {
             (min, max) = (Vec2::ZERO, Vec2::ONE);
         }
         let nx = (((max.x - min.x) / GRID_CELL).ceil() as usize).max(1);
@@ -244,9 +261,10 @@ impl BlockGrid {
             nx,
             nz,
             cells: vec![Vec::new(); nx * nz],
+            count: bounds.len(),
         };
-        for (index, block) in blocks.iter().enumerate() {
-            let (x0, z0, x1, z1) = grid.span(block.min, block.max);
+        for (index, (lo, hi)) in bounds.iter().enumerate() {
+            let (x0, z0, x1, z1) = grid.span(*lo, *hi);
             for z in z0..=z1 {
                 for x in x0..=x1 {
                     grid.cells[z * nx + x].push(index as u32);
@@ -254,6 +272,12 @@ impl BlockGrid {
             }
         }
         grid
+    }
+
+    /// True if it indexes all `count` of the things (it was built after
+    /// they were all in); if not, check every one.
+    fn covers(&self, count: usize) -> bool {
+        !self.cells.is_empty() && self.count == count
     }
 
     /// The cells (x0, z0, x1, z1, inclusive) a box covers, clamped to the grid.
@@ -265,6 +289,79 @@ impl BlockGrid {
             cell(max.x, self.origin.x, self.nx),
             cell(max.z, self.origin.y, self.nz),
         )
+    }
+
+    /// The things in the cells the box from `min` to `max` touches (one may
+    /// come up more than once).
+    fn near(&self, min: Vec3, max: Vec3) -> impl Iterator<Item = usize> + '_ {
+        let (x0, z0, x1, z1) = self.span(min, max);
+        (z0..=z1).flat_map(move |z| (x0..=x1).flat_map(move |x| self.cells[z * self.nx + x].iter().map(|&i| i as usize)))
+    }
+
+    /// The nearest hit along the ray, `hit` giving the distance to thing
+    /// `index` if the ray meets it nearer than `max`. Walks the cells the
+    /// ray crosses (seen from above), nearest first, and stops at the first
+    /// cell that holds a hit closer than its far side.
+    fn raycast(&self, origin: Vec3, dir: Vec3, max: f32, mut hit: impl FnMut(usize) -> Option<f32>) -> Option<f32> {
+        let size = Vec2::new(self.nx as f32, self.nz as f32) * GRID_CELL;
+        let flat = Vec2::new(dir.x, dir.z);
+        let start = Vec2::new(origin.x, origin.z);
+        // Clip the ray to the grid.
+        let (mut t0, mut t1) = (0.0_f32, max);
+        for axis in 0..2 {
+            let (o, d, lo, hi) = (start[axis], flat[axis], self.origin[axis], self.origin[axis] + size[axis]);
+            if d.abs() < 1e-8 {
+                if o < lo || o > hi {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = minmax((lo - o) / d, (hi - o) / d);
+            t0 = t0.max(a);
+            t1 = t1.min(b);
+        }
+        if t0 > t1 {
+            return None;
+        }
+        let entry = (start + flat * t0 - self.origin) / GRID_CELL;
+        let counts = [self.nx, self.nz];
+        let mut cell = [
+            (entry.x.floor().max(0.0) as usize).min(self.nx - 1),
+            (entry.y.floor().max(0.0) as usize).min(self.nz - 1),
+        ];
+        let mut next = [f32::INFINITY; 2];
+        let mut delta = [f32::INFINITY; 2];
+        for axis in 0..2 {
+            let d = flat[axis];
+            if d.abs() < 1e-8 {
+                continue;
+            }
+            delta[axis] = GRID_CELL / d.abs();
+            let edge = self.origin[axis] + (cell[axis] as f32 + if d > 0.0 { 1.0 } else { 0.0 }) * GRID_CELL;
+            next[axis] = (edge - start[axis]) / d;
+        }
+        let mut best: Option<f32> = None;
+        loop {
+            for &index in &self.cells[cell[1] * self.nx + cell[0]] {
+                if let Some(t) = hit(index as usize)
+                    && t < max
+                    && best.is_none_or(|b| t < b)
+                {
+                    best = Some(t);
+                }
+            }
+            let axis = if next[0] < next[1] { 0 } else { 1 };
+            let leave = next[axis];
+            if best.is_some_and(|b| b <= leave) || leave > t1 {
+                return best;
+            }
+            let forward = flat[axis] > 0.0;
+            if (!forward && cell[axis] == 0) || (forward && cell[axis] + 1 >= counts[axis]) {
+                return best;
+            }
+            cell[axis] = if forward { cell[axis] + 1 } else { cell[axis] - 1 };
+            next[axis] += delta[axis];
+        }
     }
 }
 
@@ -317,11 +414,12 @@ impl Map {
             bases: [Vec::new(), Vec::new()],
             look: Look::default(),
             grid: BlockGrid::default(),
+            ramp_grid: BlockGrid::default(),
         }
     }
 
-    /// Stands a model on the map, and adds its collision boxes as blocks.
-    /// Call before `finish`.
+    /// Stands a model on the map, and adds its collision boxes as blocks and
+    /// its solids as ramps. Call before `finish`.
     pub fn add_prop(&mut self, model: usize, pos: Vec3, yaw: f32, scale: f32) {
         let prop = Prop { model, pos, yaw, scale };
         for (min, max) in prop.boxes() {
@@ -332,6 +430,7 @@ impl Map {
                 visible: false,
             });
         }
+        self.ramps.extend(prop.ramps());
         self.props.push(prop);
     }
 
@@ -351,27 +450,27 @@ impl Map {
         Quat::from_rotation_y(yaw) * point + pos
     }
 
-    /// Indexes the blocks. Call once they are all in.
+    /// Indexes the blocks and ramps. Call once they are all in.
     pub fn finish(mut self) -> Map {
-        self.grid = BlockGrid::new(&self.blocks);
+        self.index_blocks();
+        let bounds: Vec<_> = self.ramps.iter().map(|ramp| (ramp.min, ramp.max)).collect();
+        self.ramp_grid = BlockGrid::new(&bounds);
         self
+    }
+
+    fn index_blocks(&mut self) {
+        let bounds: Vec<_> = self.blocks.iter().map(|block| (block.min, block.max)).collect();
+        self.grid = BlockGrid::new(&bounds);
     }
 
     /// Calls `f` with every block whose cell the box from `min` to `max`
     /// touches (a block may come up more than once).
     fn near(&self, min: Vec3, max: Vec3, mut f: impl FnMut(&Block)) {
-        if self.grid.cells.is_empty() {
+        if !self.grid.covers(self.blocks.len()) {
             self.blocks.iter().for_each(f);
             return;
         }
-        let (x0, z0, x1, z1) = self.grid.span(min, max);
-        for z in z0..=z1 {
-            for x in x0..=x1 {
-                for &index in &self.grid.cells[z * self.grid.nx + x] {
-                    f(&self.blocks[index as usize]);
-                }
-            }
-        }
+        self.grid.near(min, max).for_each(|index| f(&self.blocks[index]));
     }
 
     /// The height of the ground at (x, z), if the map has terrain.
@@ -389,7 +488,7 @@ impl Map {
             map.props.retain(|prop| prop.model != FLAGPOLE);
             map.blocks
                 .retain(|block| block.visible || !boxes.contains(&(block.min, block.max)));
-            map.grid = BlockGrid::new(&map.blocks);
+            map.index_blocks();
         }
         map
     }
@@ -652,7 +751,10 @@ impl Map {
 
     /// The first ramp a box at `center` overlaps: which way to push it out, and how far.
     fn ramp_contact(&self, center: Vec3, half: Vec3) -> Option<(Vec3, f32)> {
-        self.ramps.iter().find_map(|ramp| ramp.push_out(center, half))
+        if !self.ramp_grid.covers(self.ramps.len()) {
+            return self.ramps.iter().find_map(|ramp| ramp.push_out(center, half));
+        }
+        self.ramp_grid.near(center - half, center + half).find_map(|index| self.ramps[index].push_out(center, half))
     }
 
     /// Takes a box out of the ramps it went into. Off a walkable face it is
@@ -672,6 +774,12 @@ impl Map {
                     vel.y = 0.0;
                     grounded = true;
                 }
+            } else if let Some(stood) = self.step_onto_ramp(*pos, half) {
+                pos.y = stood;
+                if vel.y <= 0.0 {
+                    vel.y = 0.0;
+                    grounded = true;
+                }
             } else {
                 *pos += out * depth;
                 let into = vel.dot(out);
@@ -683,13 +791,35 @@ impl Map {
         grounded
     }
 
+    /// Walking into a steep side of a ramp whose top is no higher than
+    /// `STEP_UP` above your feet (the side of a flight of stairs, the edge of
+    /// a rock) lifts you onto it, as onto a ledge, if what you would stand
+    /// on there is walkable. Where the box's centre ends up, if it does.
+    fn step_onto_ramp(&self, pos: Vec3, half: Vec3) -> Option<f32> {
+        let stood = self.ramp_floor(pos + Vec3::Y * STEP_UP, half, STEP_UP)? + 1e-3;
+        (stood > pos.y && self.is_free(pos.with_y(stood), half)).then_some(stood)
+    }
+
+    /// The first ramp a box clear of them at `center` would touch moving
+    /// along `dir`, at most `max`: how far it gets, and the ramp's normal there.
+    fn ramp_sweep(&self, center: Vec3, half: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3)> {
+        let hit = |ramp: &Ramp| ramp.sweep(center, half, dir, max);
+        let nearest = |a: &(f32, Vec3), b: &(f32, Vec3)| a.0.total_cmp(&b.0);
+        if !self.ramp_grid.covers(self.ramps.len()) {
+            return self.ramps.iter().filter_map(hit).min_by(nearest);
+        }
+        let end = center + dir * max;
+        self.ramp_grid
+            .near(center.min(end) - half, center.max(end) + half)
+            .filter_map(|index| hit(&self.ramps[index]))
+            .min_by(nearest)
+    }
+
     /// Where a box would stand on a walkable ramp face under it, at most
     /// `drop` down: the height of the box's centre.
     fn ramp_floor(&self, pos: Vec3, half: Vec3, drop: f32) -> Option<f32> {
-        let lowered = pos - Vec3::Y * drop;
-        let (out, depth) = self.ramp_contact(lowered, half)?;
-        let center = lowered.y + depth / out.y;
-        (out.y >= WALKABLE && center <= pos.y + 1e-3).then_some(center)
+        let (fall, normal) = self.ramp_sweep(pos, half, Vec3::NEG_Y, drop)?;
+        (normal.y >= WALKABLE).then_some(pos.y - fall)
     }
 
     /// Puts a box that was standing on something last frame back down on
@@ -737,21 +867,10 @@ impl Map {
 
     /// The first block a box at `center` overlaps, if any.
     fn overlapping(&self, center: Vec3, half: Vec3) -> Option<&Block> {
-        if self.grid.cells.is_empty() {
+        if !self.grid.covers(self.blocks.len()) {
             return self.blocks.iter().find(|block| overlaps(center, half, block));
         }
-        let (x0, z0, x1, z1) = self.grid.span(center - half, center + half);
-        for z in z0..=z1 {
-            for x in x0..=x1 {
-                for &index in &self.grid.cells[z * self.grid.nx + x] {
-                    let block = &self.blocks[index as usize];
-                    if overlaps(center, half, block) {
-                        return Some(block);
-                    }
-                }
-            }
-        }
-        None
+        self.grid.near(center - half, center + half).map(|index| &self.blocks[index]).find(|block| overlaps(center, half, block))
     }
 
     /// Advances a grenade by one `GRENADE_STEP`: it falls, bounces off blocks
@@ -843,11 +962,7 @@ impl Map {
     /// is nearer than `max`.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
         let block = self.raycast_blocks(origin, dir, max);
-        let ramp = self
-            .ramps
-            .iter()
-            .filter_map(|ramp| ramp.raycast(origin, dir, block.unwrap_or(max)))
-            .min_by(f32::total_cmp);
+        let ramp = self.raycast_ramps(origin, dir, block.unwrap_or(max));
         let block = ramp.or(block);
         let ground = self
             .terrain
@@ -856,79 +971,22 @@ impl Map {
         ground.or(block)
     }
 
-    /// The nearest block along the ray: walks the grid cells the ray crosses
-    /// (seen from above), nearest first, and stops at the first cell that
-    /// holds a hit closer than its far side.
+    /// The nearest block along the ray.
     fn raycast_blocks(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
-        let grid = &self.grid;
-        if grid.cells.is_empty() {
-            return self
-                .blocks
-                .iter()
-                .filter_map(|block| ray_box(origin, dir, block.min, block.max))
-                .filter(|t| *t < max)
-                .min_by(f32::total_cmp);
+        let hit = |block: &Block| ray_box(origin, dir, block.min, block.max).filter(|t| *t < max);
+        if !self.grid.covers(self.blocks.len()) {
+            return self.blocks.iter().filter_map(hit).min_by(f32::total_cmp);
         }
-        let size = Vec2::new(grid.nx as f32, grid.nz as f32) * GRID_CELL;
-        let flat = Vec2::new(dir.x, dir.z);
-        let start = Vec2::new(origin.x, origin.z);
-        // Clip the ray to the grid.
-        let (mut t0, mut t1) = (0.0_f32, max);
-        for axis in 0..2 {
-            let (o, d, lo, hi) = (start[axis], flat[axis], grid.origin[axis], grid.origin[axis] + size[axis]);
-            if d.abs() < 1e-8 {
-                if o < lo || o > hi {
-                    return None;
-                }
-                continue;
-            }
-            let (a, b) = minmax((lo - o) / d, (hi - o) / d);
-            t0 = t0.max(a);
-            t1 = t1.min(b);
+        self.grid.raycast(origin, dir, max, |index| hit(&self.blocks[index]))
+    }
+
+    /// The nearest ramp along the ray.
+    fn raycast_ramps(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+        let hit = |ramp: &Ramp| ramp.raycast(origin, dir, max);
+        if !self.ramp_grid.covers(self.ramps.len()) {
+            return self.ramps.iter().filter_map(hit).min_by(f32::total_cmp);
         }
-        if t0 > t1 {
-            return None;
-        }
-        let entry = (start + flat * t0 - grid.origin) / GRID_CELL;
-        let counts = [grid.nx, grid.nz];
-        let mut cell = [
-            (entry.x.floor().max(0.0) as usize).min(grid.nx - 1),
-            (entry.y.floor().max(0.0) as usize).min(grid.nz - 1),
-        ];
-        let mut next = [f32::INFINITY; 2];
-        let mut delta = [f32::INFINITY; 2];
-        for axis in 0..2 {
-            let d = flat[axis];
-            if d.abs() < 1e-8 {
-                continue;
-            }
-            delta[axis] = GRID_CELL / d.abs();
-            let edge = grid.origin[axis] + (cell[axis] as f32 + if d > 0.0 { 1.0 } else { 0.0 }) * GRID_CELL;
-            next[axis] = (edge - start[axis]) / d;
-        }
-        let mut best: Option<f32> = None;
-        loop {
-            for &index in &grid.cells[cell[1] * grid.nx + cell[0]] {
-                let block = &self.blocks[index as usize];
-                if let Some(t) = ray_box(origin, dir, block.min, block.max)
-                    && t < max
-                    && best.is_none_or(|b| t < b)
-                {
-                    best = Some(t);
-                }
-            }
-            let axis = if next[0] < next[1] { 0 } else { 1 };
-            let leave = next[axis];
-            if best.is_some_and(|b| b <= leave) || leave > t1 {
-                return best;
-            }
-            let forward = flat[axis] > 0.0;
-            if (!forward && cell[axis] == 0) || (forward && cell[axis] + 1 >= counts[axis]) {
-                return best;
-            }
-            cell[axis] = if forward { cell[axis] + 1 } else { cell[axis] - 1 };
-            next[axis] += delta[axis];
-        }
+        self.ramp_grid.raycast(origin, dir, max, |index| hit(&self.ramps[index]))
     }
 
     /// True if no block is in the way between the two points.
@@ -1371,6 +1429,37 @@ mod tests {
         }
     }
 
+    /// A house's roof is a smooth slope: you walk up it, over the ridge and
+    /// down the other side without leaving it, however the house is turned.
+    #[test]
+    fn roofs_are_walked_up_and_over() {
+        for yaw in [0.0, std::f32::consts::FRAC_PI_2] {
+            let mut map = Map::empty(0);
+            map.add_prop(crate::props::HOUSE, Vec3::ZERO, yaw, 1.0);
+            let map = map.finish();
+            assert!(map.ramps.iter().all(|ramp| !ramp.visible));
+            // The house's ridge runs along its x, 5.48 m up; its slopes drop
+            // 1 m for every 1.43 m out. Clear of the chimney (at +x).
+            let turn = Quat::from_rotation_y(yaw);
+            let across = turn * Vec3::Z;
+            let mut pos = turn * Vec3::new(-2.5, 9.0, -2.6);
+            let mut vel = Vec3::ZERO;
+            for _ in 0..120 {
+                vel.y -= 22.0 / 60.0;
+                if map.move_and_slide(&mut pos, &mut vel, PLAYER_HALF, 1.0 / 60.0) {
+                    break;
+                }
+            }
+            let feet = |pos: Vec3| pos.y - PLAYER_HALF.y;
+            assert!(feet(pos) > 3.5 && feet(pos) < 4.5, "landed at {pos}");
+            assert_eq!(run_for(&map, &mut pos, across * 3.0, 52), 0, "yaw {yaw}: up to {pos}");
+            assert!((feet(pos) - 5.48).abs() < 0.05, "yaw {yaw}: on the ridge at {pos}");
+            assert_eq!(run_for(&map, &mut pos, across * 3.0, 52), 0, "yaw {yaw}: down to {pos}");
+            let expected = 5.48 - (2.6 - PLAYER_HALF.z) / 1.429;
+            assert!((feet(pos) - expected).abs() < 0.05, "yaw {yaw}: down the far side at {pos}");
+        }
+    }
+
     #[test]
     fn stairs_go_up_and_come_back_down() {
         let mut map = Map::empty(0);
@@ -1418,6 +1507,72 @@ mod tests {
                 assert!((a - b).abs() < 1e-4, "{origin} {dir}: {a} vs {b}");
             }
         }
+    }
+
+    /// Valley has hundreds of rocks: the ramp grid must find what checking
+    /// every ramp finds, for rays and for boxes.
+    #[test]
+    fn the_ramp_grid_finds_the_same_hits_as_checking_every_ramp() {
+        let map = Map::by_id(2);
+        assert!(map.ramps.len() > 200, "{} ramps", map.ramps.len());
+        let mut seed = 777_u64;
+        let mut rand = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_000) as f32 / 10_000.0
+        };
+        let mut hits = 0;
+        for _ in 0..4000 {
+            let ramp = &map.ramps[(rand() * map.ramps.len() as f32) as usize % map.ramps.len()];
+            // Somewhere near a ramp, looking any way.
+            let middle = (ramp.min + ramp.max) / 2.0;
+            let origin = middle + Vec3::new(rand() - 0.5, rand() - 0.3, rand() - 0.5) * 30.0;
+            let dir = Vec3::new(rand() - 0.5, rand() - 0.5, rand() - 0.5).normalize();
+            let max = rand() * 60.0;
+            let brute = map.ramps.iter().filter_map(|ramp| ramp.raycast(origin, dir, max)).min_by(f32::total_cmp);
+            let fast = map.raycast_ramps(origin, dir, max);
+            assert_eq!(brute.is_some(), fast.is_some(), "{origin} {dir} {max}");
+            if let (Some(a), Some(b)) = (brute, fast) {
+                assert!((a - b).abs() < 1e-4, "{origin} {dir}: {a} vs {b}");
+                hits += 1;
+            }
+            let center = middle + Vec3::new(rand() - 0.5, rand() - 0.5, rand() - 0.5) * 4.0;
+            let brute = map.ramps.iter().any(|ramp| ramp.push_out(center, PLAYER_HALF).is_some());
+            assert_eq!(brute, map.ramp_contact(center, PLAYER_HALF).is_some(), "{center}");
+        }
+        assert!(hits > 100, "only {hits} rays hit");
+    }
+
+    /// Rocks are rounded: a body dropped on top of one stands on it, and
+    /// one walking into its side is stopped by it, not lifted up it.
+    #[test]
+    fn rocks_are_stood_on_and_slid_off() {
+        let mut map = Map::empty(0);
+        map.terrain = Some(Terrain::generate(41, 2.0, |_, _| 0.0));
+        map.add_prop(crate::props::ROCK_LARGE, Vec3::ZERO, 0.0, 1.0);
+        let map = map.finish();
+        let rock = &map.ramps[0];
+        let fall = |mut pos: Vec3| {
+            let mut vel = Vec3::ZERO;
+            for _ in 0..240 {
+                vel.y -= 22.0 / 60.0;
+                let grounded = map.move_and_slide(&mut pos, &mut vel, PLAYER_HALF, 1.0 / 60.0);
+                vel.x *= 0.9;
+                vel.z *= 0.9;
+                if grounded && vel.length() < 0.01 {
+                    break;
+                }
+            }
+            pos - Vec3::Y * PLAYER_HALF.y
+        };
+        let top = rock.top(0.0, 0.0).unwrap();
+        let feet = fall(Vec3::new(0.0, top + 3.0, 0.0));
+        assert!((feet.y - top).abs() < 0.3 && feet.x.abs() < 0.5 && feet.z.abs() < 0.5, "on top at {feet}, top {top}");
+        let mut pos = Vec3::new(rock.max.x + 2.0, PLAYER_HALF.y, 0.0);
+        run_for(&map, &mut pos, Vec3::new(-5.0, 0.0, 0.0), 60);
+        let feet = pos - Vec3::Y * PLAYER_HALF.y;
+        assert!(feet.y.abs() < 0.05 && feet.x > 0.5, "walked into it to {feet}");
     }
 
     #[test]

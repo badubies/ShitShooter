@@ -352,7 +352,7 @@ fn build_map(
             Transform::from_translation((block.min + block.max) / 2.0),
         ));
     }
-    for ramp in &map.0.ramps {
+    for ramp in map.0.ramps.iter().filter(|ramp| ramp.visible) {
         commands.spawn((
             MapGeometry,
             Mesh3d(meshes.add(ramp_mesh(ramp))),

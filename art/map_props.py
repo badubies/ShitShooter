@@ -98,13 +98,14 @@ def palette():
 
 
 class Prop:
-    """One model: a single mesh, its collision boxes and marked points."""
+    """One model: a single mesh, its collision boxes and solids, and marked points."""
 
     def __init__(self, name):
         self.name = name
         self.bm = bmesh.new()
         self.mats = []
         self.colliders = []
+        self.solids = []
         self.points = []
 
     def mat(self, m):
@@ -114,6 +115,39 @@ class Prop:
 
     def collide(self, x0, y0, z0, x1, y1, z1):
         self.colliders.append((min(x0, x1), min(y0, y1), min(z0, z1), max(x0, x1), max(y0, y1), max(z0, z1)))
+
+    def solid(self, points):
+        """Collides as the convex hull of these points: a ramp in the game,
+        smooth where boxes would be steps. Its faces stood on if gentle
+        enough (up to about 45 degrees), slid off if not."""
+        bm = bmesh.new()
+        for point in points:
+            bm.verts.new(Vector(point))
+        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=1e-4)
+        out = bmesh.ops.convex_hull(bm, input=bm.verts[:])
+        inside = list({g for g in out["geom_interior"] + out["geom_unused"] if isinstance(g, bmesh.types.BMVert)})
+        bmesh.ops.delete(bm, geom=inside, context="VERTS")
+        # One face for each flat side, without corners partway along an edge.
+        bmesh.ops.dissolve_limit(bm, angle_limit=math.radians(0.5), verts=bm.verts[:], edges=bm.edges[:])
+        bm.verts.index_update()
+        corners = [tuple(v.co) for v in bm.verts]
+        faces = [[v.index for v in f.verts] for f in bm.faces]
+        bm.free()
+        self.solids.append((corners, faces))
+
+    def ramp(self, a, b, base, left, right):
+        """Collides as a wedge (like `Ramp::new` in the game): a ridge from a
+        to b, sloping down either side to a level base at height `base`,
+        reaching out `left` and `right` metres for every metre it drops."""
+        a, b = Vector(a), Vector(b)
+        along = Vector((b.x - a.x, b.y - a.y, 0.0)).normalized()
+        right_way = Vector((along.y, -along.x, 0.0))
+        corners = []
+        for top in (a, b):
+            foot = Vector((top.x, top.y, base))
+            drop = top.z - base
+            corners += [top, foot - right_way * left * drop, foot + right_way * right * drop]
+        self.solid(corners)
 
     def box(self, x0, y0, z0, x1, y1, z1, m, collide=True):
         x0, x1 = sorted((x0, x1))
@@ -125,6 +159,7 @@ class Prop:
         self.hull(corners, m)
         if collide:
             self.collide(x0, y0, z0, x1, y1, z1)
+        return (x0, y0, z0, x1, y1, z1)
 
     def hull(self, corners, m):
         """Eight corners, ordered like `box` makes them (x fastest, then y, then z)."""
@@ -260,9 +295,11 @@ def walls_around(p, x0, y0, x1, y1, t, z0, z1, m, openings, frame=None, sill=Non
     wall(p, "y", y0 + t, y1 - t, x1 - t, x1, z0, z1, m, openings.get("right", ()), frame, None)
 
 
-def gable_roof(p, x0, y0, x1, y1, eave, ridge, m, gable_m, along="x", over=0.4, thick=0.18, steps=3):
+def gable_roof(p, x0, y0, x1, y1, eave, ridge, m, gable_m, along="x", over=0.4, thick=0.18, floor=None):
     """A pitched roof over the rectangle, its ridge running along `along`,
-    with filled gable ends. Collides as `steps` stacked slabs."""
+    with filled gable ends. Collides as one ramp under its top: walk up it
+    and stand on the ridge. The ramp is solid down to `floor`, by default
+    the outer edge of the eaves, so stand it on a ceiling."""
     if along == "x":
         cy = (y0 + y1) / 2
         half = (y1 - y0) / 2 + over
@@ -279,8 +316,8 @@ def gable_roof(p, x0, y0, x1, y1, eave, ridge, m, gable_m, along="x", over=0.4, 
             p.hull(pts, m)
         for xx in (x0, x1):
             p.prism([(y0, eave), (y1, eave), (cy, ridge)], "x", xx - 0.0, xx + (0.25 if xx == x0 else -0.25), gable_m)
-        for lo, hi, z_lo, z_hi in roof_shell(y0, y1, eave, ridge, steps):
-            p.collide(x0 - over * 0.5, lo, z_lo, x1 + over * 0.5, hi, z_hi)
+        reach = (y1 - y0) / 2 / (ridge - eave)
+        a, b = (x0 - over, cy, ridge + thick), (x1 + over, cy, ridge + thick)
     else:
         cx = (x0 + x1) / 2
         half = (x1 - x0) / 2 + over
@@ -297,46 +334,34 @@ def gable_roof(p, x0, y0, x1, y1, eave, ridge, m, gable_m, along="x", over=0.4, 
             p.hull(pts, m)
         for yy in (y0, y1):
             p.prism([(x0, eave), (x1, eave), (cx, ridge)], "y", yy, yy + (0.25 if yy == y0 else -0.25), gable_m)
-        for lo, hi, z_lo, z_hi in roof_shell(x0, x1, eave, ridge, steps):
-            p.collide(lo, y0 - over * 0.5, z_lo, hi, y1 + over * 0.5, z_hi)
-
-
-def roof_shell(a, b, eave, ridge, steps):
-    """Boxes (lo, hi, z_lo, z_hi) across a pitched roof from a to b: a step
-    up each slope and one across the top, hollow underneath so there is
-    headroom inside an open roof."""
-    mid = (a + b) / 2
-    boxes = []
-    for k in range(steps):
-        z_lo = eave + (ridge - eave) * k / steps
-        z_hi = eave + (ridge - eave) * (k + 1) / steps
-        inner = (mid - a) * (k + 1) / steps
-        outer = (mid - a) * k / steps
-        if k == steps - 1:
-            boxes.append((a + outer, b - outer, z_lo, z_hi))
-        else:
-            boxes.append((a + outer, a + inner, z_lo, z_hi))
-            boxes.append((b - inner, b - outer, z_lo, z_hi))
-    return boxes
+        reach = (x1 - x0) / 2 / (ridge - eave)
+        a, b = (cx, y0 - over, ridge + thick), (cx, y1 + over, ridge + thick)
+    # The top of the roof slabs, from the ridge down to the edge of the eaves.
+    p.ramp(a, b, eave - drop + thick if floor is None else floor, reach, reach)
 
 
 def stairs(p, x0, x1, y_start, y_end, z0, z1, steps, m):
     """Solid steps from z0 up to z1, climbing from y_start towards y_end."""
     rise = (z1 - z0) / steps
     run = (y_end - y_start) / steps
-    for k in range(steps):
-        ya = y_start + run * k
-        yb = y_start + run * (k + 1)
-        p.box(x0, ya, z0, x1, yb, z0 + rise * (k + 1), m)
+    flight(p, [p.box(x0, y_start + run * k, z0, x1, y_start + run * (k + 1), z0 + rise * (k + 1), m, False)
+               for k in range(steps)])
 
 
-def stairs_x(p, y0, y1, x_start, x_end, z0, z1, steps, m):
-    rise = (z1 - z0) / steps
-    run = (x_end - x_start) / steps
-    for k in range(steps):
-        xa = x_start + run * k
-        xb = x_start + run * (k + 1)
-        p.box(xa, y0, z0, xb, y1, z0 + rise * (k + 1), m)
+def flight(p, steps):
+    """Collides a flight of steps, boxes (x0, y0, z0, x1, y1, z1) from the
+    bottom one up, as one slope over the front edges of the steps: walked up
+    smoothly, where the boxes would lift you a step at a time. It starts on
+    the level the flight climbs from, a step out in front of the first."""
+    first, second = steps[0], steps[1]
+    middle = lambda b: Vector(((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, 0.0))
+    run = middle(second) - middle(first)
+    rise = second[5] - first[5]
+    points = [Vector((x, y, z)) for b in steps for x in (b[0], b[3]) for y in (b[1], b[4]) for z in (b[2], b[5])]
+    top = [Vector((x, y, first[5])) for x in (first[0], first[3]) for y in (first[1], first[4])]
+    front = min(c.dot(run) for c in top)
+    points += [c - run - Vector((0, 0, rise)) for c in top if c.dot(run) < front + 1e-4]
+    p.solid(points)
 
 
 def slab_with_hole(p, x0, y0, x1, y1, z0, z1, hole, m):
@@ -415,9 +440,9 @@ def house_tall(name, wall_m, C):
     # Upper floor, with the stairwell cut out along the left wall.
     sx0, sx1 = -W + t, -W + t + 1.2
     # A metre of floor in front of the first step, to walk onto it from.
-    y_start, y_end = -D + t + 1.0, 1.0
+    y_start, y_end = -D + t + 1.0, 1.25
     slab_with_hole(p, -W + t, -D + t, W - t, D - t, F2 - 0.2, F2, (sx0, -D + t, sx1, y_end), C["wood"])
-    stairs(p, sx0, sx1, y_start, y_end, FLOOR, F2, 10, C["wood_light"])
+    stairs(p, sx0, sx1, y_start, y_end, FLOOR, F2, 11, C["wood_light"])
     # A rail along the stairwell upstairs.
     p.box(sx1, -D + t, F2, sx1 + 0.08, y_end - 0.9, F2 + 1.0, C["wood"])
     # Roof and parapet.
@@ -472,7 +497,7 @@ def barn(C):
     # The ceiling stops at the gable ends (they stand on the walls from H up),
     # and is solid: you cannot jump up through it from the loft.
     p.box(-W, -D + 0.25, H, W, D - 0.25, H + 0.05, C["wood"])
-    gable_roof(p, -W, -D, W, D, H, H + 3.4, C["roof_dark"], C["barn_red"], along="y", over=0.5)
+    gable_roof(p, -W, -D, W, D, H, H + 3.4, C["roof_dark"], C["barn_red"], along="y", over=0.5, floor=H)
     # A white cross brace on each big door frame.
     return p
 
@@ -561,8 +586,8 @@ def chapel(C):
     z = FLOOR
     wood = C["wood_light"]
 
-    def step(x0, y0, x1, y1, top):
-        p.box(x0, y0, max(FLOOR, top - 0.6), x1, y1, top, wood)
+    def step(x0, y0, x1, y1, top, collide=True):
+        return p.box(x0, y0, max(FLOOR, top - 0.6), x1, y1, top, wood, collide)
 
     # Up the left wall (+y), along the back (+x), back down the length of
     # the right wall (-y), along the front (-x), turning on a landing in
@@ -576,9 +601,11 @@ def chapel(C):
     ]
     landings = [(ix0, iy1 - S, ix0 + S, iy1), (ix1 - S, iy1 - S, ix1, iy1), (ix1 - S, iy0, ix1, iy0 + S)]
     for index, (n, at) in enumerate(flights):
+        steps = []
         for k in range(n):
             z += rise
-            step(*at(k, n), z)
+            steps.append(step(*at(k, n), z, False))
+        flight(p, steps)
         if index < len(landings):
             step(*landings[index], z)
     # The belfry floor, open over the last flight and the landing it starts
@@ -596,8 +623,7 @@ def chapel(C):
     base = [Vector((x, y, TOP + 0.5)) for x, y in ((-TW, TY0), (TW, TY0), (TW, TY1), (-TW, TY1))]
     for i in range(4):
         p.poly([base[i], base[(i + 1) % 4], apex], C["roof_dark"])
-    p.collide(-TW, TY0, TOP + 0.5, TW, TY1, TOP + 2.0)
-    p.collide(-TW * 0.5, cy - (TY1 - TY0) * 0.25, TOP + 2.0, TW * 0.5, cy + (TY1 - TY0) * 0.25, TOP + 3.5)
+    p.solid(base + [apex])
     # A cross on the spire.
     p.box(-0.06, cy - 0.06, TOP + 5.0, 0.06, cy + 0.06, TOP + 6.0, C["metal_dark"], False)
     p.box(-0.35, cy - 0.06, TOP + 5.55, 0.35, cy + 0.06, TOP + 5.67, C["metal_dark"], False)
@@ -673,7 +699,7 @@ def shed(C):
         "right": [(0.0, 0.8, 1.2, 1.9)],
     }, frame=C["wood"])
     p.box(-W, -D, H, W, D, H + 0.1, C["wood_grey"])
-    gable_roof(p, -W, -D, W, D, H + 0.1, H + 1.1, C["sheet_rust"], C["wood_grey"], along="x", over=0.3, steps=2)
+    gable_roof(p, -W, -D, W, D, H + 0.1, H + 1.1, C["sheet_rust"], C["wood_grey"], along="x", over=0.3)
     return p
 
 
@@ -683,7 +709,7 @@ def tent(C):
     W, D, H, R = 3.0, 2.2, 1.6, 3.2
     p.prism([(-D, 0.0), (D, 0.0), (D, H), (0.0, R), (-D, H)], "x", -W, W, C["olive"])
     p.collide(-W, -D, 0.0, W, D, H)
-    p.collide(-W, -D * 0.5, H, W, D * 0.5, R - 0.4)
+    p.ramp((-W, 0.0, R), (W, 0.0, R), H, D / (R - H), D / (R - H))
     for x in (-W, 0.0, W):
         p.box(x - 0.05, -0.05, 0.0, x + 0.05, 0.05, R + 0.25, C["wood"], False)
     # Guy lines' pegs and a crate of radios outside.
@@ -974,8 +1000,8 @@ def bush(name, seed, C):
 
 
 def rock(name, size, seed, C, layers=3, flat=False, detail=2):
-    """A lumpy boulder sunk a little into the ground. It collides as a stack
-    of boxes that each fit inside the slice of rock at that height."""
+    """A lumpy boulder sunk a little into the ground. It collides as the
+    hull of its furthest points in 42 directions, all round."""
     p = Prop(name)
     rng = random.Random(seed)
     sx, sy, sz = size
@@ -1003,20 +1029,12 @@ def rock(name, size, seed, C, layers=3, flat=False, detail=2):
     for f in faces:
         c = f.calc_center_median()
         f.material_index = moss if f.normal.z > 0.75 and c.z > sz * 0.6 and rng.random() < 0.6 else (dark if rng.random() < 0.25 else index)
-    # Colliders: slices up the rock, each box inside the rock's slice.
-    top = max(v.co.z for v in verts)
-    for k in range(layers):
-        z0 = top * k / layers
-        z1 = top * (k + 1) / layers
-        ring = [v.co for v in verts if z0 - 0.1 <= v.co.z <= z1 + 0.1]
-        if not ring:
-            continue
-        xs = sorted(c.x for c in ring)
-        ys = sorted(c.y for c in ring)
-        shrink = 0.72
-        cx, cy = (xs[0] + xs[-1]) / 2, (ys[0] + ys[-1]) / 2
-        hx, hy = (xs[-1] - xs[0]) / 2 * shrink, (ys[-1] - ys[0]) / 2 * shrink
-        p.collide(cx - hx, cy - hy, 0.0 if k == 0 else z0, cx + hx, cy + hy, z1 - (top / layers) * 0.15 * (k == layers - 1))
+    # Few enough corners to collide with quickly.
+    ball = bmesh.new()
+    bmesh.ops.create_icosphere(ball, subdivisions=2, radius=1.0)
+    directions = [v.co.copy() for v in ball.verts]
+    ball.free()
+    p.solid({max(verts, key=lambda v: v.co.dot(d)).co.to_tuple() for d in directions})
     return p
 
 
@@ -1072,8 +1090,15 @@ def rust_source(props):
         "//! outdoor maps are dressed with, its collision boxes and marked points,",
         "//! in the model's own space (metres, Y up, standing on the origin).",
         "",
-        "// Not every model is placed on a map.",
-        "#![allow(dead_code)]",
+        "// Not every model is placed on a map, and a corner may land near a",
+        "// constant like 1/pi.",
+        "#![allow(dead_code, clippy::approx_constant)]",
+        "",
+        "/// A convex solid: its corners, and its faces as indices into them.",
+        "pub struct Solid {",
+        "    pub corners: &'static [[f32; 3]],",
+        "    pub faces: &'static [&'static [u8]],",
+        "}",
         "",
         "pub struct PropModel {",
         "    pub name: &'static str,",
@@ -1081,6 +1106,9 @@ def rust_source(props):
         "    pub path: &'static str,",
         "    /// Boxes as [min x, min y, min z, max x, max y, max z].",
         "    pub colliders: &'static [[f32; 6]],",
+        "    /// Roofs, rocks and stairs: smooth to walk on, where boxes would be",
+        "    /// steps.",
+        "    pub solids: &'static [Solid],",
         "    /// Named spots on the model, like where a jump pad goes.",
         "    pub points: &'static [(&'static str, [f32; 3])],",
         "}",
@@ -1100,6 +1128,19 @@ def rust_source(props):
             b = game(x1, y0, z1)
             out.append("            [" + ", ".join(f(v) for v in (*a, *b)) + "],")
         out.append("        ],")
+        if prop.solids:
+            out.append("        solids: &[")
+            for corners, faces in prop.solids:
+                out.append("            Solid {")
+                out.append("                corners: &[")
+                for c in corners:
+                    out.append("                    [" + ", ".join(f(v) for v in game(*c)) + "],")
+                out.append("                ],")
+                out.append("                faces: &[" + ", ".join("&[" + ", ".join(map(str, face)) + "]" for face in faces) + "],")
+                out.append("            },")
+            out.append("        ],")
+        else:
+            out.append("        solids: &[],")
         if prop.points:
             out.append("        points: &[")
             for name, (x, y, z) in prop.points:
@@ -1170,7 +1211,8 @@ for prop in props:
     obj.location = (row_x + size.x / 2, row_y + size.y / 2, 0)
     row_x += size.x + 4
     row_depth = max(row_depth, size.y)
-    print("BUILT", name, len(obj.data.vertices), "verts", len(colliders), "boxes", [round(d, 2) for d in size])
+    solids = [len(corners) for corners, _ in prop.solids]
+    print("BUILT", name, len(obj.data.vertices), "verts", len(colliders), "boxes", solids, "solid corners", [round(d, 2) for d in size])
 
 bpy.ops.wm.save_as_mainfile(filepath=f"{ROOT}/art/map_props.blend")
 with open(f"{ROOT}/src/props.rs", "w", newline="\n") as file:

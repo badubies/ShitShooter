@@ -176,6 +176,12 @@ fn draw_map(mut commands: Commands, map: Res<GameMap>, mut images: ResMut<Assets
                 let shade = (0.62 - y1 * 0.025).clamp(0.3, 0.6);
                 paint(mid, half, false, [shade, shade * 0.95, shade * 0.9], 1.0);
             }
+            // Its roofs, over the walls.
+            for ramp in prop.ramps() {
+                let (lo, hi) = (Vec2::new(ramp.min.x, ramp.min.z), Vec2::new(ramp.max.x, ramp.max.z));
+                let shade = (0.62 - (ramp.max.y - prop.pos.y) * 0.025).clamp(0.3, 0.6);
+                paint((lo + hi) / 2.0, (hi - lo) / 2.0, false, [shade, shade * 0.95, shade * 0.9], 1.0);
+            }
         }
     }
     let data = pixels
@@ -214,7 +220,7 @@ fn ground_color(map: &Map, at: Vec2, light: Vec3) -> [f32; 3] {
                 top = Some((block.max.y, block.color));
             }
         }
-        for ramp in &map.ramps {
+        for ramp in map.ramps.iter().filter(|ramp| ramp.visible) {
             if let Some(y) = ramp.top(at.x, at.y)
                 && top.is_none_or(|(above, _)| y > above)
             {
