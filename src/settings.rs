@@ -295,6 +295,8 @@ pub struct Settings {
     pub fullscreen: bool,
     /// The map in the top left corner while playing (see `minimap.rs`).
     pub show_minimap: bool,
+    /// The dotted path a grenade in hand would take, thrown now (see `grenade.rs`).
+    pub show_grenade_path: bool,
     /// The guns carried in the two slots. Never the same gun twice.
     pub primary: WeaponId,
     pub secondary: WeaponId,
@@ -325,6 +327,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             fullscreen: false,
             show_minimap: true,
+            show_grenade_path: true,
             primary: RIFLE,
             secondary: PISTOL,
             sights: default_sights(),
@@ -476,6 +479,7 @@ impl Settings {
             lobby_server: std::mem::take(&mut self.lobby_server),
             fullscreen: self.fullscreen,
             show_minimap: self.show_minimap,
+            show_grenade_path: self.show_grenade_path,
             primary: self.primary,
             secondary: self.secondary,
             sights: self.sights,
@@ -597,6 +601,7 @@ impl Settings {
                 "ui_scale" => settings.ui_scale = number.unwrap_or(settings.ui_scale),
                 "fullscreen" => settings.fullscreen = value.parse().unwrap_or(settings.fullscreen),
                 "minimap" => settings.show_minimap = value.parse().unwrap_or(settings.show_minimap),
+                "grenade_path" => settings.show_grenade_path = value.parse().unwrap_or(settings.show_grenade_path),
                 "primary" => settings.primary = gun_named(value).unwrap_or(settings.primary),
                 "secondary" => settings.secondary = gun_named(value).unwrap_or(settings.secondary),
                 "grenade" => {
@@ -661,9 +666,10 @@ impl Settings {
             self.ui_scale
         );
         text.push_str(&format!(
-            "fullscreen = {}\nminimap = {}\nprimary = {}\nsecondary = {}\ngrenade = {}\n",
+            "fullscreen = {}\nminimap = {}\ngrenade_path = {}\nprimary = {}\nsecondary = {}\ngrenade = {}\n",
             self.fullscreen,
             self.show_minimap,
+            self.show_grenade_path,
             weapon(self.primary).name,
             weapon(self.secondary).name,
             GRENADES[self.grenade as usize % GRENADE_KINDS].name
@@ -831,6 +837,7 @@ enum Pick {
     /// Borderless full screen (`true`) or a window.
     Fullscreen(bool),
     Minimap(bool),
+    GrenadePath(bool),
     Preset(Preset),
     AntiAlias(AntiAlias),
     Shadows(Shadows),
@@ -848,6 +855,7 @@ impl Pick {
         match self {
             Pick::Fullscreen(on) => settings.fullscreen == on,
             Pick::Minimap(on) => settings.show_minimap == on,
+            Pick::GrenadePath(on) => settings.show_grenade_path == on,
             Pick::Preset(preset) => preset.matches(graphics),
             Pick::AntiAlias(anti_alias) => graphics.anti_alias == anti_alias,
             Pick::Shadows(shadows) => graphics.shadows == shadows,
@@ -868,6 +876,7 @@ impl Pick {
         match self {
             Pick::Fullscreen(on) => settings.fullscreen = on,
             Pick::Minimap(on) => settings.show_minimap = on,
+            Pick::GrenadePath(on) => settings.show_grenade_path = on,
             Pick::Preset(preset) => preset.apply(graphics),
             Pick::AntiAlias(anti_alias) => graphics.set_anti_alias(anti_alias),
             Pick::Shadows(shadows) => graphics.shadows = shadows,
@@ -1126,6 +1135,15 @@ fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
                     },
                     children![ui::label(minimap_hint(settings), 13.0, DIM)],
                 ),
+                (
+                    Node {
+                        margin: UiRect::top(px(10)),
+                        ..default()
+                    },
+                    children![ui::section("Grenade path")],
+                ),
+                pick_button(Pick::GrenadePath(true), ui::button("Shown")),
+                pick_button(Pick::GrenadePath(false), ui::button("Hidden")),
             ],
         ));
     });
@@ -1732,6 +1750,7 @@ mod tests {
             ui_scale: 1.25,
             fullscreen: true,
             show_minimap: false,
+            show_grenade_path: false,
             primary: 3,
             secondary: 1,
             sights: [IRON_SIGHTS, REFLEX, IRON_SIGHTS, TWO_X, REFLEX, THREE_X],

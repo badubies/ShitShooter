@@ -14,10 +14,12 @@ use bevy::{light::NotShadowCaster, prelude::*};
 use crate::{
     AppState,
     audio::{Sound, SoundCue, surface_under},
-    map::{self, BOUNCE_SOUND, GRENADE_HALF},
+    combat::throw_from,
+    map::{self, BOUNCE_SOUND, GRENADE_HALF, Map},
     net::NetMsg,
-    player::LocalPlayer,
+    player::{LocalPlayer, PlayerSystems},
     protocol::*,
+    settings::Settings,
     world::{GameMap, SharedAssets},
 };
 
@@ -49,6 +51,24 @@ const RESTING_SPEED: f32 = 0.5;
 /// Slower than this along the ground when it stops bouncing, a grenade is
 /// not heard rolling.
 const ROLL_SOUND: f32 = 1.0;
+/// The path a grenade in hand would take is drawn as at most this many dots,
+/// this far apart along it (metres).
+const PATH_DOTS: usize = 90;
+const PATH_SPACING: f32 = 0.5;
+/// No dots this close to the eyes, where they would only be in the way.
+const PATH_CLEAR: f32 = 1.2;
+/// A dot's size: this much across, and this much more for every metre away,
+/// so the far end of the path can still be seen.
+const DOT_SIZE: f32 = 0.025;
+const DOT_GROWTH: f32 = 0.003;
+/// The mark where it goes off (or comes to rest): a low dome at least this
+/// wide, and this wide for every metre away (so it stays as big on screen),
+/// this many times as tall as wide.
+const END_SIZE: f32 = 0.5;
+const END_GROWTH: f32 = 0.03;
+const END_HEIGHT: f32 = 0.4;
+/// Followed for at most this long: a frag left to roll to a stop.
+const PATH_TIME: f32 = 6.0;
 
 pub struct GrenadePlugin;
 
@@ -56,11 +76,15 @@ impl Plugin for GrenadePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SmokeFog>()
             .add_systems(OnExit(AppState::Playing), |mut fog: ResMut<SmokeFog>| fog.0 = 0.0)
+            .add_systems(OnEnter(AppState::Playing), spawn_path)
             .add_systems(
                 Update,
                 (
                     (handle_net, simulate, update_blasts, update_smoke)
                         .chain()
+                        .run_if(in_state(AppState::Playing)),
+                    show_path
+                        .after(PlayerSystems::Camera)
                         .run_if(in_state(AppState::Playing)),
                     show_held,
                     held_without_shadows,
@@ -498,5 +522,145 @@ fn held_without_shadows(
         if parents.iter_ancestors(mesh).any(|ancestor| held.contains(ancestor)) {
             commands.entity(mesh).insert(NotShadowCaster);
         }
+    }
+}
+
+/// One dot of the path a grenade in hand would take; the last one marks
+/// where it ends.
+#[derive(Component)]
+struct PathDot(usize);
+
+fn spawn_path(mut commands: Commands, assets: Res<SharedAssets>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    let dot = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 1.0, 1.0, 0.7),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    let end = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.5, 0.1, 0.95),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    for index in 0..=PATH_DOTS {
+        commands.spawn((
+            PathDot(index),
+            Mesh3d(assets.sphere.clone()),
+            MeshMaterial3d(if index == PATH_DOTS { end.clone() } else { dot.clone() }),
+            Transform::default(),
+            Visibility::Hidden,
+            NotShadowCaster,
+            DespawnOnExit(AppState::Playing),
+        ));
+    }
+}
+
+/// Where a grenade thrown from `pos` at `vel` goes, one point per simulation
+/// step, run the same way the server runs it. It ends where it goes off (an
+/// impact grenade on the first thing it touches, a timed one when its `fuse`
+/// runs out), or where it comes to rest. Players it might hit are not
+/// counted.
+pub fn predict_path(map: &Map, mut pos: Vec3, mut vel: Vec3, fuse: f32, impact: bool) -> Vec<Vec3> {
+    let steps = (fuse.min(PATH_TIME) / GRENADE_STEP).ceil() as usize;
+    let mut path = vec![pos];
+    for _ in 0..steps {
+        let contact = map.step_grenade(&mut pos, &mut vel, GRENADE_STEP);
+        path.push(pos);
+        if (impact && contact > 0.0) || vel == Vec3::ZERO {
+            break;
+        }
+    }
+    path
+}
+
+/// With a grenade in hand, dots show the path it would take thrown now (by
+/// a left click), and a mark where it would go off.
+fn show_path(
+    map: Res<GameMap>,
+    player: Res<LocalPlayer>,
+    settings: Res<Settings>,
+    mut dots: Query<(&PathDot, &mut Transform, &mut Visibility)>,
+) {
+    let hand = player.hand.filter(|_| player.alive && settings.show_grenade_path);
+    let mut placed: Vec<(Vec3, Vec3)> = Vec::new();
+    let mut end = None;
+    if let Some(hand) = hand {
+        let stats = grenade(hand.kind);
+        let (start, vel) = throw_from(&map.0, &player, false);
+        let path = predict_path(&map.0, start, vel, hand.fuse.unwrap_or(stats.fuse), stats.impact);
+        let eye = player.eye();
+        let size = |at: Vec3| Vec3::splat(DOT_SIZE + DOT_GROWTH * at.distance(eye));
+        // A dot every `PATH_SPACING` along the path, measured along it.
+        let mut along = 0.0;
+        let mut next = PATH_SPACING;
+        for pair in path.windows(2) {
+            let length = pair[0].distance(pair[1]);
+            while along + length >= next && placed.len() < PATH_DOTS {
+                let at = pair[0].lerp(pair[1], (next - along) / length);
+                if at.distance(eye) > PATH_CLEAR {
+                    placed.push((at, size(at)));
+                }
+                next += PATH_SPACING;
+            }
+            along += length;
+        }
+        // The dome sits where the grenade's bottom is, on the floor once it
+        // has come down.
+        let last = *path.last().unwrap_or(&start);
+        if last.distance(eye) > PATH_CLEAR {
+            let width = END_SIZE.max(END_GROWTH * last.distance(eye));
+            end = Some((last - Vec3::Y * GRENADE_HALF, Vec3::new(width, width * END_HEIGHT, width)));
+        }
+    }
+    for (dot, mut transform, mut visibility) in &mut dots {
+        let at = if dot.0 == PATH_DOTS { end } else { placed.get(dot.0).copied() };
+        let wanted = if let Some((pos, size)) = at {
+            *transform = Transform::from_translation(pos).with_scale(size);
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The path drawn ends where the grenade really goes off: run the way
+    /// `simulate` and the server run it, it is at the path's end when the
+    /// fuse runs out.
+    #[test]
+    fn path_ends_where_the_grenade_goes_off() {
+        let map = Map::arena();
+        let (start, vel) = (Vec3::new(10.0, 1.8, 0.0), Vec3::new(14.0, 5.0, 3.0));
+        let fuse = grenade(FRAG).fuse;
+        let path = predict_path(&map, start, vel, fuse, false);
+        let (mut pos, mut v) = (start, vel);
+        let mut left = fuse;
+        while left > 0.0 && v != Vec3::ZERO {
+            map.step_grenade(&mut pos, &mut v, GRENADE_STEP);
+            left -= GRENADE_STEP;
+        }
+        assert!(path.last().unwrap().distance(pos) < 1e-4, "path ends at {:?}, grenade at {pos}", path.last());
+    }
+
+    /// An impact grenade's path stops on the first thing it touches.
+    #[test]
+    fn impact_path_stops_at_the_first_touch() {
+        let map = Map::arena();
+        let (start, vel) = (Vec3::new(10.0, 1.8, 0.0), Vec3::new(10.0, 2.0, 0.0));
+        let path = predict_path(&map, start, vel, 5.0, true);
+        let (mut pos, mut v) = (start, vel);
+        let mut steps = 0;
+        while map.step_grenade(&mut pos, &mut v, GRENADE_STEP) == 0.0 {
+            steps += 1;
+        }
+        assert_eq!(path.len(), steps + 2);
+        assert!(path.last().unwrap().distance(pos) < 1e-4, "path ends at {:?}, touched at {pos}", path.last());
     }
 }

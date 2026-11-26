@@ -144,6 +144,27 @@ fn clear_feed(mut feed: ResMut<KillFeed>, mut notices: ResMut<Notices>) {
     *notices = Notices::default();
 }
 
+/// Where a grenade thrown right now leaves the hand, and how fast: thrown
+/// hard, or lobbed gently (`lob`). The path drawn while one is in hand
+/// (`grenade.rs`) starts from here too.
+pub fn throw_from(map: &map::Map, player: &LocalPlayer, lob: bool) -> (Vec3, Vec3) {
+    let origin = player.eye();
+    let aim_dir = map::look_dir(player.yaw, player.pitch);
+    // Let go of it a little in front of the face, unless a wall is right there.
+    let reach = match map.raycast(origin, aim_dir, 0.9) {
+        Some(wall) => (wall - 0.3).max(0.0),
+        None => 0.6,
+    };
+    // Thrown slightly upwards, and it keeps some of our own momentum.
+    let (speed, lift) = if lob {
+        (GRENADE_THROW_SPEED * GRENADE_LOB, 0.3)
+    } else {
+        (GRENADE_THROW_SPEED, 0.15)
+    };
+    let vel = (aim_dir + Vec3::Y * lift).normalize() * speed + player.vel * 0.6;
+    (origin + aim_dir * reach, vel)
+}
+
 fn fire(
     mut commands: Commands,
     time: Res<Time>,
@@ -366,21 +387,10 @@ fn fire(
             if throw {
                 player.hand = None;
                 player.throw_anim = 1.0;
-                // Let go of it a little in front of the face, unless a wall is right there.
-                let reach = match map.0.raycast(origin, aim_dir, 0.9) {
-                    Some(wall) => (wall - 0.3).max(0.0),
-                    None => 0.6,
-                };
-                // Thrown slightly upwards, and it keeps some of our own momentum.
-                let (speed, lift) = if lob {
-                    (GRENADE_THROW_SPEED * GRENADE_LOB, 0.3)
-                } else {
-                    (GRENADE_THROW_SPEED, 0.15)
-                };
-                let vel = (aim_dir + Vec3::Y * lift).normalize() * speed + player.vel * 0.6;
+                let (start, vel) = throw_from(&map.0, player, lob);
                 connection.send(&ClientMsg::Grenade {
                     kind: hand.kind,
-                    origin: (origin + aim_dir * reach).to_array(),
+                    origin: start.to_array(),
                     vel: vel.to_array(),
                 });
                 own_sound(Sound::Throw);
