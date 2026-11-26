@@ -90,7 +90,32 @@ pub struct LobbyStatus {
 const BOT_VIEW_COS: f32 = 0.26;
 /// ...or anywhere this close.
 const BOT_HEARING: f32 = 6.0;
-const BOT_SIGHT_RANGE: f32 = 70.0;
+/// They see as far as there is a clear line, but fights are reckoned to go
+/// no further than this when bots pick their guns.
+const LONG_RANGE: f32 = 70.0;
+/// Bots hear gunshots (not the knife) this far away and footsteps this
+/// far, through walls and all, and go and see what it was...
+const SHOT_HEARING: f32 = 100.0;
+const STEP_HEARING: f32 = 16.0;
+/// ...guessing where it came from: off by up to this many radians either
+/// side, and this much of the distance nearer or further.
+const SHOT_GUESS: (f32, f32) = (0.09, 0.15);
+const STEP_GUESS: (f32, f32) = (0.52, 0.4);
+/// Seconds a noise can be heard for after it is made.
+const NOISE_LIFETIME: f32 = 0.5;
+/// Footsteps the way the clients play them (see `audio.rs`): one every
+/// `STRIDE` metres running on the ground, faster than `STEP_MIN_SPEED`, not
+/// crouched. Worked out from how far everyone moved every `STEP_SAMPLE`
+/// seconds.
+const STRIDE: f32 = 2.6;
+const STEP_MIN_SPEED: f32 = 2.0;
+const STEP_SAMPLE: f32 = 0.25;
+/// Seconds a bot spends going to see what it heard, the first of them
+/// turned towards it.
+const BOT_INVESTIGATE_TIME: f32 = 10.0;
+const BOT_GLANCE_TIME: f32 = 1.5;
+/// Conquest: bots leave their flag only for noises this close.
+const BOT_INVESTIGATE_NEAR: f32 = 30.0;
 /// Radians per second, turning to look where it is going.
 const BOT_TURN_RATE: f32 = 6.0;
 /// Beyond this many metres, a far body is small and hard to make out (see
@@ -228,6 +253,11 @@ struct Bot {
     provoked_for: f32,
     /// Seconds of being blinded by a flashbang left.
     blind: f32,
+    /// Where it reckons a noise it heard came from, and for how much
+    /// longer it will go and look; and the last `Noise::id` it listened to.
+    investigate: Option<Vec3>,
+    investigate_for: f32,
+    last_noise: u64,
 }
 
 impl Bot {
@@ -262,8 +292,22 @@ impl Bot {
             provoked_by: None,
             provoked_for: 0.0,
             blind: 0.0,
+            investigate: None,
+            investigate_for: 0.0,
+            last_noise: 0,
         }
     }
+}
+
+/// A gunshot or a footstep, for bots to hear.
+struct Noise {
+    /// Counts up, so a bot can tell which it has listened to already.
+    id: u64,
+    source: PlayerId,
+    team: u8,
+    pos: Vec3,
+    shot: bool,
+    age: f32,
 }
 
 /// A bullet fired by a bot. People's bullets are flown by their own clients;
@@ -337,6 +381,11 @@ struct Player {
     paint: Option<Vec<u8>>,
     /// Conquest: where they asked to come back in (see `ClientMsg::SpawnAt`).
     spawn_at: Option<u8>,
+    /// For their footsteps: where they were at the last sample, seconds
+    /// since, and metres run since the last step.
+    step_from: Vec3,
+    step_clock: f32,
+    stride: f32,
     bot: Option<Bot>,
 }
 
@@ -384,6 +433,9 @@ pub struct Server {
     grenades: Vec<Grenade>,
     smokes: Vec<Smoke>,
     bullets: Vec<BotBullet>,
+    /// Gunshots and footsteps of the last `NOISE_LIFETIME` seconds.
+    noises: Vec<Noise>,
+    next_noise_id: u64,
     next_grenade_id: u32,
     /// Time not yet consumed by whole grenade steps.
     grenade_clock: f32,
@@ -462,6 +514,8 @@ impl Server {
             grenades: Vec::new(),
             smokes: Vec::new(),
             bullets: Vec::new(),
+            noises: Vec::new(),
+            next_noise_id: 1,
             next_grenade_id: 0,
             grenade_clock: 0.0,
             team_scores: [0, 0],
@@ -643,7 +697,12 @@ impl Server {
                 }
             }
         }
+        self.update_footsteps(dt);
         self.update_bots(dt);
+        self.noises.retain_mut(|noise| {
+            noise.age += dt;
+            noise.age < NOISE_LIFETIME
+        });
         self.update_bullets(dt);
         if self.phase != Phase::Playing {
             // A bot's bullet won the match.
@@ -1023,6 +1082,7 @@ impl Server {
             shooter.stab_ready = true;
         } else {
             shooter.bullets_out = (shooter.bullets_out + dirs.len() as u32).min(MAX_BULLETS_OUT);
+            self.make_noise(shooter_id, origin_v, true);
         }
         self.renet.broadcast_message_except(
             shooter_id,
@@ -1407,6 +1467,7 @@ impl Server {
         self.grenades.clear();
         self.smokes.clear();
         self.bullets.clear();
+        self.noises.clear();
         self.team_scores = [0, 0];
         self.hill = HILL_EMPTY;
         self.hill_clock = 0.0;
@@ -1700,6 +1761,7 @@ impl Server {
                 continue;
             };
             let enemy = bot_pick_enemy(&self.map, &self.smokes, *id, player, &mut bot, &bodies, team_mode, skill, &mut rng, dt);
+            bot_listen(*id, player, &mut bot, &self.noises, team_mode, conquest, &mut rng);
             let target = if conquest {
                 bot_objective(&self.map, &self.flags, player, &mut bot, &mut rng, dt)
                     .map(|flag| (self.map.flags[flag].pos, self.map.flags[flag].radius * 0.7, true))
@@ -1717,6 +1779,7 @@ impl Server {
 
         // Everyone sees and hears a bot's shot like anybody else's.
         for (shooter, team, weapon_id, origin, dirs) in shots {
+            self.make_noise(shooter, origin, true);
             let speed = weapon(weapon_id).speed;
             self.bullets.extend(dirs.iter().map(|dir| BotBullet {
                 shooter,
@@ -1732,6 +1795,56 @@ impl Server {
                 origin: origin.to_array(),
                 dirs: dirs.iter().map(|dir| dir.to_array()).collect(),
             });
+        }
+    }
+
+    /// Something bots may hear, made by `source` at `pos`: a gunshot, or a
+    /// footstep.
+    fn make_noise(&mut self, source: PlayerId, pos: Vec3, shot: bool) {
+        let Some(team) = self.players.get(&source).map(|player| player.team) else {
+            return;
+        };
+        self.noises.push(Noise {
+            id: self.next_noise_id,
+            source,
+            team,
+            pos,
+            shot,
+            age: 0.0,
+        });
+        self.next_noise_id += 1;
+    }
+
+    /// Everyone's footsteps, worked out from how they move as the clients
+    /// work out each other's: running level, not crouched, a step a stride.
+    fn update_footsteps(&mut self, dt: f32) {
+        let mut steps = Vec::new();
+        for (id, player) in self.players.iter_mut() {
+            if !player.alive {
+                (player.step_from, player.step_clock, player.stride) = (player.pos, 0.0, 0.0);
+                continue;
+            }
+            player.step_clock += dt;
+            if player.step_clock < STEP_SAMPLE {
+                continue;
+            }
+            let moved = player.pos - player.step_from;
+            let (run, climb) = (moved.with_y(0.0).length() / player.step_clock, moved.y.abs() / player.step_clock);
+            (player.step_from, player.step_clock) = (player.pos, 0.0);
+            // Too fast is a respawn or a jump pad, not running.
+            let running = (STEP_MIN_SPEED..15.0).contains(&run) && climb < 1.5 && player.flags & FLAG_CROUCH == 0;
+            if !running {
+                player.stride = STRIDE * 0.5;
+                continue;
+            }
+            player.stride += moved.with_y(0.0).length();
+            if player.stride >= STRIDE {
+                player.stride %= STRIDE;
+                steps.push((*id, player.pos - Vec3::Y * map::PLAYER_HALF.y));
+            }
+        }
+        for (id, feet) in steps {
+            self.make_noise(id, feet, false);
         }
     }
 
@@ -1824,6 +1937,9 @@ impl Server {
             cooking: None,
             paint: None,
             spawn_at: None,
+            step_from: Vec3::ZERO,
+            step_clock: 0.0,
+            stride: 0.0,
             bot,
         }
     }
@@ -1940,7 +2056,7 @@ fn bot_gun_band(gun: WeaponId) -> (f32, f32) {
         weapons::SMG => (0.0, 15.0),
         weapons::SHOTGUN => (0.0, 7.0),
         weapons::DMR => (15.0, 60.0),
-        weapons::SNIPER => (25.0, BOT_SIGHT_RANGE),
+        weapons::SNIPER => (25.0, LONG_RANGE),
         weapons::PISTOL => (0.0, 20.0),
         _ => (0.0, weapons::KNIFE_RANGE),
     }
@@ -2022,7 +2138,7 @@ fn typical_range(map: &Map, mode: u8) -> f32 {
         .flat_map(|center| {
             (0..16).map(move |k| {
                 let dir = map::look_dir(k as f32 * std::f32::consts::TAU / 16.0, 0.0);
-                map.raycast(*center + lift, dir, BOT_SIGHT_RANGE).unwrap_or(BOT_SIGHT_RANGE)
+                map.raycast(*center + lift, dir, LONG_RANGE).unwrap_or(LONG_RANGE)
             })
         })
         .collect();
@@ -2065,23 +2181,29 @@ fn bot_pick_enemy(
     let mut current = None;
     let mut nearest: Option<(f32, &Body)> = None;
     for body in bodies {
-        let to = aim_point(body.center);
-        let in_sight = body.id != id
-            && !(team_mode && body.team == player.team)
-            && eye.distance(to) < BOT_SIGHT_RANGE
-            && (map.line_of_sight(eye, to) || map.line_of_sight(eye, to + Vec3::Y * 0.5))
-            && !smokes.iter().any(|smoke| map::smoke_blocks(smoke.center, eye, to));
-        if !in_sight {
+        if body.id == id || (team_mode && body.team == player.team) {
             continue;
-        }
-        if Some(body.id) == bot.enemy {
-            current = Some(body);
         }
         let offset = (body.center - player.pos).with_y(0.0);
         let distance = offset.length();
         let noticed = distance < BOT_HEARING
             || bot.provoked_by == Some(body.id)
             || offset.dot(facing) > BOT_VIEW_COS * distance;
+        let fighting = Some(body.id) == bot.enemy;
+        // No looking through walls (the dearer test) for one it would not notice anyway.
+        if !noticed && !fighting {
+            continue;
+        }
+        // As far as the eye can see.
+        let to = aim_point(body.center);
+        let in_sight = (map.line_of_sight(eye, to) || map.line_of_sight(eye, to + Vec3::Y * 0.5))
+            && !smokes.iter().any(|smoke| map::smoke_blocks(smoke.center, eye, to));
+        if !in_sight {
+            continue;
+        }
+        if fighting {
+            current = Some(body);
+        }
         if noticed && nearest.is_none_or(|(best, _)| distance < best) {
             nearest = Some((distance, body));
         }
@@ -2111,6 +2233,42 @@ fn bot_pick_enemy(
     }
     bot.enemy_at = target.center;
     Some(target.center)
+}
+
+/// Hears the enemies' gunshots and footsteps made since it last listened,
+/// and while not fighting anybody, guesses where the one that matters most
+/// (a shot over a step, then the nearest) came from, to go and see. In
+/// conquest only noises close by draw it off its flag.
+fn bot_listen(id: PlayerId, player: &Player, bot: &mut Bot, noises: &[Noise], team_mode: bool, conquest: bool, rng: &mut u64) {
+    let mut loudest: Option<(&Noise, f32)> = None;
+    let heard_up_to = bot.last_noise;
+    for noise in noises.iter().filter(|noise| noise.id > heard_up_to) {
+        bot.last_noise = noise.id;
+        if noise.source == id || (team_mode && noise.team == player.team) {
+            continue;
+        }
+        let distance = noise.pos.distance(player.pos);
+        let reach = if noise.shot { SHOT_HEARING } else { STEP_HEARING };
+        if distance > reach || (conquest && distance > BOT_INVESTIGATE_NEAR) {
+            continue;
+        }
+        let louder = loudest.is_none_or(|(best, best_distance)| (noise.shot, -distance) > (best.shot, -best_distance));
+        if louder {
+            loudest = Some((noise, distance));
+        }
+    }
+    let Some((noise, _)) = loudest else {
+        return;
+    };
+    if bot.enemy.is_some() {
+        return;
+    }
+    let (angle, depth) = if noise.shot { SHOT_GUESS } else { STEP_GUESS };
+    let turn = Quat::from_rotation_y(angle * (random_unit(rng) * 2.0 - 1.0));
+    let scale = 1.0 + depth * (random_unit(rng) * 2.0 - 1.0);
+    let guess = player.pos + turn * (noise.pos - player.pos).with_y(0.0) * scale;
+    bot.investigate = Some(guess.with_y(noise.pos.y));
+    bot.investigate_for = BOT_INVESTIGATE_TIME;
 }
 
 /// Conquest: the flag the bot is going for. It thinks again every so often,
@@ -2163,12 +2321,24 @@ fn bot_move(
     rng: &mut u64,
     dt: f32,
 ) {
-    let speed = if enemy.is_some() { 5.5 } else { 7.0 };
+    // Going to see what it heard: until it gets there, it has been at it
+    // long enough, or it finds somebody to fight.
+    bot.investigate_for -= dt;
+    let looked = |spot: Vec3| bot.investigate_for <= 0.0 || (spot - player.pos).with_y(0.0).length() < 2.5;
+    if enemy.is_some() || bot.investigate.is_some_and(looked) {
+        if bot.investigate.take().is_some() {
+            bot.retarget_in = 0.0;
+        }
+    }
+    // Careful when fighting or creeping up on a noise.
+    let speed = if enemy.is_some() || bot.investigate.is_some() { 5.5 } else { 7.0 };
     bot.retarget_in -= dt;
     let to_goal = (bot.goal - player.pos).with_y(0.0);
     // A new target (a conquest flag) takes over at once.
     let off_target = target.is_some_and(|(center, radius, stay)| stay && (bot.goal - center).with_y(0.0).length() > radius + 0.5);
-    if bot.retarget_in <= 0.0 || to_goal.length() < 1.5 || (enemy.is_none() && off_target) {
+    if let Some(spot) = bot.investigate {
+        bot.goal = spot;
+    } else if bot.retarget_in <= 0.0 || to_goal.length() < 1.5 || (enemy.is_none() && off_target) {
         if let Some(enemy) = enemy {
             let towards = (enemy - player.pos).with_y(0.0).normalize_or_zero();
             let side = Vec3::new(-towards.z, 0.0, towards.x);
@@ -2256,12 +2426,19 @@ fn bot_move(
         if bot.path_to.is_some() {
             bot.path_to = None;
         } else {
+            // A noise from somewhere it cannot get to is not worth the trouble.
+            bot.investigate = None;
             bot.retarget_in = 0.0;
         }
     }
-    // Not fighting: look where it is going.
+    // Not fighting: look where it is going, or, having just heard
+    // something, the way it came from.
     if enemy.is_none() {
-        if wish.length_squared() > 0.01 {
+        let glance = bot.investigate.filter(|_| bot.investigate_for > BOT_INVESTIGATE_TIME - BOT_GLANCE_TIME);
+        if let Some(spot) = glance {
+            let to = spot - player.pos;
+            player.yaw = turn_towards(player.yaw, (-to.x).atan2(-to.z), BOT_TURN_RATE * 2.0 * dt);
+        } else if wish.length_squared() > 0.01 {
             player.yaw = turn_towards(player.yaw, (-wish.x).atan2(-wish.z), BOT_TURN_RATE * 2.0 * dt);
         }
         player.pitch = turn_towards(player.pitch, 0.0, BOT_TURN_RATE * dt);
@@ -2974,6 +3151,137 @@ mod tests {
         std::mem::swap(&mut bot.ammo, &mut bot.spare_ammo);
         bot.ammo = weapon(bot.gun).magazine;
         assert!(bot_wants_spare(&bot, None), "back to the first");
+    }
+
+    /// Nothing in the way, a bot sees an enemy in front of it however far.
+    #[test]
+    fn bots_see_as_far_as_there_is_a_clear_line() {
+        let server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        // High above the map, where nothing is in the way.
+        let mut player = server.new_player("Bot".into(), None);
+        player.pos = Vec3::new(0.0, 300.0, 0.0);
+        player.yaw = 0.0;
+        player.team = 0;
+        let mut bot = Bot::new();
+        let far = Body {
+            id: 2,
+            team: 1,
+            center: Vec3::new(0.0, 300.0, -250.0),
+        };
+        let mut rng = 1;
+        let seen = bot_pick_enemy(&server.map, &[], 1, &player, &mut bot, &[far], false, bot_skill(BOT_NORMAL), &mut rng, 0.1);
+        assert_eq!(seen, Some(Vec3::new(0.0, 300.0, -250.0)));
+    }
+
+    /// Running makes footsteps, a step a stride; crouching or standing, none.
+    #[test]
+    fn running_makes_footsteps() {
+        let steps_made = |crouched: bool, speed: f32| {
+            let mut server = Server::bind(ServerSettings {
+                port: 0,
+                ..ServerSettings::default()
+            })
+            .unwrap();
+            let mut person = server.new_player("Runner".into(), None);
+            person.alive = true;
+            person.pos = Vec3::new(0.0, 50.0, 0.0);
+            person.step_from = person.pos;
+            person.flags = if crouched { FLAG_CROUCH } else { 0 };
+            server.players.insert(1000, person);
+            let dt = 1.0 / 60.0;
+            let mut steps = 0;
+            // Five seconds.
+            for _ in 0..300 {
+                server.players.get_mut(&1000).unwrap().pos.x += speed * dt;
+                server.update_footsteps(dt);
+                steps += server.noises.drain(..).filter(|noise| !noise.shot).count();
+            }
+            steps
+        };
+        let running = steps_made(false, 7.0);
+        // 35 m at a step every 2.6.
+        assert!((12..=14).contains(&running), "{running} steps");
+        assert_eq!(steps_made(true, 4.0), 0, "crouched");
+        assert_eq!(steps_made(false, 0.0), 0, "standing");
+    }
+
+    /// A bot hears an enemy's step close by, and goes to see roughly where
+    /// it was; a shot from much further, and knows better where it was.
+    /// Teammates' noises, far steps, and noises while it fights, it ignores.
+    #[test]
+    fn bots_hear_steps_and_shots_and_go_to_see() {
+        let server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        let mut player = server.new_player("Bot".into(), None);
+        player.pos = Vec3::ZERO;
+        player.team = 0;
+        let noise = |id: u64, team: u8, pos: Vec3, shot: bool| Noise {
+            id,
+            source: 2,
+            team,
+            pos,
+            shot,
+            age: 0.0,
+        };
+        let guessed = |noises: &[Noise], team_mode: bool, rng: &mut u64| {
+            let mut bot = Bot::new();
+            bot_listen(1, &player, &mut bot, noises, team_mode, false, rng);
+            bot.investigate
+        };
+        let mut rng = 7;
+        let step = Vec3::new(0.0, 0.0, -10.0);
+        for _ in 0..200 {
+            let guess = guessed(&[noise(1, 1, step, false)], true, &mut rng).expect("not heard");
+            let off = guess.with_y(0.0).angle_between(step);
+            let distance = guess.with_y(0.0).length();
+            assert!(off <= STEP_GUESS.0 + 1e-3, "{off} rad off");
+            assert!((6.0 - 1e-3..=14.0 + 1e-3).contains(&distance), "{distance} m");
+        }
+        let shot = Vec3::new(80.0, 0.0, 0.0);
+        let guess = guessed(&[noise(1, 1, shot, true)], true, &mut rng).expect("shot not heard");
+        assert!(guess.with_y(0.0).angle_between(shot) <= SHOT_GUESS.0 + 1e-3);
+        assert_eq!(guessed(&[noise(1, 0, step, false)], true, &mut rng), None, "a teammate");
+        assert!(guessed(&[noise(1, 0, step, false)], false, &mut rng).is_some(), "everyone's an enemy");
+        assert_eq!(guessed(&[noise(1, 1, step * 2.0, false)], true, &mut rng), None, "steps 20 m off");
+        // The shot wins over a step, wherever they are.
+        let both = [noise(1, 1, step, false), noise(2, 1, shot, true)];
+        let guess = guessed(&both, true, &mut rng).unwrap();
+        assert!(guess.with_y(0.0).angle_between(shot) < 0.2);
+        // Busy fighting.
+        let mut bot = Bot::new();
+        bot.enemy = Some(3);
+        bot_listen(1, &player, &mut bot, &both, true, false, &mut rng);
+        assert_eq!(bot.investigate, None);
+        assert_eq!(bot.last_noise, 2, "heard them anyway");
+    }
+
+    /// Having heard something behind it, a bot turns that way.
+    #[test]
+    fn a_bot_turns_to_what_it_heard() {
+        let server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        let mut player = server.new_player("Bot".into(), None);
+        player.pos = Vec3::new(0.0, 300.0, 0.0);
+        player.yaw = 0.0;
+        let mut bot = Bot::new();
+        bot.investigate = Some(Vec3::new(0.0, 300.0, 12.0));
+        bot.investigate_for = BOT_INVESTIGATE_TIME;
+        let mut rng = 3;
+        for _ in 0..30 {
+            bot_move(&server.map, &server.nav, &mut player, &mut bot, None, None, &mut rng, 1.0 / 60.0);
+        }
+        assert!(angle_between(player.yaw, std::f32::consts::PI).abs() < 0.2, "facing {}", player.yaw);
+        assert_eq!(bot.goal.with_y(0.0), Vec3::new(0.0, 0.0, 12.0));
     }
 
     /// Someone running across the bot's view 40 m away: it aims ahead of
