@@ -26,6 +26,9 @@ use crate::{
 };
 
 const TICK: Duration = Duration::from_micros(1_000_000 / 60);
+/// Damage changes with every hit, so the roster goes out for it at most this
+/// often (seconds) instead of every tick of a fight.
+const DAMAGE_ROSTER_INTERVAL: f32 = 0.5;
 const BOT_NAMES: [&str; 8] = [
     "Clanker", "Tinhead", "Bolt", "Rusty", "Sprocket", "Gizmo", "Widget", "Scrap",
 ];
@@ -391,6 +394,9 @@ struct Player {
     deaths: u32,
     /// Kills somebody else finished after this player hurt the victim.
     assists: u32,
+    /// Health and armor taken off other players this match. Overkill and
+    /// hurting yourself do not count.
+    damage: u32,
     /// Who has hurt them this life, and how many seconds ago they last did.
     /// When they die, each but the killer who hurt them within
     /// `ASSIST_WINDOW` gets an assist, healed since or not.
@@ -481,6 +487,10 @@ pub struct Server {
     next_bot_id: PlayerId,
     snapshot_timer: f32,
     roster_dirty: bool,
+    /// Somebody's damage went up since the roster last went out.
+    damage_dirty: bool,
+    /// Seconds until a damage change may send the roster again.
+    damage_roster_in: f32,
     rng: u64,
     grenades: Vec<Grenade>,
     smokes: Vec<Smoke>,
@@ -582,6 +592,8 @@ impl Server {
             next_bot_id: 1,
             snapshot_timer: 0.0,
             roster_dirty: false,
+            damage_dirty: false,
+            damage_roster_in: 0.0,
             rng: now.as_nanos() as u64 | 1,
             settings,
             status: None,
@@ -700,8 +712,14 @@ impl Server {
             self.update_match(dt);
         }
 
+        self.damage_roster_in -= dt;
+        if self.damage_dirty && self.damage_roster_in <= 0.0 {
+            self.roster_dirty = true;
+        }
         if self.roster_dirty {
             self.roster_dirty = false;
+            self.damage_dirty = false;
+            self.damage_roster_in = DAMAGE_ROSTER_INTERVAL;
             let roster = self.roster_msg();
             self.broadcast(&roster);
         }
@@ -1441,8 +1459,10 @@ impl Server {
             bot.provoked_for = BOT_GRUDGE;
         }
         let had_armor = victim.armor > 0;
+        let before = victim.health + victim.armor;
         (victim.health, victim.armor) = take_damage(victim.health, victim.armor, amount);
         let (health, armor) = (victim.health, victim.armor);
+        let dealt = (before - health - armor).max(0) as u32;
         let armor_broken = had_armor && armor == 0;
         let mut dropped = None;
         let mut helpers = Vec::new();
@@ -1460,6 +1480,13 @@ impl Server {
             armor,
             armor_broken,
         });
+        if attacker_id != victim_id
+            && dealt > 0
+            && let Some(attacker) = self.players.get_mut(&attacker_id)
+        {
+            attacker.damage += dealt;
+            self.damage_dirty = true;
+        }
         if health > 0 {
             return;
         }
@@ -1555,6 +1582,7 @@ impl Server {
             player.kills = 0;
             player.deaths = 0;
             player.assists = 0;
+            player.damage = 0;
             player.hurt_by.clear();
             player.alive = false;
         }
@@ -1984,6 +2012,7 @@ impl Server {
             kills: 0,
             deaths: 0,
             assists: 0,
+            damage: 0,
             hurt_by: Vec::new(),
             join_order: self.join_counter,
             alive: false,
@@ -2038,6 +2067,7 @@ impl Server {
                     kills: p.kills,
                     deaths: p.deaths,
                     assists: p.assists,
+                    damage: p.damage,
                     is_bot: p.bot.is_some(),
                 })
                 .collect(),
@@ -3076,6 +3106,41 @@ mod tests {
         server.damage(1000, 1001, 10, 0);
         server.damage(1000, 1000, 500, 0);
         assert_eq!(assists(&server), [0, 2, 2, 0]);
+    }
+
+    #[test]
+    fn damage_counts_what_came_off_other_players() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            mode: MODE_TEAMS,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        // 1000 on their own against 1001 and 1002.
+        for k in 0..3 {
+            server.join_counter += 1;
+            let mut person = server.new_player(format!("P{k}"), None);
+            person.team = (k == 0) as u8;
+            server.players.insert(1000 + k, person);
+        }
+        server.start_match();
+        server.countdown = 0.0;
+        let damage = |server: &Server| (1000..1003).map(|id| server.players[&id].damage).collect::<Vec<_>>();
+        // Armor and health both count.
+        server.damage(1000, 1001, 10, 0);
+        server.damage(1000, 1001, START_ARMOR, 0);
+        assert_eq!(damage(&server), [0, 10 + START_ARMOR as u32, 0]);
+        // Hurting yourself, and shooting at your own side, do not.
+        server.damage(1000, 1000, 10, 0);
+        server.damage(1002, 1001, 10, 0);
+        assert_eq!(damage(&server), [0, 10 + START_ARMOR as u32, 0]);
+        // Overkill does not: only what they had left, which is their health
+        // less the 20 taken off it above.
+        server.damage(1000, 1002, 500, 0);
+        assert_eq!(damage(&server), [0, 10 + START_ARMOR as u32, (MAX_HEALTH - 20) as u32]);
+        // A new match starts everybody from nothing.
+        server.start_match();
+        assert_eq!(damage(&server), [0, 0, 0]);
     }
 
     #[test]

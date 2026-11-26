@@ -219,6 +219,8 @@ pub struct PlayerInfo {
     pub deaths: u32,
     /// Kills somebody else finished after this player hurt the victim.
     pub assists: u32,
+    /// Health and armor taken off other players this match.
+    pub damage: u32,
     pub is_bot: bool,
 }
 

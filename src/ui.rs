@@ -674,6 +674,7 @@ fn roster_heading(title: String, color: Color) -> impl Bundle {
             roster_stat("KILLS".into(), 11.0, DIM),
             roster_stat("ASSISTS".into(), 11.0, DIM),
             roster_stat("DEATHS".into(), 11.0, DIM),
+            roster_stat("DAMAGE".into(), 11.0, DIM),
         ],
     )
 }
@@ -708,6 +709,7 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey) -> impl Bundl
             roster_stat(player.kills.to_string(), 16.0, TEXT),
             roster_stat(player.assists.to_string(), 16.0, DIM),
             roster_stat(player.deaths.to_string(), 16.0, DIM),
+            roster_stat(player.damage.to_string(), 16.0, DIM),
         ],
     )
 }
