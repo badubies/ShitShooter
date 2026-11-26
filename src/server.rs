@@ -80,19 +80,34 @@ pub struct LobbyStatus {
 
 // How well bots fight. They see enemies in front of them, or close by, or
 // whoever just hurt them; take a moment to react; turn at a human-ish rate;
-// and their aim wobbles, more so right after they find a target.
+// lead their shots, though not perfectly; and their aim wobbles, more so
+// right after they find a target and while it darts across their view.
 /// Bots notice enemies within this angle either side of where they look
 /// (cosine of the angle)...
 const BOT_VIEW_COS: f32 = 0.26;
 /// ...or anywhere this close.
 const BOT_HEARING: f32 = 6.0;
 const BOT_SIGHT_RANGE: f32 = 70.0;
-/// Seconds an enemy must be in sight before the first shot.
-const BOT_REACTION: f32 = 0.25;
+/// Seconds an enemy must be in sight before the first shot: at least this,
+/// and up to `BOT_REACTION_JITTER` more.
+const BOT_REACTION: f32 = 0.3;
+const BOT_REACTION_JITTER: f32 = 0.2;
 /// Radians per second.
-const BOT_TURN_RATE: f32 = 7.0;
-/// Radius of the aim wobble, in radians, once settled on a target.
+const BOT_TURN_RATE: f32 = 6.0;
+/// Radius of the aim wobble, in radians, once settled on a target...
 const BOT_AIM_ERROR: f32 = 0.015;
+/// ...plus this many metres at any range...
+const BOT_AIM_SLOP: f32 = 0.15;
+/// ...plus `BOT_TRACKING` radians for every radian per second the enemy
+/// sweeps across its view beyond `BOT_EASY_TRACK` (one strafing up close
+/// is hard to follow; far away, easy).
+const BOT_EASY_TRACK: f32 = 0.3;
+const BOT_TRACKING: f32 = 0.12;
+/// How much of the enemy's movement during the bullet's flight a bot aims
+/// ahead by: somewhere in this range, rolled with each wobble.
+const BOT_LEAD: (f32, f32) = (0.7, 1.1);
+/// Seconds over which a bot works out how fast its enemy is going.
+const BOT_VEL_SMOOTHING: f32 = 0.15;
 /// Seconds it takes the wobble to settle down to `BOT_AIM_ERROR`.
 const BOT_AIM_SETTLE: f32 = 1.5;
 /// Seconds a bot stays turned towards whoever hurt it.
@@ -128,8 +143,15 @@ struct Bot {
     /// The enemy it is fighting, and for how long it has had them in sight.
     enemy: Option<PlayerId>,
     sight: f32,
-    /// How far off its aim is (yaw, pitch), re-rolled every `wobble_in` seconds.
+    /// Seconds of `sight` it needs before shooting this enemy.
+    reaction: f32,
+    /// Where the enemy was last tick, and how fast it reckons they are going.
+    enemy_at: Vec3,
+    enemy_vel: Vec3,
+    /// How far off its aim is (yaw, pitch), and how much it leads by,
+    /// re-rolled every `wobble_in` seconds.
     aim_error: Vec2,
+    lead: f32,
     wobble_in: f32,
     /// Whoever hurt it last, and for how much longer it cares.
     provoked_by: Option<PlayerId>,
@@ -157,7 +179,11 @@ impl Bot {
             burst: 0,
             enemy: None,
             sight: 0.0,
+            reaction: BOT_REACTION,
+            enemy_at: Vec3::ZERO,
+            enemy_vel: Vec3::ZERO,
             aim_error: Vec2::ZERO,
+            lead: 1.0,
             wobble_in: 0.0,
             provoked_by: None,
             provoked_for: 0.0,
@@ -1573,7 +1599,7 @@ impl Server {
             let Some(mut bot) = player.bot.take() else {
                 continue;
             };
-            let enemy = bot_pick_enemy(&self.map, &self.smokes, *id, player, &mut bot, &bodies, team_mode, dt);
+            let enemy = bot_pick_enemy(&self.map, &self.smokes, *id, player, &mut bot, &bodies, team_mode, &mut rng, dt);
             let target = if conquest {
                 bot_objective(&self.map, &self.flags, player, &mut bot, &mut rng, dt)
                     .map(|flag| (self.map.flags[flag].pos, self.map.flags[flag].radius * 0.7, true))
@@ -1817,6 +1843,7 @@ fn bot_pick_enemy(
     bot: &mut Bot,
     bodies: &[Body],
     team_mode: bool,
+    rng: &mut u64,
     dt: f32,
 ) -> Option<Vec3> {
     bot.provoked_for -= dt;
@@ -1862,12 +1889,22 @@ fn bot_pick_enemy(
     };
     if bot.enemy == Some(target.id) {
         bot.sight += dt;
+        // People's positions come in with the network's hiccups, so the
+        // speed is an average over a moment, not this tick's jump.
+        if dt > 0.0 {
+            let measured = ((target.center - bot.enemy_at) / dt).clamp_length_max(60.0);
+            bot.enemy_vel += (measured - bot.enemy_vel) * (dt / BOT_VEL_SMOOTHING).min(1.0);
+        }
     } else {
         // A new enemy: take a moment to react, and dodge sideways right away.
         bot.enemy = Some(target.id);
         bot.sight = 0.0;
+        bot.reaction = BOT_REACTION + BOT_REACTION_JITTER * random_unit(rng);
+        bot.enemy_vel = Vec3::ZERO;
+        bot.wobble_in = 0.0;
         bot.retarget_in = 0.0;
     }
+    bot.enemy_at = target.center;
     Some(target.center)
 }
 
@@ -2056,23 +2093,40 @@ fn bot_fight(
         player.flags |= FLAG_AIM;
     }
 
-    // The aim wobbles around the target: widely at first, then less.
+    let eye = bot_eye(player);
+    // The aim wobbles around the target: widely at first, then less; and
+    // more while the enemy (or the bot itself) moves fast across its view.
     bot.wobble_in -= dt;
     if bot.wobble_in <= 0.0 {
         bot.wobble_in = 0.25 + random_unit(rng) * 0.25;
+        let offset = aim_point(enemy) - eye;
+        let distance = offset.length().max(1.0);
+        let along = offset / distance;
+        let relative = bot.enemy_vel - bot.vel;
+        let sweep = (relative - along * relative.dot(along)).length() / distance;
+        let error = BOT_AIM_ERROR + BOT_AIM_SLOP / distance + BOT_TRACKING * (sweep - BOT_EASY_TRACK).max(0.0);
         let unsettled = 1.0 + 1.5 * (1.0 - bot.sight / BOT_AIM_SETTLE).max(0.0);
-        let radius = BOT_AIM_ERROR * unsettled * random_unit(rng).sqrt();
+        let radius = error * unsettled * random_unit(rng).sqrt();
         let around = random_unit(rng) * std::f32::consts::TAU;
         bot.aim_error = Vec2::new(around.cos(), around.sin()) * radius;
+        bot.lead = BOT_LEAD.0 + (BOT_LEAD.1 - BOT_LEAD.0) * random_unit(rng);
     }
-    let eye = bot_eye(player);
-    let to = aim_point(enemy) - eye;
+    // Aim where the enemy will be when the bullet gets there, and above it
+    // by as much as the bullet will drop on the way.
+    let mut target = aim_point(enemy);
+    if stats.speed > 0.0 {
+        let flight = eye.distance(target) / stats.speed;
+        let flight = eye.distance(target + bot.enemy_vel * flight) / stats.speed;
+        target += bot.enemy_vel * flight * bot.lead;
+        target.y += 0.5 * stats.gravity * flight * flight;
+    }
+    let to = target - eye;
     let yaw = (-to.x).atan2(-to.z) + bot.aim_error.x;
     let pitch = to.y.atan2(to.with_y(0.0).length()) + bot.aim_error.y;
     player.yaw = turn_towards(player.yaw, yaw, BOT_TURN_RATE * dt);
     player.pitch = turn_towards(player.pitch, pitch, BOT_TURN_RATE * dt);
     let lined_up = angle_between(player.yaw, yaw).abs() < 0.1 && (player.pitch - pitch).abs() < 0.1;
-    if !trigger || !lined_up || bot.sight < BOT_REACTION || bot.reload > 0.0 || bot.cooldown > 0.0 || bot.ammo == 0 {
+    if !trigger || !lined_up || bot.sight < bot.reaction || bot.reload > 0.0 || bot.cooldown > 0.0 || bot.ammo == 0 {
         return None;
     }
 
@@ -2592,6 +2646,36 @@ mod tests {
     fn bots_shoot_a_person_standing_in_front_of_them() {
         let (fired, hurt) = bot_in_front_of_a_person(false);
         assert!(fired && hurt, "the bot never hit the person in front of it");
+    }
+
+    /// Someone running across the bot's view 40 m away: it aims ahead of
+    /// them, in the way they are running.
+    #[test]
+    fn bots_lead_a_running_target() {
+        let server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        let mut player = server.new_player("Bot".into(), None);
+        player.pos = Vec3::ZERO;
+        player.yaw = 0.0;
+        player.pitch = 0.0;
+        let mut bot = Bot::new();
+        bot.gun = weapons::SMG;
+        bot.ammo = weapon(bot.gun).magazine;
+        // Long settled on them, running to the right (+x) at 7 m/s.
+        bot.sight = 10.0;
+        bot.enemy_vel = Vec3::X * 7.0;
+        let enemy = Vec3::new(0.0, 0.0, -40.0);
+        let mut rng = 12345;
+        for _ in 0..60 {
+            bot_fight(1, &mut player, &mut bot, Some(enemy), false, &mut rng, 1.0 / 60.0);
+        }
+        let to = aim_point(enemy) - bot_eye(&player);
+        let straight = (-to.x).atan2(-to.z);
+        // Yaw grows to the left, so aiming right of them is a smaller yaw.
+        assert!(angle_between(straight, player.yaw) < -0.005, "not leading: {} vs {}", player.yaw, straight);
     }
 
     #[test]
