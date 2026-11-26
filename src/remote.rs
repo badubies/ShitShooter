@@ -45,6 +45,7 @@ impl Plugin for RemotePlugin {
                 (
                     size_gun_boxes.after(GunModelSystems::Show),
                     settle_corpses,
+                    spawn_own_corpse.after(PlayerSystems::Simulate).before(spectate),
                     spectate
                         .after(RemoteSystems)
                         .after(PlayerSystems::Simulate)
@@ -173,7 +174,7 @@ fn apply_snapshots(
                 && let Some(info) = session.roster.iter().find(|p| p.id == snap.id)
             {
                 let material = skins.material(snap.id, info.color, &model, &mut images, &mut materials);
-                spawn_corpse(&mut commands, &model, &assets, material, transform, &remote);
+                spawn_corpse(&mut commands, &model, &assets, material, transform, remote.crouching);
             }
             if !snap.alive {
                 remote.samples.clear();
@@ -336,18 +337,23 @@ pub struct Corpse {
 #[derive(Component)]
 struct CorpsePivot;
 
-/// A copy of a remote player's body and head, standing where they died, that
-/// `settle_corpses` then tips over onto its back.
+/// Our own body, which the camera looks down on while we are dead.
+#[derive(Component)]
+struct OwnCorpse;
+
+/// A copy of a player's body and head, standing where they died, that
+/// `settle_corpses` then tips over onto its back. `transform` is the middle
+/// of their box, turned the way they faced.
 fn spawn_corpse(
     commands: &mut Commands,
     model: &PlayerModel,
     assets: &SharedAssets,
     material: Handle<StandardMaterial>,
     transform: &Transform,
-    remote: &RemotePlayer,
-) {
+    crouching: bool,
+) -> Entity {
     // The reported position is the middle of their box; the body stands on its floor.
-    let half = if remote.crouching { CROUCH_HALF } else { PLAYER_HALF };
+    let half = if crouching { CROUCH_HALF } else { PLAYER_HALF };
     let feet = transform.translation - Vec3::Y * half.y;
     commands.spawn((
         Corpse {
@@ -384,7 +390,43 @@ fn spawn_corpse(
                 ),
             ],
         )],
-    ));
+    ))
+    .id()
+}
+
+/// We just died: our body falls where we stood, as anybody else's does for us.
+#[allow(clippy::too_many_arguments)]
+fn spawn_own_corpse(
+    mut commands: Commands,
+    session: Res<Session>,
+    assets: Res<SharedAssets>,
+    model: Res<PlayerModel>,
+    player: Res<LocalPlayer>,
+    mut skins: ResMut<Skins>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    old_corpses: Query<Entity, With<OwnCorpse>>,
+    mut spawned: Local<bool>,
+) {
+    if !player.on_death_screen() {
+        *spawned = false;
+        return;
+    }
+    if *spawned {
+        return;
+    }
+    *spawned = true;
+    let Some(info) = session.roster.iter().find(|p| p.id == session.my_id) else {
+        return;
+    };
+    let material = skins.material(session.my_id, info.color, &model, &mut images, &mut materials);
+    let transform = Transform::from_translation(player.pos).with_rotation(Quat::from_rotation_y(player.yaw));
+    let corpse = spawn_corpse(&mut commands, &model, &assets, material, &transform, player.crouching);
+    commands.entity(corpse).insert(OwnCorpse);
+    // A body from a life cut short may still lie about: it is not the one to watch.
+    for old in &old_corpses {
+        commands.entity(old).remove::<OwnCorpse>();
+    }
 }
 
 /// Bodies tip over backwards, as if falling, then lie there a while, then
@@ -447,9 +489,21 @@ fn reset_on_spawn(
 /// little smoothing over the steps between snapshots.
 const POV_FOLLOW: f32 = 30.0;
 
+/// Seconds the view takes to rise out of our eyes to over our body.
+const DEATH_CAM_RISE: f32 = 0.6;
+/// Over our body, the camera stands this high and this far off at first...
+const DEATH_CAM_LIFT: f32 = 1.6;
+const DEATH_CAM_BACK: f32 = 1.2;
+/// ...then drifts up and away, a little faster as it goes (m/s, m/s²).
+const DEATH_CAM_LIFT_SPEED: (f32, f32) = (0.7, 0.06);
+const DEATH_CAM_BACK_SPEED: (f32, f32) = (0.45, 0.04);
+/// It keeps this far off walls and ceilings in its way.
+const DEATH_CAM_MARGIN: f32 = 0.3;
+
 /// Who we watch while dead, and how they are doing (for the death screen).
 #[derive(Resource, Default)]
 pub struct Spectate {
+    /// The teammate we see through; none while the camera is over our own body.
     pub watching: Option<PlayerId>,
     pub health: i32,
     pub armor: i32,
@@ -457,6 +511,8 @@ pub struct Spectate {
     pub sight: SightId,
     /// In a team mode with no teammate alive to watch.
     pub alone: bool,
+    /// Over our own body, with teammates alive to step to.
+    pub can_watch: bool,
     /// Steps to take through the teammates, asked for by clicks.
     pub step: i32,
 }
@@ -466,22 +522,26 @@ pub struct Spectate {
 struct PovState {
     /// Where we died, and the way we were looking (yaw, pitch).
     fell: Option<(Vec3, f32, f32)>,
+    /// The middle of our body, last we saw it (it sinks away before we respawn).
+    body: Option<Vec3>,
     /// The teammate seen through last frame, and their smoothed (eye, yaw, pitch).
     seen: Option<(PlayerId, Vec3, f32, f32)>,
 }
 
-/// While we are dead in a team mode, we see through a living teammate's
-/// eyes, with their gun in hand. A click or the wheel steps to the next or
-/// the one before; when they die it cuts to another. With none left alive,
-/// or in free for all, the camera stays where we died.
+/// While we are dead the camera first hangs over our body, looking down at
+/// it, and floats up and away. A click or the wheel steps on to see through
+/// a living teammate's eyes, with their gun in hand, then on through the rest
+/// and back round to our body; when the one we watch dies it cuts to another.
 #[allow(clippy::too_many_arguments)]
 fn spectate(
     time: Res<Time>,
     session: Res<Session>,
+    map: Res<GameMap>,
     wheel: Res<crate::settings::WheelSteps>,
     mut messages: MessageReader<NetMsg>,
     mut player: ResMut<LocalPlayer>,
     mut remotes: Query<(&RemotePlayer, &Transform, &mut Visibility), Without<MainCamera>>,
+    own_corpse: Query<&Transform, (With<OwnCorpse>, Without<MainCamera>)>,
     mut camera: Single<&mut Transform, With<MainCamera>>,
     mut spectate: ResMut<Spectate>,
     mut state: Local<PovState>,
@@ -508,7 +568,6 @@ fn spectate(
         .map(|(remote, transform, _)| (remote.id, transform.translation))
         .collect();
     team.sort_by_key(|(id, _)| *id);
-    let at = spectate.watching.and_then(|id| team.iter().position(|(mate, _)| *mate == id));
     let step = spectate.step
         + match wheel.step() {
             Some(crate::settings::Bind::WheelUp) => -1,
@@ -516,19 +575,21 @@ fn spectate(
             _ => 0,
         };
     spectate.step = 0;
-    let pick = match at {
-        _ if team.is_empty() => None,
-        Some(i) => Some((i as isize + step as isize).rem_euclid(team.len() as isize) as usize),
-        // The one we watched is gone: the next one after them, or the first.
-        None => Some(
-            spectate
-                .watching
-                .and_then(|id| team.iter().position(|(mate, _)| *mate > id))
-                .unwrap_or(0),
-        ),
+    // The stops to step through: our own body (0), then each teammate.
+    let stops = team.len() as isize + 1;
+    let stop = match spectate.watching {
+        None => (step as isize).rem_euclid(stops) as usize,
+        Some(id) => match team.iter().position(|(mate, _)| *mate == id) {
+            Some(i) => (i as isize + 1 + step as isize).rem_euclid(stops) as usize,
+            // The one we watched is gone: the next one after them, or the
+            // first, or our body when there is none.
+            None if team.is_empty() => 0,
+            None => team.iter().position(|(mate, _)| *mate > id).unwrap_or(0) + 1,
+        },
     };
-    spectate.watching = pick.map(|i| team[i].0);
+    spectate.watching = stop.checked_sub(1).map(|i| team[i].0);
     spectate.alone = session.team_mode() && team.is_empty();
+    spectate.can_watch = spectate.watching.is_none() && !team.is_empty();
 
     // Their body is not in the way of their eyes; everybody else shows as usual.
     for (remote, _, mut visibility) in &mut remotes {
@@ -542,7 +603,18 @@ fn spectate(
         if player.pov.is_some() {
             player.stop_seeing_through(fell_yaw, fell_pitch);
         }
-        camera.translation = fell_at;
+        // Over the middle of our body as it lies on its back (see `settle_corpses`).
+        if let Ok(body) = own_corpse.single() {
+            state.body = Some(body.translation + body.rotation * Vec3::new(0.0, BODY_RADIUS, BODY_HEIGHT / 2.0));
+        }
+        let body = state.body.unwrap_or(fell_at - Vec3::Y * (STAND_EYE - BODY_RADIUS));
+        let (cam, yaw, pitch) = death_cam(&map, body, fell_yaw, player.dead_for);
+        // Out of our eyes, up to over the body.
+        let rise = (player.dead_for / DEATH_CAM_RISE).clamp(0.0, 1.0);
+        let rise = rise * rise * (3.0 - 2.0 * rise);
+        camera.translation = fell_at.lerp(cam, rise);
+        player.yaw = lerp_angle(fell_yaw, yaw, rise);
+        player.pitch = fell_pitch + (pitch - fell_pitch) * rise;
         messages.clear();
         return;
     };
@@ -581,6 +653,26 @@ fn spectate(
             player.watched_fired();
         }
     }
+}
+
+/// Where the camera hangs over our body `dead_for` seconds after we died,
+/// and the way it looks (yaw, pitch): down at the body from out past our
+/// feet, the way we faced, higher and further off as time goes on. It stops
+/// short of anything in its way.
+fn death_cam(map: &GameMap, body: Vec3, facing: f32, dead_for: f32) -> (Vec3, f32, f32) {
+    let t = dead_for.max(0.0);
+    let lift = DEATH_CAM_LIFT + DEATH_CAM_LIFT_SPEED.0 * t + DEATH_CAM_LIFT_SPEED.1 * t * t;
+    let back = DEATH_CAM_BACK + DEATH_CAM_BACK_SPEED.0 * t + DEATH_CAM_BACK_SPEED.1 * t * t;
+    let ahead = Vec3::new(-facing.sin(), 0.0, -facing.cos());
+    let offset = ahead * back + Vec3::Y * lift;
+    let (dir, far) = (offset.normalize(), offset.length());
+    let reach = match map.0.raycast(body, dir, far + DEATH_CAM_MARGIN) {
+        Some(hit) => (hit - DEATH_CAM_MARGIN).max(0.2),
+        None => far,
+    };
+    // Looking back down the way it rose (see `map::look_dir`).
+    let (yaw, pitch) = (dir.x.atan2(dir.z), -dir.y.asin());
+    (body + dir * reach, yaw, pitch)
 }
 
 /// Where the gun is held, relative to the head...

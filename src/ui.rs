@@ -2594,7 +2594,8 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                             (label("click: next  ·  right-click: back", 12.0, DIM), hud_shadow(), Pickable::IGNORE),
                         ],
                     ),
-                    (AlonePanel, label("No teammates alive", 15.0, DIM), hud_shadow(), Pickable::IGNORE),
+                    (DeathHint::Alone, label("No teammates alive", 15.0, DIM), hud_shadow(), Pickable::IGNORE),
+                    (DeathHint::OwnBody, label("click: watch a teammate", 14.0, DIM), hud_shadow(), Pickable::IGNORE),
                 ],
             ),
             // Bottom right: when we come back.
@@ -2915,9 +2916,14 @@ struct DeathLoadoutSummary;
 #[derive(Component)]
 struct WatchPanel;
 
-/// ...or, with none of them alive, a word that there is nobody to watch.
+/// ...or a word in its place.
 #[derive(Component)]
-struct AlonePanel;
+enum DeathHint {
+    /// With none of them alive, that there is nobody to watch.
+    Alone,
+    /// Looking down on our own body, how to go and watch them.
+    OwnBody,
+}
 
 /// The loadout over the death screen, and its button back to watching.
 #[derive(Component)]
@@ -2960,22 +2966,26 @@ fn on_death_screen_click(
     }
 }
 
-/// Shows the parts of the death screen that apply: the teammate or the word
-/// that there is none, and the loadout panel while it is open.
+/// Shows the parts of the death screen that apply: the teammate, the word
+/// that there is none or how to watch one, and the loadout panel while it is open.
 fn update_death_screen(
     spectate: Res<Spectate>,
     open: Res<DeathLoadoutOpen>,
     mut nodes: ParamSet<(
         Query<&mut Node, With<WatchPanel>>,
-        Query<&mut Node, With<AlonePanel>>,
+        Query<(&mut Node, &DeathHint)>,
         Query<&mut Node, With<LoadoutOverlay>>,
     )>,
 ) {
     for mut node in &mut nodes.p0() {
         set_shown(&mut node, spectate.watching.is_some());
     }
-    for mut node in &mut nodes.p1() {
-        set_shown(&mut node, spectate.alone);
+    for (mut node, hint) in &mut nodes.p1() {
+        let shown = match hint {
+            DeathHint::Alone => spectate.alone,
+            DeathHint::OwnBody => spectate.can_watch,
+        };
+        set_shown(&mut node, shown);
     }
     for mut node in &mut nodes.p2() {
         set_shown(&mut node, open.0);

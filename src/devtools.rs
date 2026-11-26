@@ -498,6 +498,7 @@ fn selftest_play(
         Res<crate::loadout::DeathLoadoutOpen>,
         MessageWriter<bevy::input::mouse::MouseWheel>,
     ),
+    camera: Query<&Transform, With<crate::world::MainCamera>>,
     mut last_target: Local<Option<(u64, Vec3)>>,
     mut captured: Local<Captured>,
 ) {
@@ -577,17 +578,16 @@ fn selftest_play(
         captured.dead = true;
         test.capture("dead.png");
         println!(
-            "[selftest] dead, watching {:?} through their eyes {} with {} aim {:.2}",
+            "[selftest] dead, watching {:?} through their eyes {}, camera at {:?}",
             spectate.watching.map(|id| session.name_of(id)),
             player.pov.is_some(),
-            player.weapon().name,
-            player.aim
+            camera.single().ok().map(|camera| camera.translation),
         );
     }
-    // A notch of the wheel moves the camera on to the next teammate.
-    if captured.dead && player.on_death_screen() && spectate.watching.is_some() {
+    // A notch of the wheel moves the camera off our body to a teammate.
+    if captured.dead && player.on_death_screen() && (spectate.can_watch || captured.watched.is_some()) {
         if player.dead_for > 2.2 && captured.watched.is_none() {
-            captured.watched = spectate.watching;
+            captured.watched = Some(spectate.watching);
             wheel.write(bevy::input::mouse::MouseWheel {
                 unit: bevy::input::mouse::MouseScrollUnit::Line,
                 x: 0.0,
@@ -602,7 +602,13 @@ fn selftest_play(
             println!(
                 "[selftest] after a scroll, watching {:?} (was {:?})",
                 spectate.watching.map(|id| session.name_of(id)),
-                captured.watched.map(|id| session.name_of(id))
+                captured.watched.flatten().map(|id| session.name_of(id))
+            );
+            println!(
+                "[selftest] then through their eyes {} with {} aim {:.2}",
+                player.pov.is_some(),
+                player.weapon().name,
+                player.aim
             );
         }
     }
@@ -921,8 +927,9 @@ struct Captured {
     ally: bool,
     hurt: bool,
     dead: bool,
-    /// Who the camera was on when the wheel turned while we were dead.
-    watched: Option<crate::protocol::PlayerId>,
+    /// Who the camera was on when the wheel turned while we were dead (none:
+    /// our own body), once it has.
+    watched: Option<Option<crate::protocol::PlayerId>>,
     scrolled: bool,
     /// How far through opening and shutting the loadout on the death screen.
     loadout: u8,
