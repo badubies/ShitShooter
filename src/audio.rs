@@ -21,6 +21,7 @@ use bevy::{
 
 use crate::{
     AppState,
+    grenade::SMOKE_GROW,
     map::Map,
     player::{
         BOLT_DRAW_TIME, BOLT_LIFT_TIME, BOLT_PULL, BOLT_PULLED, BOLT_PUSH_TIME, LANDING_AIR_TIME, LocalPlayer,
@@ -1000,7 +1001,9 @@ fn synth_explosion(take: u32, far: bool) -> Vec<f32> {
     let mut rumble = [Biquad::new(Pass::Low, if far { 350.0 } else { 220.0 }, 0.7); 2];
     // What is left of the roar far off: a dull, short boom.
     let mut dull = Biquad::new(Pass::Low, 700.0, 0.7);
-    let mut debris = Grains::new(900.0);
+    // Short and wide-band: grit ticking on the ground. Narrow, ringing
+    // grains at scattered pitches bubble and drip like water instead.
+    let mut debris = Grains::new(3000.0);
     let mut noise_rng = rng ^ 0x5bd1_e995;
     let mut phase = 0.0_f32;
     let mut sound = samples(if far { 3.5 } else { 3.0 }, |t| {
@@ -1018,13 +1021,14 @@ fn synth_explosion(take: u32, far: bool) -> Vec<f32> {
             let cracking = crack.run(noise) * (-t * 40.0).exp();
             roar.retune(Pass::Low, 250.0 + 2800.0 * (-t * 6.0).exp(), 0.7);
             let roaring = roar.run(noise) * (-t * 4.5).exp() * (t / 0.004).min(1.0);
-            // Debris comes down from a moment after, thickest at about half a second.
-            let falling = if t > 0.12 { ((t - 0.12) / 0.35).min(1.0) * (-(t - 0.12) * 2.2).exp() } else { 0.0 };
-            if next_random(&mut noise_rng) < 2500.0 * falling / SAMPLE_RATE as f32 {
+            // Debris comes down from a moment after, thickest at about a
+            // third of a second, and has all landed by about a second.
+            let falling = if t > 0.12 { ((t - 0.12) / 0.2).min(1.0) * (-(t - 0.12) * 5.0).exp() } else { 0.0 };
+            if next_random(&mut noise_rng) < 3500.0 * falling / SAMPLE_RATE as f32 {
                 let size = next_random(&mut noise_rng).powi(3);
-                debris.add(700.0 * (6000.0_f32 / 700.0).powf(next_random(&mut noise_rng)), 6.0, size);
+                debris.add(1200.0 * 3.0_f32.powf(next_random(&mut noise_rng)), 0.9, size);
             }
-            cracking * 3.0 + roaring * 1.4 + debris.run(noise) * 3.5
+            cracking * 3.0 + roaring * 1.4 + debris.run(noise) * 2.0
         };
         let boom_gain = if far { 1.2 } else { 0.9 };
         ((thump * 1.2 + boom * boom_gain + tail * 4.0 + near) * 2.2).tanh()
@@ -1077,27 +1081,33 @@ fn synth_flashbang(take: u32, far: bool) -> Vec<f32> {
 }
 
 /// A smoke grenade going off: the cap pops, the filler crackles alight,
-/// then gas jets out with a sputtering hiss for several seconds and dies
-/// down.
+/// then gas jets out with a sputtering hiss for as long as the cloud takes
+/// to billow out (`SMOKE_GROW`), and slowly peters out to nothing as the
+/// pressure goes, dropping in pitch.
 fn synth_smoke() -> Vec<f32> {
+    /// Seconds the jet takes to peter out once the cloud is full.
+    const DYING: f32 = 3.0;
     let mut rng = 0x6e_0401;
     let mut low_passed = 0.0;
     let mut sputter = 0.5;
     let mut jet = Biquad::new(Pass::Band, 3200.0, 0.5);
     let mut flow = Biquad::new(Pass::Low, 400.0, 0.7);
     let mut crackle = Grains::new(1500.0);
-    samples(6.0, |t| {
+    samples(SMOKE_GROW + DYING + 0.2, |t| {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
         low_passed += (noise - low_passed) * 0.2;
         let pop = knock(t, 0.0, 90.0, 380.0, low_passed * 2.0) * 0.9 + knock(t, 0.0, 250.0, 1600.0, noise) * 0.4;
         let catching = (-t * 5.0).exp();
-        if next_random(&mut rng) < (2500.0 * catching + 6.0) / SAMPLE_RATE as f32 {
+        // Full while the cloud fills, then easing out to silence.
+        let blowing = (t / 0.3).min(1.0) * (1.0 - smoothstep(SMOKE_GROW, SMOKE_GROW + DYING, t));
+        if next_random(&mut rng) < (2500.0 * catching + 6.0 * blowing) / SAMPLE_RATE as f32 {
             let size = next_random(&mut rng).powi(2) * (0.3 + catching);
             crackle.add(800.0 * 6.0_f32.powf(next_random(&mut rng)), 3.0, size);
         }
-        let blowing = (t / 0.5).min(1.0) * if t < 3.5 { 1.0 } else { (-(t - 3.5) * 1.3).exp() };
-        // The jet catches and chokes as it burns.
+        // The jet catches and chokes as it burns, and drops in pitch as
+        // the pressure behind it goes.
         sputter += (next_random(&mut rng) - sputter) * 0.004;
+        jet.retune(Pass::Band, 1800.0 + 1400.0 * blowing, 0.5);
         let jetting = jet.run(noise) * blowing * (0.5 + sputter) * 0.9 + flow.run(noise) * blowing * 0.6;
         ((pop + crackle.run(noise) * 1.5 + jetting) * 1.4).tanh() * 0.8
     })
@@ -1511,12 +1521,16 @@ fn synth_charge() -> Vec<f32> {
 
 /// Ears ringing after a bang: a high, pure whine, two tones a hair apart
 /// beating slowly against each other, over a thin hiss, as loud as can be
-/// at first and fading for as long as the world is muffled (`DEAF_TIME`).
+/// at first and fading for as long as the world is muffled (`DEAF_TIME`),
+/// then lingering faintly a little past it before it is gone.
 fn synth_ring() -> Vec<f32> {
+    const LENGTH: f32 = DEAF_TIME + 2.5;
+    /// Seconds over the end in which what is left of it fades to nothing.
+    const LAST: f32 = 3.5;
     let mut rng = 0x6e_0601;
     let mut hiss = [Biquad::new(Pass::Band, 3800.0, 6.0); 2];
     let mut phases = [0.0_f32; 3];
-    let mut sound = samples(DEAF_TIME + 0.5, |t| {
+    let mut sound = samples(LENGTH, |t| {
         let noise = next_random(&mut rng) * 2.0 - 1.0;
         // Starts a little sharp and settles, wavering.
         let settle = 1.0 + 0.03 * (-t * 3.0).exp() + 0.0015 * (TAU * 0.7 * t).sin();
@@ -1526,8 +1540,10 @@ fn synth_ring() -> Vec<f32> {
             tone += phase.sin() * gain;
         }
         let hissing = hiss.iter_mut().fold(noise, |x, filter| filter.run(x));
-        // Hits at once, then dies away slowly: faster at first.
-        let fade = (t / 0.02).min(1.0) * (0.55 * (-t * 1.4).exp() + 0.45 * (-t * 0.45).exp());
+        // Hits at once, then dies away slowly: faster at first, and at
+        // the end smoothly out to silence rather than stopping.
+        let ending = smoothstep(0.0, LAST, LENGTH - t);
+        let fade = (t / 0.02).min(1.0) * (0.55 * (-t * 1.4).exp() + 0.45 * (-t * 0.45).exp()) * ending;
         (tone * 0.5 + hissing * 3.0 * (-t * 0.8).exp()) * fade
     });
     finish(&mut sound, 0.75);

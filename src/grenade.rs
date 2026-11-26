@@ -31,7 +31,7 @@ const FLASH_TIME: f32 = 0.3;
 const FLASH_SIZE: f32 = 1.6;
 const FLASH_LIGHT: f32 = 25_000_000.0;
 /// Seconds a smoke cloud takes to billow out, and to thin away at the end.
-const SMOKE_GROW: f32 = 1.2;
+pub const SMOKE_GROW: f32 = 1.2;
 const SMOKE_FADE: f32 = 2.5;
 /// How opaque each puff of smoke is. Two layers are as good as solid.
 const SMOKE_ALPHA: f32 = 0.93;
