@@ -497,6 +497,8 @@ const DEATH_CAM_BACK: f32 = 1.2;
 /// ...then drifts up and away, a little faster as it goes (m/s, m/s²).
 const DEATH_CAM_LIFT_SPEED: (f32, f32) = (0.7, 0.06);
 const DEATH_CAM_BACK_SPEED: (f32, f32) = (0.45, 0.04);
+/// ...and slowly circles round it (rad/s: once round in about a minute).
+const DEATH_CAM_ORBIT: f32 = 0.1;
 /// It keeps this far off walls and ceilings in its way.
 const DEATH_CAM_MARGIN: f32 = 0.3;
 
@@ -657,13 +659,14 @@ fn spectate(
 
 /// Where the camera hangs over our body `dead_for` seconds after we died,
 /// and the way it looks (yaw, pitch): down at the body from out past our
-/// feet, the way we faced, higher and further off as time goes on. It stops
-/// short of anything in its way.
+/// feet, the way we faced, higher and further off and slowly circling round
+/// as time goes on. It stops short of anything in its way.
 fn death_cam(map: &GameMap, body: Vec3, facing: f32, dead_for: f32) -> (Vec3, f32, f32) {
     let t = dead_for.max(0.0);
     let lift = DEATH_CAM_LIFT + DEATH_CAM_LIFT_SPEED.0 * t + DEATH_CAM_LIFT_SPEED.1 * t * t;
     let back = DEATH_CAM_BACK + DEATH_CAM_BACK_SPEED.0 * t + DEATH_CAM_BACK_SPEED.1 * t * t;
-    let ahead = Vec3::new(-facing.sin(), 0.0, -facing.cos());
+    let around = facing + DEATH_CAM_ORBIT * t;
+    let ahead = Vec3::new(-around.sin(), 0.0, -around.cos());
     let offset = ahead * back + Vec3::Y * lift;
     let (dir, far) = (offset.normalize(), offset.length());
     let reach = match map.0.raycast(body, dir, far + DEATH_CAM_MARGIN) {
