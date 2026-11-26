@@ -1231,7 +1231,9 @@ impl Server {
     fn damage(&mut self, victim_id: PlayerId, attacker_id: PlayerId, amount: i32, weapon_id: WeaponId) {
         let mode = self.settings.mode;
         let attacker_team = self.players.get(&attacker_id).map(|attacker| attacker.team);
-        let Some(victim) = self.players.get_mut(&victim_id) else {
+        // The dead take no more hurt: the rest of a shotgun's pellets, or a
+        // grenade going off over a body, must not kill them again.
+        let Some(victim) = self.players.get_mut(&victim_id).filter(|victim| victim.alive) else {
             return;
         };
         let victim_team = victim.team & 1;
@@ -2641,6 +2643,7 @@ mod tests {
         assert_eq!(server.team_scores, [CONQUEST_TICKETS - 3, CONQUEST_TICKETS]);
         // Out of tickets: the match is over.
         server.team_scores[0] = 1;
+        server.spawn_player(1000);
         server.damage(1000, 1001, 500, 0);
         assert!(server.phase == Phase::Lobby);
     }
@@ -2830,6 +2833,40 @@ mod tests {
                 assert!(bot_gun_band(secondary).0 < 10.0, "sniper with {}", weapon(secondary).name);
             }
         }
+    }
+
+    /// A bot's shotgun blast that kills with its first pellets scores one
+    /// kill, not one for every pellet after.
+    #[test]
+    fn a_shotgun_blast_kills_once() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            bots: 1,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        server.join_counter += 1;
+        let human = server.new_player("Target".into(), None);
+        server.players.insert(1000, human);
+        server.start_match();
+        server.countdown = 0.0;
+        let bot = server.players.iter().find(|(_, p)| p.bot.is_some()).map(|(id, _)| *id).unwrap();
+        let target = server.players[&1000].pos;
+        let team = server.players[&bot].team;
+        // Nine pellets reaching them on the same tick.
+        server.bullets.extend((0..9).map(|_| BotBullet {
+            shooter: bot,
+            team,
+            weapon: weapons::SHOTGUN,
+            pos: target + Vec3::Z * 1.0,
+            vel: Vec3::NEG_Z * 130.0,
+            age: 0.0,
+        }));
+        server.players.get_mut(&1000).unwrap().health = 10;
+        server.players.get_mut(&1000).unwrap().armor = 0;
+        server.update_bullets(1.0 / 60.0);
+        assert_eq!(server.players[&1000].deaths, 1);
+        assert_eq!(server.players[&bot].kills, 1);
     }
 
     /// A bot draws its other gun when it suits the fight better, or when
