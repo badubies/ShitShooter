@@ -93,12 +93,11 @@ const BOT_HEARING: f32 = 6.0;
 /// They see as far as there is a clear line, but fights are reckoned to go
 /// no further than this when bots pick their guns.
 const LONG_RANGE: f32 = 70.0;
-/// Bots hear gunshots (not the knife) this far away and footsteps this
-/// far, through walls and all, and go and see what it was...
-const SHOT_HEARING: f32 = 100.0;
-const STEP_HEARING: f32 = 16.0;
-/// ...guessing where it came from: off by up to this many radians either
-/// side, and this much of the distance nearer or further.
+/// Bots hear gunshots (not the knife), grenades going off and footsteps
+/// (see `NoiseKind::reach`), through walls and all, and go and see what it
+/// was, guessing where it came from: off by up to the first of these many
+/// radians either side, and the second of the distance nearer or further.
+/// Loud bangs are easy to place; footsteps are not.
 const SHOT_GUESS: (f32, f32) = (0.09, 0.15);
 const STEP_GUESS: (f32, f32) = (0.52, 0.4);
 /// Seconds a noise can be heard for after it is made.
@@ -299,15 +298,47 @@ impl Bot {
     }
 }
 
-/// A gunshot or a footstep, for bots to hear.
+/// Something for bots to hear.
 struct Noise {
     /// Counts up, so a bot can tell which it has listened to already.
     id: u64,
+    /// Who made it: the shooter, the runner, or whoever threw the grenade.
     source: PlayerId,
     team: u8,
     pos: Vec3,
-    shot: bool,
+    kind: NoiseKind,
     age: f32,
+}
+
+/// From quietest to loudest: a bot hearing several goes for the loudest.
+#[derive(Clone, Copy, PartialEq, PartialOrd, Debug)]
+enum NoiseKind {
+    Step,
+    /// A smoke grenade popping.
+    Pop,
+    Shot,
+    /// A frag or a flashbang going off.
+    Bang,
+}
+
+impl NoiseKind {
+    /// How far away it can be heard (metres).
+    fn reach(self) -> f32 {
+        match self {
+            NoiseKind::Step => 16.0,
+            NoiseKind::Pop => 40.0,
+            NoiseKind::Shot => 100.0,
+            NoiseKind::Bang => 150.0,
+        }
+    }
+
+    /// How far off a guess of where it came from may be (see `SHOT_GUESS`).
+    fn guess(self) -> (f32, f32) {
+        match self {
+            NoiseKind::Step => STEP_GUESS,
+            _ => SHOT_GUESS,
+        }
+    }
 }
 
 /// A bullet fired by a bot. People's bullets are flown by their own clients;
@@ -1082,7 +1113,7 @@ impl Server {
             shooter.stab_ready = true;
         } else {
             shooter.bullets_out = (shooter.bullets_out + dirs.len() as u32).min(MAX_BULLETS_OUT);
-            self.make_noise(shooter_id, origin_v, true);
+            self.make_noise(shooter_id, origin_v, NoiseKind::Shot);
         }
         self.renet.broadcast_message_except(
             shooter_id,
@@ -1307,6 +1338,8 @@ impl Server {
             kind: grenade.kind,
             pos: grenade.pos.to_array(),
         });
+        let noise = if grenade.kind == SMOKE { NoiseKind::Pop } else { NoiseKind::Bang };
+        self.make_noise(grenade.owner, grenade.pos, noise);
         match grenade.kind {
             FLASH => self.flash(grenade.pos),
             SMOKE => self.smokes.push(Smoke {
@@ -1779,7 +1812,7 @@ impl Server {
 
         // Everyone sees and hears a bot's shot like anybody else's.
         for (shooter, team, weapon_id, origin, dirs) in shots {
-            self.make_noise(shooter, origin, true);
+            self.make_noise(shooter, origin, NoiseKind::Shot);
             let speed = weapon(weapon_id).speed;
             self.bullets.extend(dirs.iter().map(|dir| BotBullet {
                 shooter,
@@ -1798,9 +1831,8 @@ impl Server {
         }
     }
 
-    /// Something bots may hear, made by `source` at `pos`: a gunshot, or a
-    /// footstep.
-    fn make_noise(&mut self, source: PlayerId, pos: Vec3, shot: bool) {
+    /// Something bots may hear, made by `source` at `pos`.
+    fn make_noise(&mut self, source: PlayerId, pos: Vec3, kind: NoiseKind) {
         let Some(team) = self.players.get(&source).map(|player| player.team) else {
             return;
         };
@@ -1809,7 +1841,7 @@ impl Server {
             source,
             team,
             pos,
-            shot,
+            kind,
             age: 0.0,
         });
         self.next_noise_id += 1;
@@ -1844,7 +1876,7 @@ impl Server {
             }
         }
         for (id, feet) in steps {
-            self.make_noise(id, feet, false);
+            self.make_noise(id, feet, NoiseKind::Step);
         }
     }
 
@@ -2235,10 +2267,10 @@ fn bot_pick_enemy(
     Some(target.center)
 }
 
-/// Hears the enemies' gunshots and footsteps made since it last listened,
-/// and while not fighting anybody, guesses where the one that matters most
-/// (a shot over a step, then the nearest) came from, to go and see. In
-/// conquest only noises close by draw it off its flag.
+/// Hears the enemies' gunshots, grenades and footsteps made since it last
+/// listened, and while not fighting anybody, guesses where the one that
+/// matters most (the loudest kind, then the nearest) came from, to go and
+/// see. In conquest only noises close by draw it off its flag.
 fn bot_listen(id: PlayerId, player: &Player, bot: &mut Bot, noises: &[Noise], team_mode: bool, conquest: bool, rng: &mut u64) {
     let mut loudest: Option<(&Noise, f32)> = None;
     let heard_up_to = bot.last_noise;
@@ -2248,11 +2280,10 @@ fn bot_listen(id: PlayerId, player: &Player, bot: &mut Bot, noises: &[Noise], te
             continue;
         }
         let distance = noise.pos.distance(player.pos);
-        let reach = if noise.shot { SHOT_HEARING } else { STEP_HEARING };
-        if distance > reach || (conquest && distance > BOT_INVESTIGATE_NEAR) {
+        if distance > noise.kind.reach() || (conquest && distance > BOT_INVESTIGATE_NEAR) {
             continue;
         }
-        let louder = loudest.is_none_or(|(best, best_distance)| (noise.shot, -distance) > (best.shot, -best_distance));
+        let louder = loudest.is_none_or(|(best, best_distance)| (noise.kind, -distance) > (best.kind, -best_distance));
         if louder {
             loudest = Some((noise, distance));
         }
@@ -2263,7 +2294,7 @@ fn bot_listen(id: PlayerId, player: &Player, bot: &mut Bot, noises: &[Noise], te
     if bot.enemy.is_some() {
         return;
     }
-    let (angle, depth) = if noise.shot { SHOT_GUESS } else { STEP_GUESS };
+    let (angle, depth) = noise.kind.guess();
     let turn = Quat::from_rotation_y(angle * (random_unit(rng) * 2.0 - 1.0));
     let scale = 1.0 + depth * (random_unit(rng) * 2.0 - 1.0);
     let guess = player.pos + turn * (noise.pos - player.pos).with_y(0.0) * scale;
@@ -3196,7 +3227,7 @@ mod tests {
             for _ in 0..300 {
                 server.players.get_mut(&1000).unwrap().pos.x += speed * dt;
                 server.update_footsteps(dt);
-                steps += server.noises.drain(..).filter(|noise| !noise.shot).count();
+                steps += server.noises.drain(..).filter(|noise| noise.kind == NoiseKind::Step).count();
             }
             steps
         };
@@ -3220,12 +3251,12 @@ mod tests {
         let mut player = server.new_player("Bot".into(), None);
         player.pos = Vec3::ZERO;
         player.team = 0;
-        let noise = |id: u64, team: u8, pos: Vec3, shot: bool| Noise {
+        let noise = |id: u64, team: u8, pos: Vec3, kind: NoiseKind| Noise {
             id,
             source: 2,
             team,
             pos,
-            shot,
+            kind,
             age: 0.0,
         };
         let guessed = |noises: &[Noise], team_mode: bool, rng: &mut u64| {
@@ -3236,20 +3267,20 @@ mod tests {
         let mut rng = 7;
         let step = Vec3::new(0.0, 0.0, -10.0);
         for _ in 0..200 {
-            let guess = guessed(&[noise(1, 1, step, false)], true, &mut rng).expect("not heard");
+            let guess = guessed(&[noise(1, 1, step, NoiseKind::Step)], true, &mut rng).expect("not heard");
             let off = guess.with_y(0.0).angle_between(step);
             let distance = guess.with_y(0.0).length();
             assert!(off <= STEP_GUESS.0 + 1e-3, "{off} rad off");
             assert!((6.0 - 1e-3..=14.0 + 1e-3).contains(&distance), "{distance} m");
         }
         let shot = Vec3::new(80.0, 0.0, 0.0);
-        let guess = guessed(&[noise(1, 1, shot, true)], true, &mut rng).expect("shot not heard");
+        let guess = guessed(&[noise(1, 1, shot, NoiseKind::Shot)], true, &mut rng).expect("shot not heard");
         assert!(guess.with_y(0.0).angle_between(shot) <= SHOT_GUESS.0 + 1e-3);
-        assert_eq!(guessed(&[noise(1, 0, step, false)], true, &mut rng), None, "a teammate");
-        assert!(guessed(&[noise(1, 0, step, false)], false, &mut rng).is_some(), "everyone's an enemy");
-        assert_eq!(guessed(&[noise(1, 1, step * 2.0, false)], true, &mut rng), None, "steps 20 m off");
+        assert_eq!(guessed(&[noise(1, 0, step, NoiseKind::Step)], true, &mut rng), None, "a teammate");
+        assert!(guessed(&[noise(1, 0, step, NoiseKind::Step)], false, &mut rng).is_some(), "everyone's an enemy");
+        assert_eq!(guessed(&[noise(1, 1, step * 2.0, NoiseKind::Step)], true, &mut rng), None, "steps 20 m off");
         // The shot wins over a step, wherever they are.
-        let both = [noise(1, 1, step, false), noise(2, 1, shot, true)];
+        let both = [noise(1, 1, step, NoiseKind::Step), noise(2, 1, shot, NoiseKind::Shot)];
         let guess = guessed(&both, true, &mut rng).unwrap();
         assert!(guess.with_y(0.0).angle_between(shot) < 0.2);
         // Busy fighting.
@@ -3258,6 +3289,53 @@ mod tests {
         bot_listen(1, &player, &mut bot, &both, true, false, &mut rng);
         assert_eq!(bot.investigate, None);
         assert_eq!(bot.last_noise, 2, "heard them anyway");
+    }
+
+    /// A grenade going off is a noise where it went off, made by whoever
+    /// threw it: a frag or a flash a bang heard from far off, a smoke a
+    /// quieter pop.
+    #[test]
+    fn grenades_going_off_are_heard() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        server.start_match();
+        let mut thrower = server.new_player("Thrower".into(), None);
+        thrower.team = 1;
+        server.players.insert(1000, thrower);
+        let at = Vec3::new(0.0, 300.0, 0.0);
+        for (k, kind) in [FRAG, FLASH, SMOKE].into_iter().enumerate() {
+            server.explode(Grenade {
+                id: k as u32,
+                kind,
+                owner: 1000,
+                pos: at,
+                vel: Vec3::ZERO,
+                fuse: 0.0,
+            });
+        }
+        let heard: Vec<(NoiseKind, PlayerId, u8, Vec3)> = server.noises.iter().map(|n| (n.kind, n.source, n.team, n.pos)).collect();
+        assert_eq!(
+            heard,
+            [
+                (NoiseKind::Bang, 1000, 1, at),
+                (NoiseKind::Bang, 1000, 1, at),
+                (NoiseKind::Pop, 1000, 1, at)
+            ]
+        );
+        // A bot 120 m off hears the bangs but not the pop.
+        let mut listener = server.new_player("Bot".into(), None);
+        listener.team = 0;
+        let mut rng = 4;
+        let mut bot = Bot::new();
+        listener.pos = at + Vec3::X * 120.0;
+        bot_listen(1, &listener, &mut bot, &server.noises[2..], true, false, &mut rng);
+        assert_eq!(bot.investigate, None, "a smoke from 120 m");
+        let mut bot = Bot::new();
+        bot_listen(1, &listener, &mut bot, &server.noises[..1], true, false, &mut rng);
+        assert!(bot.investigate.is_some(), "a frag from 120 m");
     }
 
     /// Having heard something behind it, a bot turns that way.
