@@ -568,25 +568,32 @@ fn selftest_play(
     }
     // Not while the scoreboard is held (below), which hides the death screen.
     let scores_held = (5.0..6.6).contains(&test.clock);
-    if player.on_death_screen()
-        && player.dead_for > 2.0
-        && controls.captured
-        && !settings_menu.open
-        && !scores_held
-        && !captured.dead
-    {
+    // Nor while the game is paused or the settings are open (below), over
+    // the death screen too.
+    let covered = scores_held || !controls.captured || settings_menu.open;
+    if player.on_death_screen() && player.dead_for > 2.0 && !covered && !captured.dead {
         captured.dead = true;
+        captured.dead_at = player.dead_for;
         test.capture("dead.png");
         println!(
-            "[selftest] dead, watching {:?} through their eyes {}, camera at {:?}",
+            "[selftest] dead at clock {:.2}, watching {:?} through their eyes {}, camera at {:?}",
+            test.clock,
             spectate.watching.map(|id| session.name_of(id)),
             player.pov.is_some(),
             camera.single().ok().map(|camera| camera.translation),
         );
     }
+    // The rest of the death screen is timed from that picture, which can be
+    // late: from the death itself, the scroll and the look at what it did
+    // could fall in one frame. Its clock stops while the screen is covered,
+    // where L would do nothing and Escape would pause.
+    if captured.dead && covered {
+        captured.dead_at += time.delta_secs();
+    }
+    let since = player.dead_for - captured.dead_at;
     // A notch of the wheel moves the camera off our body to a teammate.
     if captured.dead && player.on_death_screen() && (spectate.can_watch || captured.watched.is_some()) {
-        if player.dead_for > 2.2 && captured.watched.is_none() {
+        if since > 0.2 && captured.watched.is_none() {
             captured.watched = Some(spectate.watching);
             wheel.write(bevy::input::mouse::MouseWheel {
                 unit: bevy::input::mouse::MouseScrollUnit::Line,
@@ -596,13 +603,15 @@ fn selftest_play(
                 phase: bevy::input::touch::TouchPhase::Moved,
             });
         }
-        if player.dead_for > 3.2 && !captured.scrolled {
+        if since > 1.2 && !captured.scrolled {
             captured.scrolled = true;
             test.capture("dead_scrolled.png");
             println!(
-                "[selftest] after a scroll, watching {:?} (was {:?})",
+                "[selftest] after a scroll, watching {:?} (was {:?}){}",
                 spectate.watching.map(|id| session.name_of(id)),
-                captured.watched.flatten().map(|id| session.name_of(id))
+                captured.watched.flatten().map(|id| session.name_of(id)),
+                // Back over our body: the one we watched died since.
+                if spectate.alone { ", no teammate left alive" } else { "" }
             );
             println!(
                 "[selftest] then through their eyes {} with {} aim {:.2}",
@@ -612,29 +621,39 @@ fn selftest_play(
             );
         }
     }
+    // With no teammate alive there is nobody to scroll to: on to the loadout.
+    if captured.dead
+        && player.on_death_screen()
+        && captured.watched.is_none()
+        && spectate.alone
+        && since > 1.2
+        && !captured.scrolled
+    {
+        captured.scrolled = true;
+        println!("[selftest] no teammate alive to scroll to");
+    }
     // L opens the loadout over the death screen, and Escape shuts it.
     if captured.scrolled && player.on_death_screen() {
-        let dead_for = player.dead_for;
         match captured.loadout {
-            0 if dead_for > 3.4 => keys.press(KeyCode::KeyL),
-            1 if dead_for > 3.5 => keys.release(KeyCode::KeyL),
-            2 if dead_for > 3.9 => {
+            0 if since > 1.4 => keys.press(KeyCode::KeyL),
+            1 if since > 1.5 => keys.release(KeyCode::KeyL),
+            2 if since > 1.9 => {
                 test.capture("dead_loadout.png");
                 println!("[selftest] after L, loadout open {}", death_loadout.0);
                 keys.press(KeyCode::Escape);
             }
-            3 if dead_for > 4.0 => keys.release(KeyCode::Escape),
-            4 if dead_for > 4.3 => {
+            3 if since > 2.0 => keys.release(KeyCode::Escape),
+            4 if since > 2.3 => {
                 println!("[selftest] after Escape, loadout open {} paused {}", death_loadout.0, !controls.captured);
             }
             _ => {}
         }
         let step = match captured.loadout {
-            0 => dead_for > 3.4,
-            1 => dead_for > 3.5,
-            2 => dead_for > 3.9,
-            3 => dead_for > 4.0,
-            4 => dead_for > 4.3,
+            0 => since > 1.4,
+            1 => since > 1.5,
+            2 => since > 1.9,
+            3 => since > 2.0,
+            4 => since > 2.3,
             _ => false,
         };
         captured.loadout += step as u8;
@@ -882,7 +901,12 @@ fn selftest_play(
     // In the other team modes, the camera going to a teammate and on to the
     // next with the wheel (above), if no bot has killed us yet.
     let teams = session.team_mode() && !conquest;
-    if test.reached(15, if conquest { 17.3 } else { 11.1 }) && (conquest || teams && captured.loadout < 5) {
+    // Not when a bot has killed us and we are still dead: that would start
+    // the death over, out of step with the server bringing us back.
+    if test.reached(15, if conquest { 17.3 } else { 11.1 })
+        && (conquest || teams && captured.loadout < 5)
+        && !player.on_death_screen()
+    {
         player.alive = false;
         player.killed_by = Some("[bot] Clanker".to_string());
         player.dead_for = 0.0;
@@ -927,6 +951,8 @@ struct Captured {
     ally: bool,
     hurt: bool,
     dead: bool,
+    /// How long we had been dead when the death screen's picture was taken.
+    dead_at: f32,
     /// Who the camera was on when the wheel turned while we were dead (none:
     /// our own body), once it has.
     watched: Option<Option<crate::protocol::PlayerId>>,
