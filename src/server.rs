@@ -131,9 +131,15 @@ struct Bot {
     /// Where it is running to.
     goal: Vec3,
     retarget_in: f32,
-    /// The gun it carries this life, with its magazine.
+    /// The gun in its hands, with its magazine; the other one it carries
+    /// this life, with its own; and which of the two it picked to lead with.
     gun: WeaponId,
     ammo: u32,
+    spare: WeaponId,
+    spare_ammo: u32,
+    primary: WeaponId,
+    /// Seconds until it may change guns again.
+    switch_in: f32,
     /// Seconds of reloading left; 0 when not reloading.
     reload: f32,
     /// Seconds until it may fire again.
@@ -174,6 +180,10 @@ impl Bot {
             retarget_in: 0.0,
             gun: 0,
             ammo: 0,
+            spare: weapons::PISTOL,
+            spare_ammo: 0,
+            primary: 0,
+            switch_in: 0.0,
             reload: 0.0,
             cooldown: 0.0,
             burst: 0,
@@ -327,6 +337,9 @@ pub struct Server {
     bleed: [f32; 2],
     /// Where bots can walk, on this map.
     nav: NavGrid,
+    /// How far apart fights on this map in this mode tend to be (metres):
+    /// what bots pick their guns for.
+    bot_range: f32,
     /// Where to report how the lobby is doing, when run by a lobby server.
     status: Option<Arc<Mutex<LobbyStatus>>>,
 }
@@ -378,6 +391,7 @@ impl Server {
             renet: RenetServer::new(ConnectionConfig::default()),
             transport,
             nav: NavGrid::new(&map),
+            bot_range: typical_range(&map, settings.mode),
             map,
             flags: Vec::new(),
             bleed: [0.0; 2],
@@ -1327,6 +1341,7 @@ impl Server {
         self.armor_respawn = vec![0.0; self.map.armor_spots.len()];
         self.flags = Vec::new();
         self.bleed = [0.0; 2];
+        self.bot_range = typical_range(&self.map, self.settings.mode);
         if self.settings.mode == MODE_CONQUEST {
             self.team_scores = [CONQUEST_TICKETS; 2];
             self.flags = vec![FlagState::default(); self.map.flags.len()];
@@ -1448,7 +1463,16 @@ impl Server {
         let pick = (self.rng >> 17) as usize % ranked.len().min(3);
         let (_, pos, yaw) = ranked[pick];
         self.random();
-        let bot_gun = (self.random() % GUN_COUNT as u64) as WeaponId;
+        // A bot picks guns for this map, and not all the same as its team's.
+        let teammates: Vec<WeaponId> = self
+            .players
+            .iter()
+            .filter(|(other, p)| **other != id && (!team_mode || p.team == my_team))
+            .filter_map(|(_, p)| p.bot.as_ref().map(|bot| bot.primary))
+            .collect();
+        let mut rng = self.rng;
+        let (primary, secondary) = bot_loadout(self.bot_range, &teammates, &mut rng);
+        self.rng = rng;
 
         let Some(player) = self.players.get_mut(&id) else {
             return;
@@ -1471,12 +1495,15 @@ impl Server {
         let spawn_seq = player.spawn_seq;
         let carried = player.grenade;
         if let Some(bot) = &mut player.bot {
-            // A fresh bot with a random gun, ready once it is drawn.
+            // A fresh bot with its guns loaded, ready once the first is drawn.
             *bot = Bot::new();
-            bot.gun = bot_gun;
-            bot.ammo = weapon(bot_gun).magazine;
+            bot.gun = primary;
+            bot.ammo = weapon(primary).magazine;
+            bot.spare = secondary;
+            bot.spare_ammo = weapon(secondary).magazine;
+            bot.primary = primary;
             bot.cooldown = DRAW_TIME;
-            player.weapon = bot_gun;
+            player.weapon = primary;
         }
         self.broadcast(&ServerMsg::Spawn {
             id,
@@ -1832,9 +1859,111 @@ fn aim_point(center: Vec3) -> Vec3 {
     center + Vec3::Y * 0.25
 }
 
+/// The distances (metres) at which a bot reckons a weapon does best.
+fn bot_gun_band(gun: WeaponId) -> (f32, f32) {
+    match gun {
+        weapons::RIFLE => (5.0, 40.0),
+        weapons::SMG => (0.0, 15.0),
+        weapons::SHOTGUN => (0.0, 7.0),
+        weapons::DMR => (15.0, 60.0),
+        weapons::SNIPER => (25.0, BOT_SIGHT_RANGE),
+        weapons::PISTOL => (0.0, 20.0),
+        _ => (0.0, weapons::KNIFE_RANGE),
+    }
+}
+
+/// How well a weapon suits a fight `distance` away: 1 within its band,
+/// less the further outside it, never quite nothing.
+fn bot_gun_fit(gun: WeaponId, distance: f32) -> f32 {
+    let (near, far) = bot_gun_band(gun);
+    let off = (near - distance).max(0.0) + (distance - far).max(0.0);
+    (1.0 - off / 20.0).max(0.05)
+}
+
+/// The two guns a bot carries for a life, when fights tend to be `range`
+/// away: mostly one that suits that range, less often one `teammates`
+/// already lead with; and a second for where the first is weak.
+fn bot_loadout(range: f32, teammates: &[WeaponId], rng: &mut u64) -> (WeaponId, WeaponId) {
+    let pick = |rng: &mut u64, weight: &dyn Fn(WeaponId) -> f32| {
+        let weights: Vec<f32> = (0..GUN_COUNT).map(weight).collect();
+        let mut roll = random_unit(rng) * weights.iter().sum::<f32>();
+        for (gun, weight) in weights.iter().enumerate() {
+            roll -= weight;
+            if roll <= 0.0 {
+                return gun as WeaponId;
+            }
+        }
+        GUN_COUNT - 1
+    };
+    let primary = pick(rng, &|gun| {
+        let taken = teammates.iter().filter(|other| **other == gun).count() as f32;
+        bot_gun_fit(gun, range).powi(2) / (1.0 + taken)
+    });
+    // A long gun wants something for up close, and a short one something
+    // that reaches.
+    let long = |gun: WeaponId| bot_gun_band(gun).0 >= 10.0;
+    let secondary = if long(primary) {
+        pick(rng, &|gun| if long(gun) { 0.0 } else { bot_gun_fit(gun, 6.0).powi(2) })
+    } else {
+        pick(rng, &|gun| if gun == primary { 0.0 } else { bot_gun_fit(gun, range.max(30.0)).powi(2) })
+    };
+    (primary, secondary)
+}
+
+/// Whether a bot would rather have its other gun in hand: in a fight
+/// `distance` away, if it suits the distance clearly better, counting an
+/// empty magazine against a gun (drawing the other beats reloading); with
+/// nobody about, to reload the other, or to go back to its first.
+fn bot_wants_spare(bot: &Bot, distance: Option<f32>) -> bool {
+    match distance {
+        Some(distance) => {
+            let score = |gun: WeaponId, ammo: u32| bot_gun_fit(gun, distance) * if ammo == 0 { 0.35 } else { 1.0 };
+            score(bot.spare, bot.spare_ammo) > score(bot.gun, bot.ammo) + 0.2
+        }
+        None => {
+            let loaded = bot.reload <= 0.0 && bot.ammo >= weapon(bot.gun).magazine;
+            loaded && (bot.spare_ammo < weapon(bot.spare).magazine || bot.gun != bot.primary)
+        }
+    }
+}
+
+/// How far apart fights on `map` tend to be in `mode`: how far one can
+/// see from where people come in (around the hill or the flags, in those
+/// modes), the longer half of the sight lines counting.
+fn typical_range(map: &Map, mode: u8) -> f32 {
+    let lift = Vec3::Y * (map::STAND_EYE - map::PLAYER_HALF.y);
+    let centers: Vec<Vec3> = match mode {
+        MODE_CONQUEST if !map.flags.is_empty() => map.flags.iter().flat_map(|flag| flag.spawns.iter().map(|s| s.pos)).collect(),
+        MODE_HILL => (0..8)
+            .map(|k| {
+                let around = k as f32 * std::f32::consts::TAU / 8.0;
+                map.hill + Vec3::new(around.cos() * 4.0, map::PLAYER_HALF.y, around.sin() * 4.0)
+            })
+            .filter(|center| map.is_free(*center, map::PLAYER_HALF))
+            .collect(),
+        _ => map.spawns.iter().map(|s| s.pos).collect(),
+    };
+    let mut sights: Vec<f32> = centers
+        .iter()
+        .flat_map(|center| {
+            (0..16).map(move |k| {
+                let dir = map::look_dir(k as f32 * std::f32::consts::TAU / 16.0, 0.0);
+                map.raycast(*center + lift, dir, BOT_SIGHT_RANGE).unwrap_or(BOT_SIGHT_RANGE)
+            })
+        })
+        .collect();
+    if sights.is_empty() {
+        return 25.0;
+    }
+    sights.sort_by(f32::total_cmp);
+    let longer = &sights[sights.len() / 2..];
+    longer.iter().sum::<f32>() / longer.len() as f32
+}
+
 /// Decides whom the bot fights, if anybody: the enemy it is already fighting
 /// while it can still see them, otherwise the nearest one it notices.
 /// Returns where that enemy is.
+#[allow(clippy::too_many_arguments)]
 fn bot_pick_enemy(
     map: &Map,
     smokes: &[Smoke],
@@ -1968,7 +2097,17 @@ fn bot_move(
             let towards = (enemy - player.pos).with_y(0.0).normalize_or_zero();
             let side = Vec3::new(-towards.z, 0.0, towards.x);
             let sign = if next_random(rng).is_multiple_of(2) { 1.0 } else { -1.0 };
-            bot.goal = player.pos + side * sign * (3.0 + random_unit(rng) * 4.0);
+            // Closing in, or backing off, to where its gun does best.
+            let (near, far) = bot_gun_band(bot.gun);
+            let distance = (enemy - player.pos).with_y(0.0).length();
+            let closer = if distance > far {
+                1.0
+            } else if distance < near {
+                -1.0
+            } else {
+                0.0
+            };
+            bot.goal = player.pos + side * sign * (3.0 + random_unit(rng) * 4.0) + towards * closer * (2.0 + random_unit(rng) * 3.0);
             bot.retarget_in = 0.6 + random_unit(rng);
         } else {
             let [min, max] = map.bounds;
@@ -2065,8 +2204,17 @@ fn bot_fight(
     rng: &mut u64,
     dt: f32,
 ) -> Option<BotShot> {
-    let stats = weapon(bot.gun);
     bot.cooldown = (bot.cooldown - dt).max(0.0);
+    bot.switch_in -= dt;
+    if bot.switch_in <= 0.0 && bot_wants_spare(bot, enemy.map(|enemy| enemy.distance(player.pos))) {
+        std::mem::swap(&mut bot.gun, &mut bot.spare);
+        std::mem::swap(&mut bot.ammo, &mut bot.spare_ammo);
+        bot.reload = 0.0;
+        bot.burst = 0;
+        bot.cooldown = DRAW_TIME;
+        bot.switch_in = if enemy.is_some() { 1.0 } else { 0.5 };
+    }
+    let stats = weapon(bot.gun);
     if bot.reload > 0.0 {
         bot.reload -= dt;
         if bot.reload <= 0.0 {
@@ -2145,9 +2293,11 @@ fn bot_fight(
         // Nobody clicks at exactly the fire rate.
         bot.cooldown += 0.1 + random_unit(rng) * 0.25;
     }
-    // Every bullet goes to a random point inside the spread cone, like people's.
+    // Every bullet goes to a random point inside the spread cone, like
+    // people's: the aimed one, as bots shoot aimed (their own aim is off
+    // enough without the hip's spread on top).
     let rotation = Quat::from_euler(EulerRot::YXZ, player.yaw, player.pitch, 0.0);
-    let cone = (stats.hip_spread + stats.aim_spread) / 2.0;
+    let cone = stats.aim_spread;
     let dirs = (0..stats.pellets)
         .map(|_| {
             let off_axis = cone * random_unit(rng).sqrt();
@@ -2646,6 +2796,69 @@ mod tests {
     fn bots_shoot_a_person_standing_in_front_of_them() {
         let (fired, hurt) = bot_in_front_of_a_person(false);
         assert!(fired && hurt, "the bot never hit the person in front of it");
+    }
+
+    /// Bots carry short guns where fights are close and long ones where they
+    /// are far, with a second gun for the other end.
+    #[test]
+    fn bots_pick_guns_for_the_map() {
+        for id in 0..map::MAP_NAMES.len() as u8 {
+            for mode in 0..MODE_NAMES.len() as u8 {
+                if map::plays(id, mode) {
+                    let range = typical_range(&Map::for_game(id, mode), mode);
+                    println!("{} / {}: {range:.1} m", map::MAP_NAMES[id as usize], MODE_NAMES[mode as usize]);
+                }
+            }
+        }
+        let share = |range: f32, guns: &[WeaponId]| {
+            let mut rng = 99;
+            let picks: Vec<(WeaponId, WeaponId)> = (0..2000).map(|_| bot_loadout(range, &[], &mut rng)).collect();
+            assert!(picks.iter().all(|(a, b)| a != b && *a < GUN_COUNT && *b < GUN_COUNT));
+            picks.iter().filter(|(primary, _)| guns.contains(primary)).count() as f32 / picks.len() as f32
+        };
+        let long = [weapons::DMR, weapons::SNIPER];
+        let short = [weapons::SMG, weapons::SHOTGUN, weapons::PISTOL];
+        assert!(share(10.0, &short) > 0.55, "close quarters: {}", share(10.0, &short));
+        assert!(share(10.0, &[weapons::SNIPER]) < 0.03);
+        assert!(share(55.0, &long) > 0.55, "open ground: {}", share(55.0, &long));
+        assert!(share(55.0, &[weapons::SHOTGUN]) < 0.02);
+        // A sniper's second gun is for up close.
+        let mut rng = 5;
+        for _ in 0..200 {
+            let (primary, secondary) = bot_loadout(65.0, &[], &mut rng);
+            if primary == weapons::SNIPER {
+                assert!(bot_gun_band(secondary).0 < 10.0, "sniper with {}", weapon(secondary).name);
+            }
+        }
+    }
+
+    /// A bot draws its other gun when it suits the fight better, or when
+    /// the one in hand is empty with an enemy close; and with nobody about,
+    /// loads both and goes back to the first.
+    #[test]
+    fn bots_change_guns_for_the_fight() {
+        let mut bot = Bot::new();
+        bot.gun = weapons::SNIPER;
+        bot.ammo = weapon(bot.gun).magazine;
+        bot.spare = weapons::PISTOL;
+        bot.spare_ammo = weapon(bot.spare).magazine;
+        bot.primary = weapons::SNIPER;
+        assert!(!bot_wants_spare(&bot, Some(50.0)), "pistol for a far fight");
+        assert!(bot_wants_spare(&bot, Some(4.0)), "sniper up close");
+        assert!(!bot_wants_spare(&bot, None), "both loaded, first in hand");
+        bot.gun = weapons::RIFLE;
+        bot.primary = weapons::RIFLE;
+        bot.spare = weapons::SMG;
+        assert!(!bot_wants_spare(&bot, Some(10.0)), "swapping between two that both do");
+        bot.ammo = 0;
+        assert!(bot_wants_spare(&bot, Some(10.0)), "reloading with an enemy close");
+        bot.ammo = weapon(bot.gun).magazine;
+        bot.spare_ammo = 3;
+        assert!(bot_wants_spare(&bot, None), "the other left half empty");
+        std::mem::swap(&mut bot.gun, &mut bot.spare);
+        std::mem::swap(&mut bot.ammo, &mut bot.spare_ammo);
+        bot.ammo = weapon(bot.gun).magazine;
+        assert!(bot_wants_spare(&bot, None), "back to the first");
     }
 
     /// Someone running across the bot's view 40 m away: it aims ahead of
