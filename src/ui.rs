@@ -136,6 +136,7 @@ impl Plugin for UiPlugin {
                     update_key_hints,
                     (
                         update_hud,
+                        show_stats,
                         update_hud_shapes,
                         update_overlays,
                         update_crosshair,
@@ -2099,6 +2100,16 @@ fn score_block(side: usize) -> impl Bundle {
     )
 }
 
+/// The frame rate and ping box.
+#[derive(Component)]
+struct StatsBox;
+
+fn show_stats(settings: Res<Settings>, mut boxes: Query<&mut Node, With<StatsBox>>) {
+    for mut node in &mut boxes {
+        set_shown(&mut node, settings.graphics.show_stats);
+    }
+}
+
 /// One line of the frame rate and ping box: a caption on the left, the value
 /// lined up on the right so it does not wobble as the digits change.
 fn stat_row(caption: &str, hud: Hud) -> impl Bundle {
@@ -2346,7 +2357,9 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ],
     ));
 
+    // Frame rate and ping, top right, unless hidden in the graphics settings.
     commands.spawn((
+        StatsBox,
         hud_anchor(Node {
             right: px(20),
             top: px(14),

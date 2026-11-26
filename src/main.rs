@@ -37,6 +37,8 @@ mod conquest;
 #[cfg(feature = "client")]
 mod devtools;
 #[cfg(feature = "client")]
+mod graphics;
+#[cfg(feature = "client")]
 mod grenade;
 #[cfg(feature = "client")]
 mod gun_model;
@@ -370,7 +372,7 @@ fn run_game(args: LaunchArgs) {
             gun_model::GunModelPlugin,
             loadout::LoadoutPlugin,
             // Before the UI, which starts from the saved settings.
-            settings::SettingsPlugin,
+            (settings::SettingsPlugin, graphics::GraphicsPlugin),
             (ui::UiPlugin, menu::MenuPlugin, weapon_panel::WeaponPanelPlugin),
             audio::AudioPlugin,
             devtools::DevToolsPlugin,

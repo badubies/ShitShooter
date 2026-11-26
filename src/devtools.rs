@@ -247,7 +247,8 @@ fn selftest_menu(
             test.capture(file);
         }
     }
-    // The settings' controls page (the match takes a picture of the other).
+    // The settings' controls and graphics pages (the match takes a picture
+    // of the general one).
     let end = 2.0 + pages.len() as f32 * 0.8;
     let step = 1 + 2 * pages.len() as u32;
     if test.reached(step, end) {
@@ -258,7 +259,14 @@ fn selftest_menu(
     if test.reached(step + 1, end + 0.6) {
         test.capture("settings_controls.png");
     }
-    if test.reached(step + 2, end + 1.0) {
+    // And the graphics page.
+    if test.reached(step + 2, end + 0.8) {
+        settings_menu.tab = SettingsTab::Graphics;
+    }
+    if test.reached(step + 3, end + 1.4) {
+        test.capture("settings_graphics.png");
+    }
+    if test.reached(step + 4, end + 1.8) {
         settings_menu.open = false;
         settings_menu.tab = SettingsTab::General;
         exit.write(AppExit::Success);

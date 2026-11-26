@@ -1,5 +1,6 @@
-//! Player settings: mouse, field of view, volume, window and key bindings, plus the
-//! name and address last typed into the menu. They are saved to a small text
+//! Player settings: mouse, field of view, volume, window, graphics (see
+//! `graphics.rs`) and key bindings, plus the name and address last typed into
+//! the menu. They are saved to a small text
 //! file so they survive restarts, and edited in the settings panel that opens
 //! from the main menu, the lobby and the pause menu.
 
@@ -24,6 +25,7 @@ use bevy::{
 
 use crate::{
     AppState, LaunchArgs,
+    graphics::{AntiAlias, FRAME_LIMITS, Graphics, Preset, Shadows, TEXTURE_FILTERING, texture_filtering_in_use},
     player::Controls,
     protocol::{FRAG, GRENADE_KINDS, GRENADES, GrenadeKind},
     weapons::{
@@ -55,6 +57,8 @@ impl Plugin for SettingsPlugin {
         // Set before the window is opened, so the game does not start in a
         // window and then jump to full screen.
         let window_mode = settings.window_mode();
+        // Textures are made with it as they are needed, and kept.
+        crate::graphics::set_texture_filtering_in_use(settings.graphics.texture_filtering);
         let world = app.world_mut();
         for mut window in world.query::<&mut Window>().iter_mut(world) {
             window.mode = window_mode;
@@ -297,6 +301,7 @@ pub struct Settings {
     pub sights: [SightId; GUN_COUNT as usize],
     /// The kind of grenade carried.
     pub grenade: GrenadeKind,
+    pub graphics: Graphics,
     /// Each action's main binding and its optional second one. The main one is
     /// only empty when the action has nothing bound at all.
     binds: [[Option<Bind>; BIND_SLOTS]; Action::ALL.len()],
@@ -322,6 +327,7 @@ impl Default for Settings {
             secondary: PISTOL,
             sights: default_sights(),
             grenade: FRAG,
+            graphics: Graphics::default(),
             binds: Action::ALL.map(|action| [Some(action.info().2), action.second_default()]),
             persist: false,
         }
@@ -336,10 +342,20 @@ enum Dial {
     Fov,
     Volume,
     UiScale,
+    Brightness,
 }
 
 impl Dial {
-    const ALL: [Dial; 5] = [Dial::Sensitivity, Dial::AdsSensitivity, Dial::Fov, Dial::Volume, Dial::UiScale];
+    const ALL: [Dial; 6] = [
+        Dial::Sensitivity,
+        Dial::AdsSensitivity,
+        Dial::Fov,
+        Dial::Volume,
+        Dial::UiScale,
+        Dial::Brightness,
+    ];
+    /// The ones on the General page.
+    const GENERAL: [Dial; 5] = [Dial::Sensitivity, Dial::AdsSensitivity, Dial::Fov, Dial::Volume, Dial::UiScale];
 
     /// (label, step, minimum, maximum)
     fn info(self) -> (&'static str, f32, f32, f32) {
@@ -349,6 +365,7 @@ impl Dial {
             Dial::Fov => ("Field of view", 5.0, 50.0, 100.0),
             Dial::Volume => ("Volume", 0.05, 0.0, 1.0),
             Dial::UiScale => ("HUD size", 0.05, 0.75, 1.5),
+            Dial::Brightness => ("Brightness", 0.05, 0.5, 2.0),
         }
     }
 }
@@ -409,6 +426,7 @@ impl Settings {
             Dial::Fov => &mut self.fov,
             Dial::Volume => &mut self.volume,
             Dial::UiScale => &mut self.ui_scale,
+            Dial::Brightness => &mut self.graphics.brightness,
         }
     }
 
@@ -419,6 +437,7 @@ impl Settings {
             Dial::Fov => format!("{:.0}", self.fov),
             Dial::Volume => format!("{:.0}%", self.volume * 100.0),
             Dial::UiScale => format!("{:.0}%", self.ui_scale * 100.0),
+            Dial::Brightness => format!("{:.0}%", self.graphics.brightness * 100.0),
         }
     }
 
@@ -440,7 +459,7 @@ impl Settings {
     }
 
     /// Mouse, sound and keys go back to their defaults; who you are, what you
-    /// carry and the window stay as they are.
+    /// carry, the window and the graphics stay as they are.
     fn reset_controls(&mut self) {
         let defaults = Settings::default();
         *self = Settings {
@@ -454,6 +473,7 @@ impl Settings {
             secondary: self.secondary,
             sights: self.sights,
             grenade: self.grenade,
+            graphics: self.graphics,
             persist: self.persist,
             ..defaults
         };
@@ -584,6 +604,7 @@ impl Settings {
                         settings.sights[gun as usize] = picked as SightId;
                     }
                 }
+                _ if settings.graphics.read(key, value) => {}
                 _ => {
                     let action = key
                         .strip_prefix("bind.")
@@ -595,6 +616,7 @@ impl Settings {
             }
         }
         settings.clamp();
+        settings.graphics.tidy();
         if settings.secondary == settings.primary {
             settings.secondary = next_gun(settings.secondary, settings.primary);
         }
@@ -643,6 +665,7 @@ impl Settings {
             text.push_str(&format!("sight.{} = {}
 ", weapon(gun).name, sight(self.sights[gun as usize]).name));
         }
+        self.graphics.write(&mut text);
         for action in Action::ALL {
             let names: Vec<String> = self.binds(action).map(Bind::file_name).collect();
             text.push_str(&format!("bind.{} = {}\n", action.info().1, names.join(", ")));
@@ -764,11 +787,12 @@ pub struct SettingsMenu {
     capturing: Option<Capture>,
 }
 
-/// The two pages of the settings.
+/// The three pages of the settings.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum SettingsTab {
     #[default]
     General,
+    Graphics,
     Controls,
 }
 
@@ -794,12 +818,69 @@ struct SettingsPanel(SettingsTab);
 /// The button that shows one page of the settings.
 #[derive(Component)]
 struct TabButton(SettingsTab);
-/// The button for a window (`false`) or borderless full screen (`true`).
-#[derive(Component)]
-struct WindowChoice(bool);
-/// The button that shows (`true`) or hides (`false`) the minimap.
-#[derive(Component)]
-struct MinimapChoice(bool);
+/// A button that picks one value of a setting, shown picked while it is that.
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+enum Pick {
+    /// Borderless full screen (`true`) or a window.
+    Fullscreen(bool),
+    Minimap(bool),
+    Preset(Preset),
+    AntiAlias(AntiAlias),
+    Shadows(Shadows),
+    AmbientOcclusion(bool),
+    Bloom(bool),
+    TextureFiltering(u16),
+    Vsync(bool),
+    MaxFps(u32),
+    Stats(bool),
+}
+
+impl Pick {
+    fn picked(self, settings: &Settings) -> bool {
+        let graphics = &settings.graphics;
+        match self {
+            Pick::Fullscreen(on) => settings.fullscreen == on,
+            Pick::Minimap(on) => settings.show_minimap == on,
+            Pick::Preset(preset) => preset.matches(graphics),
+            Pick::AntiAlias(anti_alias) => graphics.anti_alias == anti_alias,
+            Pick::Shadows(shadows) => graphics.shadows == shadows,
+            Pick::AmbientOcclusion(on) => graphics.ambient_occlusion == on,
+            Pick::Bloom(on) => graphics.bloom == on,
+            Pick::TextureFiltering(n) => graphics.texture_filtering == n,
+            Pick::Vsync(on) => graphics.vsync == on,
+            Pick::MaxFps(fps) => graphics.max_fps == fps,
+            Pick::Stats(on) => graphics.show_stats == on,
+        }
+    }
+
+    fn apply(self, settings: &mut Settings) {
+        if self.picked(settings) {
+            return;
+        }
+        let graphics = &mut settings.graphics;
+        match self {
+            Pick::Fullscreen(on) => settings.fullscreen = on,
+            Pick::Minimap(on) => settings.show_minimap = on,
+            Pick::Preset(preset) => preset.apply(graphics),
+            Pick::AntiAlias(anti_alias) => graphics.set_anti_alias(anti_alias),
+            Pick::Shadows(shadows) => graphics.shadows = shadows,
+            Pick::AmbientOcclusion(on) => graphics.set_ambient_occlusion(on),
+            Pick::Bloom(on) => graphics.bloom = on,
+            Pick::TextureFiltering(n) => graphics.texture_filtering = n,
+            Pick::Vsync(on) => graphics.vsync = on,
+            Pick::MaxFps(fps) => graphics.max_fps = fps,
+            Pick::Stats(on) => graphics.show_stats = on,
+        }
+    }
+}
+
+/// A line under a setting's name on the Graphics page that changes with it.
+#[derive(Component, Clone, Copy)]
+enum Hint {
+    Preset,
+    AmbientOcclusion,
+    TextureFiltering,
+}
 #[derive(Component)]
 struct DialSlider(Dial);
 /// The part of a dial's rail up to its thumb.
@@ -930,12 +1011,17 @@ fn spawn_panel(commands: &mut Commands, settings: &Settings, tab: SettingsTab) {
                                     column_gap: px(6),
                                     ..default()
                                 },
-                                children![tab_button("General", SettingsTab::General), tab_button("Controls", SettingsTab::Controls)],
+                                children![
+                                    tab_button("General", SettingsTab::General),
+                                    tab_button("Graphics", SettingsTab::Graphics),
+                                    tab_button("Controls", SettingsTab::Controls),
+                                ],
                             ),
                         ],
                     ));
                     match tab {
                         SettingsTab::General => general_page(page, settings),
+                        SettingsTab::Graphics => graphics_page(page, settings),
                         SettingsTab::Controls => controls_page(page),
                     }
                     page.spawn(Node {
@@ -944,12 +1030,20 @@ fn spawn_panel(commands: &mut Commands, settings: &Settings, tab: SettingsTab) {
                         ..default()
                     })
                     .with_children(|buttons| {
-                        if tab == SettingsTab::Controls {
-                            buttons
-                                .spawn(ui::button("Reset controls to defaults"))
-                                .observe(|_: On<Activate>, mut settings: ResMut<Settings>| settings.reset_controls());
-                        } else {
-                            buttons.spawn(Node::default());
+                        match tab {
+                            SettingsTab::Controls => {
+                                buttons
+                                    .spawn(ui::button("Reset controls to defaults"))
+                                    .observe(|_: On<Activate>, mut settings: ResMut<Settings>| settings.reset_controls());
+                            }
+                            SettingsTab::Graphics => {
+                                buttons.spawn(ui::button("Reset graphics to defaults")).observe(
+                                    |_: On<Activate>, mut settings: ResMut<Settings>| settings.graphics = Graphics::default(),
+                                );
+                            }
+                            SettingsTab::General => {
+                                buttons.spawn(Node::default());
+                            }
                         }
                         buttons.spawn((ui::primary_button("Done"), observe(close)));
                     });
@@ -984,7 +1078,7 @@ fn settings_box(node: Node) -> impl Bundle {
     )
 }
 
-/// The mouse, sound, window and HUD.
+/// The mouse, sound and HUD.
 fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
     page.spawn(Node {
         // Down to the buttons at the bottom.
@@ -1001,48 +1095,8 @@ fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
             ..default()
         }))
         .with_children(|dials| {
-            for (index, dial) in Dial::ALL.into_iter().enumerate() {
-                let (name, step, low, high) = dial.info();
-                let value = *settings.clone().dial(dial);
-                dials
-                    .spawn(Node {
-                        height: px(72),
-                        align_items: AlignItems::Center,
-                        column_gap: px(24),
-                        border: UiRect::bottom(px(if index + 1 < Dial::ALL.len() { 1 } else { 0 })),
-                        ..default()
-                    })
-                    .insert(BorderColor::all(ui::PANEL_EDGE))
-                    .with_children(|line| {
-                        line.spawn((
-                            ui::weighted(name, 16.0, 600, TEXT),
-                            Node {
-                                width: px(190),
-                                flex_shrink: 0.0,
-                                ..default()
-                            },
-                        ));
-                        line.spawn(dial_slider(dial, value, low, high, step))
-                            .observe(slider_self_update)
-                            .observe(move |change: On<ValueChange<f32>>, mut settings: ResMut<Settings>| {
-                                *settings.dial(dial) = change.value;
-                                settings.clamp();
-                            });
-                        line.spawn((
-                            Node {
-                                width: px(84),
-                                flex_shrink: 0.0,
-                                justify_content: JustifyContent::Center,
-                                padding: UiRect::vertical(px(9)),
-                                border: UiRect::all(px(1)),
-                                border_radius: BorderRadius::all(px(10)),
-                                ..default()
-                            },
-                            BackgroundColor(ui::FIELD),
-                            BorderColor::all(ui::PANEL_EDGE),
-                            children![(ui::weighted("", 15.0, 700, TEXT), DialText(dial))],
-                        ));
-                    });
+            for (index, dial) in Dial::GENERAL.into_iter().enumerate() {
+                dial_row(dials, dial, settings, index + 1 < Dial::GENERAL.len());
             }
         });
         row.spawn((
@@ -1054,25 +1108,9 @@ fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
                 ..default()
             }),
             children![
-                ui::section("Window"),
-                (WindowChoice(false), ui::button("Windowed"), observe(pick_window(false))),
-                (WindowChoice(true), ui::button("Borderless fullscreen"), observe(pick_window(true))),
-                (
-                    Node {
-                        margin: UiRect::top(px(4)),
-                        ..default()
-                    },
-                    children![ui::label("Alt + Enter switches at any time.", 13.0, DIM)],
-                ),
-                (
-                    Node {
-                        margin: UiRect::top(px(14)),
-                        ..default()
-                    },
-                    children![ui::section("Minimap")],
-                ),
-                (MinimapChoice(true), ui::button("Shown"), observe(pick_minimap(true))),
-                (MinimapChoice(false), ui::button("Hidden"), observe(pick_minimap(false))),
+                ui::section("Minimap"),
+                pick_button(Pick::Minimap(true), ui::button("Shown")),
+                pick_button(Pick::Minimap(false), ui::button("Hidden")),
                 (
                     Node {
                         margin: UiRect::top(px(4)),
@@ -1085,12 +1123,59 @@ fn general_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
     });
 }
 
-fn pick_minimap(shown: bool) -> impl Fn(On<Activate>, ResMut<Settings>) {
-    move |_, mut settings| {
-        if settings.show_minimap != shown {
-            settings.show_minimap = shown;
-        }
-    }
+/// A dial's line: its name, its slider and its value. `rule` draws the line
+/// under it that parts it from the next.
+fn dial_row(parent: &mut ChildSpawnerCommands, dial: Dial, settings: &Settings, rule: bool) {
+    let (name, step, low, high) = dial.info();
+    let value = *settings.clone().dial(dial);
+    parent
+        .spawn(Node {
+            height: px(72),
+            align_items: AlignItems::Center,
+            column_gap: px(24),
+            border: UiRect::bottom(px(if rule { 1 } else { 0 })),
+            ..default()
+        })
+        .insert(BorderColor::all(ui::PANEL_EDGE))
+        .with_children(|line| {
+            line.spawn((
+                ui::weighted(name, 16.0, 600, TEXT),
+                Node {
+                    width: px(190),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+            ));
+            line.spawn(dial_slider(dial, value, low, high, step))
+                .observe(slider_self_update)
+                .observe(move |change: On<ValueChange<f32>>, mut settings: ResMut<Settings>| {
+                    *settings.dial(dial) = change.value;
+                    settings.clamp();
+                });
+            line.spawn((
+                Node {
+                    width: px(84),
+                    flex_shrink: 0.0,
+                    justify_content: JustifyContent::Center,
+                    padding: UiRect::vertical(px(9)),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(10)),
+                    ..default()
+                },
+                BackgroundColor(ui::FIELD),
+                BorderColor::all(ui::PANEL_EDGE),
+                children![(ui::weighted("", 15.0, 700, TEXT), DialText(dial))],
+            ));
+        });
+}
+
+/// `button`, made to pick one value of a setting.
+fn pick_button(pick: Pick, button: impl Bundle) -> impl Bundle {
+    (
+        pick,
+        button,
+        observe(move |_: On<Activate>, mut settings: ResMut<Settings>| pick.apply(&mut settings)),
+    )
 }
 
 /// Which key shows and hides the minimap in a game. The page is put up again
@@ -1103,12 +1188,181 @@ fn minimap_hint(settings: &Settings) -> String {
     }
 }
 
-fn pick_window(fullscreen: bool) -> impl Fn(On<Activate>, ResMut<Settings>) {
-    move |_, mut settings| {
-        if settings.fullscreen != fullscreen {
-            settings.fullscreen = fullscreen;
-        }
-    }
+/// The quality of the 3D view on the left, the window and frame rate on the right.
+fn graphics_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
+    page.spawn(Node {
+        flex_grow: 1.0,
+        column_gap: px(24),
+        align_items: AlignItems::FlexStart,
+        ..default()
+    })
+    .with_children(|row| {
+        row.spawn(settings_box(Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            padding: UiRect::axes(px(26), px(6)),
+            ..default()
+        }))
+        .with_children(|quality| {
+            option_row(
+                quality,
+                "Preset",
+                HintText::Live(Hint::Preset),
+                Preset::ALL.map(|preset| (preset.name().to_string(), Pick::Preset(preset))).to_vec(),
+            );
+            option_row(
+                quality,
+                "Anti-aliasing",
+                HintText::Fixed("Smooths jagged edges."),
+                AntiAlias::ALL.map(|a| (a.names().0.to_string(), Pick::AntiAlias(a))).to_vec(),
+            );
+            option_row(
+                quality,
+                "Shadows",
+                HintText::Fixed("Sharpness and reach. The dearest."),
+                Shadows::ALL.map(|shadows| (shadows.names().0.to_string(), Pick::Shadows(shadows))).to_vec(),
+            );
+            option_row(
+                quality,
+                "Ambient occlusion",
+                HintText::Live(Hint::AmbientOcclusion),
+                on_off(Pick::AmbientOcclusion),
+            );
+            option_row(
+                quality,
+                "Bloom",
+                HintText::Fixed("Glow round bright lights."),
+                on_off(Pick::Bloom),
+            );
+            option_row(
+                quality,
+                "Texture filtering",
+                HintText::Live(Hint::TextureFiltering),
+                TEXTURE_FILTERING
+                    .map(|n| (if n == 1 { "Off".to_string() } else { format!("{n}x") }, Pick::TextureFiltering(n)))
+                    .to_vec(),
+            );
+            dial_row(quality, Dial::Brightness, settings, false);
+        });
+        // Wider than the General page's, for the frame rate limits in one line.
+        row.spawn(settings_box(Node {
+            width: px(424),
+            flex_shrink: 0.0,
+            row_gap: px(10),
+            padding: UiRect::all(px(22)),
+            ..default()
+        }))
+        .with_children(|display| {
+            display_group(
+                display,
+                "Window",
+                vec![("Windowed".into(), Pick::Fullscreen(false)), ("Fullscreen".into(), Pick::Fullscreen(true))],
+                "Borderless. Alt + Enter switches at any time.",
+            );
+            display_group(
+                display,
+                "Vertical sync",
+                vec![("On".into(), Pick::Vsync(true)), ("Off".into(), Pick::Vsync(false))],
+                "Off: less input lag, but the picture may tear.",
+            );
+            display_group(
+                display,
+                "Frame rate limit",
+                FRAME_LIMITS
+                    .map(|fps| (if fps == 0 { "Off".to_string() } else { fps.to_string() }, Pick::MaxFps(fps)))
+                    .to_vec(),
+                "Saves power and heat. Vertical sync limits it too.",
+            );
+            display_group(
+                display,
+                "Frame rate and ping",
+                vec![("Shown".into(), Pick::Stats(true)), ("Hidden".into(), Pick::Stats(false))],
+                "The box in the top right corner in a game.",
+            );
+        });
+    });
+}
+
+/// The line under a setting's name: always the same, or following the setting.
+enum HintText {
+    Fixed(&'static str),
+    Live(Hint),
+}
+
+/// "Off" and "On" for a setting that is one or the other.
+fn on_off(pick: fn(bool) -> Pick) -> Vec<(String, Pick)> {
+    vec![("Off".into(), pick(false)), ("On".into(), pick(true))]
+}
+
+/// A line of the Graphics page's quality box: the setting's name with a
+/// hint under it, and a button for each value.
+fn option_row(parent: &mut ChildSpawnerCommands, name: &str, hint: HintText, picks: Vec<(String, Pick)>) {
+    parent
+        .spawn((
+            Node {
+                height: px(58),
+                align_items: AlignItems::Center,
+                column_gap: px(24),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            },
+            BorderColor::all(ui::PANEL_EDGE),
+        ))
+        .with_children(|line| {
+            line.spawn(Node {
+                width: px(190),
+                flex_shrink: 0.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: px(3),
+                ..default()
+            })
+            .with_children(|names| {
+                names.spawn(ui::weighted(name, 16.0, 600, TEXT));
+                match hint {
+                    HintText::Fixed(text) => {
+                        names.spawn(ui::label(text, 12.0, DIM));
+                    }
+                    HintText::Live(hint) => {
+                        names.spawn((ui::label("", 12.0, DIM), hint));
+                    }
+                }
+            });
+            line.spawn(Node {
+                flex_grow: 1.0,
+                column_gap: px(6),
+                ..default()
+            })
+            .with_children(|buttons| {
+                for (text, pick) in picks {
+                    buttons.spawn(pick_button(pick, ui::small_button(&text)));
+                }
+            });
+        });
+}
+
+/// A group of the Graphics page's display box: a caption, a row of
+/// buttons (wrapping when they do not fit) and a hint.
+fn display_group(parent: &mut ChildSpawnerCommands, caption: &str, picks: Vec<(String, Pick)>, hint: &str) {
+    parent.spawn((
+        Node {
+            margin: UiRect::top(px(4)),
+            ..default()
+        },
+        children![ui::section(caption)],
+    ));
+    parent
+        .spawn(Node {
+            flex_wrap: FlexWrap::Wrap,
+            column_gap: px(6),
+            row_gap: px(6),
+            ..default()
+        })
+        .with_children(|buttons| {
+            for (text, pick) in picks {
+                buttons.spawn(pick_button(pick, ui::small_button(&text)));
+            }
+        });
+    parent.spawn(ui::label(hint, 12.0, DIM));
 }
 
 /// A rail with a round thumb dragged along it, for one of the dials.
@@ -1314,26 +1568,20 @@ fn click_bind(
     }
 }
 
-/// Marks the page shown and the window mode picked, and keeps the sliders
-/// where the settings are (Alt + Enter, and a dial's clamping, change them too).
+/// Marks the page shown and each setting's value picked, and keeps the
+/// sliders where the settings are (Alt + Enter, a dial's clamping and the
+/// reset buttons change them too).
 fn style_panel(
     mut commands: Commands,
     menu: Res<SettingsMenu>,
     mut settings: ResMut<Settings>,
-    mut buttons: Query<(
-        Option<&TabButton>,
-        Option<&WindowChoice>,
-        Option<&MinimapChoice>,
-        &mut ui::ButtonKind,
-        &mut BorderColor,
-    )>,
+    mut buttons: Query<(Option<&TabButton>, Option<&Pick>, &mut ui::ButtonKind, &mut BorderColor)>,
     sliders: Query<(Entity, &DialSlider, &SliderValue)>,
 ) {
-    for (tab, window, minimap, mut kind, mut border) in &mut buttons {
-        let picked = match (tab, window, minimap) {
-            (Some(tab), _, _) => tab.0 == menu.tab,
-            (_, Some(window), _) => window.0 == settings.fullscreen,
-            (_, _, Some(minimap)) => minimap.0 == settings.show_minimap,
+    for (tab, pick, mut kind, mut border) in &mut buttons {
+        let picked = match (tab, pick) {
+            (Some(tab), _) => tab.0 == menu.tab,
+            (_, Some(pick)) => pick.picked(settings.bypass_change_detection()),
             _ => continue,
         };
         let wanted = if picked { ui::ButtonKind::Picked } else { ui::ButtonKind::Normal };
@@ -1353,11 +1601,31 @@ fn style_panel(
 fn update_panel(
     settings: Res<Settings>,
     menu: Res<SettingsMenu>,
-    mut dials: Query<(&DialText, &mut Text), Without<BindText>>,
-    mut binds: Query<(&BindText, &mut Text, &mut TextColor), Without<DialText>>,
+    mut dials: Query<(&DialText, &mut Text), (Without<BindText>, Without<Hint>)>,
+    mut binds: Query<(&BindText, &mut Text, &mut TextColor), (Without<DialText>, Without<Hint>)>,
+    mut hints: Query<(&Hint, &mut Text, &mut TextColor), (Without<DialText>, Without<BindText>)>,
 ) {
     for (dial, mut text) in &mut dials {
         ui::set_text(&mut text, settings.dial_text(dial.0));
+    }
+    let graphics = &settings.graphics;
+    for (hint, mut text, mut color) in &mut hints {
+        let (shown, wanted) = match hint {
+            Hint::Preset if Preset::ALL.iter().any(|preset| preset.matches(graphics)) => {
+                ("Sets the four below.", DIM)
+            }
+            Hint::Preset => ("Custom: changed below.", DIM),
+            Hint::AmbientOcclusion if graphics.anti_alias == AntiAlias::Msaa4 => ("On swaps MSAA for SMAA.", DIM),
+            Hint::AmbientOcclusion => ("Shade where surfaces meet.", DIM),
+            Hint::TextureFiltering if graphics.texture_filtering != texture_filtering_in_use() => {
+                ("Restart the game to apply.", ACCENT)
+            }
+            Hint::TextureFiltering => ("Sharpness of far, slanted ground.", DIM),
+        };
+        ui::set_text(&mut text, shown.to_string());
+        if color.0 != wanted {
+            color.0 = wanted;
+        }
     }
     let capturing = menu.capturing.as_ref().map(|capture| (capture.action, capture.slot));
     for (&BindText(action, slot), mut text, mut color) in &mut binds {
@@ -1428,6 +1696,14 @@ mod tests {
             secondary: 1,
             sights: [IRON_SIGHTS, REFLEX, IRON_SIGHTS, TWO_X, REFLEX, THREE_X],
             grenade: crate::protocol::SMOKE,
+            graphics: Graphics {
+                anti_alias: AntiAlias::Fxaa,
+                shadows: Shadows::Low,
+                bloom: true,
+                brightness: 1.2,
+                max_fps: 165,
+                ..default()
+            },
             ..default()
         };
         settings.set_bind(Action::Grenade, 0, Bind::Mouse(MouseButton::Middle));

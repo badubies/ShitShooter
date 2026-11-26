@@ -539,9 +539,10 @@ fn image(mut level: Vec<Vec4>, format: TextureFormat, normal: bool, store: impl 
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
         mipmap_filter: ImageFilterMode::Linear,
-        // 16 halved the frame rate on Valley, whose ground runs to the
-        // horizon at a grazing angle; 4 costs next to nothing.
-        anisotropy_clamp: 4,
+        // The player's "Texture filtering". 16 halved the frame rate on
+        // Valley, whose ground runs to the horizon at a grazing angle; 4
+        // (the default) costs next to nothing.
+        anisotropy_clamp: crate::graphics::texture_filtering_in_use(),
         ..default()
     });
     image
