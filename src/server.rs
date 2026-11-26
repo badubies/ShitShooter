@@ -2325,10 +2325,8 @@ fn bot_move(
     // long enough, or it finds somebody to fight.
     bot.investigate_for -= dt;
     let looked = |spot: Vec3| bot.investigate_for <= 0.0 || (spot - player.pos).with_y(0.0).length() < 2.5;
-    if enemy.is_some() || bot.investigate.is_some_and(looked) {
-        if bot.investigate.take().is_some() {
-            bot.retarget_in = 0.0;
-        }
+    if (enemy.is_some() || bot.investigate.is_some_and(looked)) && bot.investigate.take().is_some() {
+        bot.retarget_in = 0.0;
     }
     // Careful when fighting or creeping up on a noise.
     let speed = if enemy.is_some() || bot.investigate.is_some() { 5.5 } else { 7.0 };
