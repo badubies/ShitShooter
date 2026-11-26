@@ -1468,10 +1468,15 @@ impl Server {
             self.launch_grenade(victim_id, FRAG, pos, Vec3::Y * 2.0, fuse);
         }
 
-        // Everybody else who hurt them helped.
-        for (helper, _) in helpers.into_iter().filter(|(helper, _)| *helper != attacker_id) {
-            if let Some(helper) = self.players.get_mut(&helper) {
-                helper.assists += 1;
+        // Everybody else who hurt them helped, if it was their own side that
+        // got the kill. Free for all has no sides, so no assists.
+        if is_team_mode(mode) {
+            for (helper, _) in helpers.into_iter().filter(|(helper, _)| *helper != attacker_id) {
+                if let Some(helper) = self.players.get_mut(&helper)
+                    && Some(helper.team) == attacker_team
+                {
+                    helper.assists += 1;
+                }
             }
         }
         // Blowing yourself up does not score.
@@ -3014,10 +3019,17 @@ mod tests {
 
     #[test]
     fn everybody_who_hurt_the_victim_but_the_killer_gets_an_assist() {
-        let mut server = Server::bind(ServerSettings { port: 0, ..ServerSettings::default() }).unwrap();
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            mode: MODE_TEAMS,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        // 1000 on their own against the other three.
         for k in 0..4 {
             server.join_counter += 1;
-            let person = server.new_player(format!("P{k}"), None);
+            let mut person = server.new_player(format!("P{k}"), None);
+            person.team = (k == 0) as u8;
             server.players.insert(1000 + k, person);
         }
         server.start_match();
@@ -3058,6 +3070,28 @@ mod tests {
         server.damage(1000, 1000, 10, 0);
         server.damage(1000, 1002, 500, 0);
         assert_eq!(assists(&server), [0, 2, 2, 0]);
+        // Hurting somebody who then blows themselves up is no assist: the
+        // kill was not your side's.
+        server.spawn_player(1000);
+        server.damage(1000, 1001, 10, 0);
+        server.damage(1000, 1000, 500, 0);
+        assert_eq!(assists(&server), [0, 2, 2, 0]);
+    }
+
+    #[test]
+    fn free_for_all_has_no_assists() {
+        let mut server = Server::bind(ServerSettings { port: 0, ..ServerSettings::default() }).unwrap();
+        for k in 0..3 {
+            server.join_counter += 1;
+            let person = server.new_player(format!("P{k}"), None);
+            server.players.insert(1000 + k, person);
+        }
+        server.start_match();
+        server.countdown = 0.0;
+        server.damage(1000, 1001, 10, 0);
+        server.damage(1000, 1002, 500, 0);
+        assert_eq!(server.players[&1002].kills, 1);
+        assert_eq!(server.players[&1001].assists, 0);
     }
 
     /// No two living players stand in each other.
