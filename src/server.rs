@@ -2838,14 +2838,16 @@ mod tests {
         }
         assert_eq!(modes, [MODE_TEAMS, MODE_FFA, MODE_TEAMS]);
         let mut maps = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             server.handle_message(1, ClientMsg::NextMap);
             maps.push(server.settings.map);
         }
-        assert_eq!(maps, [0, 1, 2, 3]);
+        assert_eq!(maps, [4, 0, 1, 2, 3]);
         assert_eq!(server.map.id, 3);
-        // In conquest, from Valley on to Arena.
+        // In conquest, from Valley on to Arena (past Surf).
         server.handle_message(1, ClientMsg::NextMap);
+        server.handle_message(1, ClientMsg::NextMap);
+        assert_eq!(server.settings.map, 0);
         server.handle_message(1, ClientMsg::NextMode);
         server.handle_message(1, ClientMsg::NextMode);
         assert_eq!(server.settings.mode, MODE_CONQUEST);
@@ -2853,7 +2855,7 @@ mod tests {
         server.handle_message(1, ClientMsg::NextMap);
         assert_eq!(server.settings.map, 2);
         server.handle_message(1, ClientMsg::NextMap);
-        assert_eq!(server.settings.map, 0, "Hamlet skipped");
+        assert_eq!(server.settings.map, 0, "Hamlet and Surf skipped");
         assert!(server.map.has_flagpoles());
     }
 

@@ -26,13 +26,16 @@ use bevy::{
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
     light::{EnvironmentMapLight, GeneratedEnvironmentMapLight, LightProbe},
     math::Affine2,
-    mesh::{PrimitiveTopology, VertexAttributeValues},
+    mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension},
     transform::TransformSystems,
 };
 
-use crate::world::{GameMap, MainCamera};
+use crate::{
+    ramp::Ramp,
+    world::{GameMap, MainCamera},
+};
 
 pub struct TexturesPlugin;
 
@@ -141,7 +144,7 @@ fn look(material: &str) -> Option<(Pattern, f32)> {
 /// The texture a map block gets, by its colour, and the metres one tile
 /// covers. Unknown colours get concrete.
 pub fn block_look(color: [f32; 3]) -> (Pattern, f32) {
-    use crate::{hamlet, map};
+    use crate::{hamlet, map, surf};
     use Pattern::*;
     let looks = [
         (map::FLOOR, Panels, 4.0),
@@ -162,6 +165,8 @@ pub fn block_look(color: [f32; 3]) -> (Pattern, f32) {
         (hamlet::STONE_DARK, Stone, 2.0),
         (hamlet::PLASTER, Plaster, 2.5),
         (hamlet::WOOD, Wood, 1.0),
+        (surf::RAMP, Panels, 4.0),
+        (surf::DECK, Paint, 2.0),
     ];
     looks
         .into_iter()
@@ -421,6 +426,41 @@ pub fn box_project(mesh: &mut Mesh, offset: Vec3) -> bool {
 pub fn block_mesh(min: Vec3, max: Vec3) -> Mesh {
     let mut mesh = Cuboid::from_size(max - min).mesh().build();
     box_project(&mut mesh, (min + max) / 2.0);
+    mesh
+}
+
+/// A ramp, in world coordinates, every face flat and textured in metres
+/// across it: along the ramp, and up the slope.
+pub fn ramp_mesh(ramp: &Ramp) -> Mesh {
+    let (mut positions, mut normals, mut uvs) = (Vec::new(), Vec::new(), Vec::new());
+    let mut indices = Vec::new();
+    for (index, face) in ramp.faces.iter().enumerate() {
+        let normal = ramp.normal(index);
+        let across = if normal.y.abs() < 0.99 { Vec3::Y.cross(normal).normalize() } else { Vec3::X };
+        let up = normal.cross(across);
+        let first = positions.len() as u32;
+        for &corner in face.iter() {
+            let p = ramp.corners[corner];
+            positions.push(p.to_array());
+            normals.push(normal.to_array());
+            uvs.push([p.dot(across), -p.dot(up)]);
+        }
+        // A fan, each triangle wound to face out.
+        for k in 1..face.len() as u32 - 1 {
+            let [a, b, c] = [first, first + k, first + k + 1];
+            let corner = |i: u32| Vec3::from(positions[i as usize]);
+            let facing = (corner(b) - corner(a)).cross(corner(c) - corner(a)).dot(normal);
+            indices.extend_from_slice(&if facing >= 0.0 { [a, b, c] } else { [a, c, b] });
+        }
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+        .with_inserted_indices(Indices::U32(indices));
+    if let Err(error) = mesh.generate_tangents() {
+        warn!("no tangents for a ramp: {error}");
+    }
     mesh
 }
 

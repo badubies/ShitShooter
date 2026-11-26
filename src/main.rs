@@ -20,7 +20,9 @@ mod map;
 mod nav;
 mod props;
 mod protocol;
+mod ramp;
 mod server;
+mod surf;
 mod terrain;
 mod valley;
 mod weapons;
@@ -164,8 +166,8 @@ LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
     --bots <N>           Start with N bots
     --bots-hold-fire     The bots never shoot
     --bot-difficulty <L> How well bots fight: easy, normal or hard [default: normal]
-    --map <NAME>         Map: arena, depot, valley or hamlet [default: arena]
-                         (hamlet: ffa and teams only)
+    --map <NAME>         Map: arena, depot, valley, hamlet or surf [default: arena]
+                         (hamlet, surf: ffa and teams only)
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
 
     --help               Show this text
@@ -225,7 +227,7 @@ fn parse_args() -> Result<LaunchArgs, String> {
                 args.server.map = map::MAP_NAMES
                     .iter()
                     .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley, hamlet)"))? as u8;
+                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley, hamlet, surf)"))? as u8;
                 args.map = Some(args.server.map);
             }
             "--airaccel" => {

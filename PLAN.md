@@ -495,7 +495,7 @@ Picked from PR #4: **loadout layout 1 (Arrows)**, **weapon panel 1 (Compact)**,
 8. [x] 2x sight on every gun, and zoom set by the sight (#7, part 2)
 9. [x] Air strafe tuning (#5)
 
-Later, not now: surf ramps (#6), see the last section.
+Surf ramps (#6) came later, see the last section.
 
 Why this order: 1–3 are small and need no network or model changes. 4 comes
 before 5 because it builds the gun preview camera, and the panel needs gun
@@ -761,9 +761,9 @@ down, by default): it goes between the two guns only, and from the knife
 back to the gun held last (`LocalPlayer::last_gun`). Old settings files
 drop their next and previous lines and get the new defaults.
 
-## Later: surf ramps (#6)
+## Surf ramps (#6)
 
-Not in this round. Notes for when it is picked up: the map is only upright boxes (`Block` in `src/map.rs`), and `move_and_slide`
+The notes from before it was picked up: the map is only upright boxes (`Block` in `src/map.rs`), and `move_and_slide`
 stops each axis that hits one, so a slope needs a new shape everywhere the map
 is used:
 
@@ -774,3 +774,23 @@ is used:
 - Grenades (`step_grenade`), bullets (`raycast`), the server's checks and
   bots' line of sight.
 - Drawing it, and a surf area in the map, maybe as its own test map first.
+
+Done:
+
+- `Ramp` (`src/ramp.rs`): a ridge with a slope down either side to a level
+  base (a side can be upright, against a wall). Boxes collide with it by the
+  separating axis test, which also gives the way out; rays clip against its
+  faces.
+- `move_and_slide`: off a face pointing up at least `WALKABLE` (0.7, about
+  45°) the box is lifted and stands, as on the hills; off a steeper one it is
+  pushed square out and only the velocity into the face is taken away. No
+  friction there and not standing, so air acceleration applies: strafing
+  into the ramp holds you on it, and gravity down its face is speed.
+  `snap_to_ground` and `is_free` know ramps, so bots path around them.
+- Grenades bounce off ramps, settle on walkable ones and slide down steep
+  ones. Bullets, line of sight and the minimap see them.
+- A new map, Surf (`src/surf.rs`, free for all and teams): a deck at each
+  end, and three 60° ramps between that dip to the middle and rise again,
+  so a run down one side carries you up the other and onto the far deck.
+  Arrow pads in the pit throw you back up onto a deck, plain ones in the
+  middle onto a slope. Every number in it is a first guess, to tune in play.

@@ -214,6 +214,13 @@ fn ground_color(map: &Map, at: Vec2, light: Vec3) -> [f32; 3] {
                 top = Some((block.max.y, block.color));
             }
         }
+        for ramp in &map.ramps {
+            if let Some(y) = ramp.top(at.x, at.y)
+                && top.is_none_or(|(above, _)| y > above)
+            {
+                top = Some((y, ramp.color));
+            }
+        }
         let (height, [r, g, b]) = top.unwrap_or((0.0, [0.1, 0.1, 0.12]));
         let lift = 0.8 + 0.06 * height.max(0.0);
         return [r * lift, g * lift, b * lift];

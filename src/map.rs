@@ -1,12 +1,13 @@
-//! The maps: static axis-aligned blocks, jump pads and spawn points, plus the
-//! collision helpers used by the player controller, the bots, grenades and hit
-//! detection. Pure data and math, so the server can use it without any rendering.
+//! The maps: static axis-aligned blocks, ramps, jump pads and spawn points,
+//! plus the collision helpers used by the player controller, the bots,
+//! grenades and hit detection. Pure data and math, so the server can use it without any rendering.
 
 use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
     protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, MODE_FFA, MODE_TEAMS, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE},
     props::{FLAGPOLE, PROPS},
+    ramp::{Ramp, WALKABLE},
     terrain::Terrain,
 };
 
@@ -28,12 +29,13 @@ pub const STEP_UP: f32 = 0.5;
 /// Side of a cell of the grid that finds the blocks near a point quickly.
 const GRID_CELL: f32 = 8.0;
 
-pub const MAP_NAMES: [&str; 4] = ["Arena", "Depot", "Valley", "Hamlet"];
+pub const MAP_NAMES: [&str; 5] = ["Arena", "Depot", "Valley", "Hamlet", "Surf"];
 
 /// True if map `id` can be played in `mode`. Hamlet is built for close
-/// fights only: it has no flags for conquest and no hill.
+/// fights only, and Surf for riding ramps: neither has flags for conquest
+/// nor a hill.
 pub fn plays(id: u8, mode: u8) -> bool {
-    id != 3 || mode == MODE_FFA || mode == MODE_TEAMS
+    !matches!(id, 3 | 4) || mode == MODE_FFA || mode == MODE_TEAMS
 }
 
 pub fn player_half(crouching: bool) -> Vec3 {
@@ -80,7 +82,7 @@ impl JumpPad {
         JumpPad { center, half_size: 1.0, launch }
     }
 
-    fn plain(center: Vec3, lift: f32) -> JumpPad {
+    pub fn plain(center: Vec3, lift: f32) -> JumpPad {
         JumpPad { center, half_size: 1.0, launch: Vec3::Y * lift }
     }
 
@@ -188,6 +190,8 @@ pub struct Map {
     pub id: u8,
     /// Do not change after `finish`: the grid indexes them.
     pub blocks: Vec<Block>,
+    /// Sloped wedges, to stand on or (the steep ones) to surf.
+    pub ramps: Vec<Ramp>,
     /// The ground of the outdoor maps. Indoor maps stand on a floor block.
     pub terrain: Option<Terrain>,
     /// The corners of the part of the map that is played in (x, z): bots
@@ -299,6 +303,7 @@ impl Map {
         Map {
             id,
             blocks: Vec::new(),
+            ramps: Vec::new(),
             terrain: None,
             bounds: [Vec2::splat(-A + 4.0), Vec2::splat(A - 4.0)],
             pads: Vec::new(),
@@ -400,6 +405,7 @@ impl Map {
             1 => Map::depot(),
             2 => crate::valley::valley(),
             3 => crate::hamlet::hamlet(),
+            4 => crate::surf::surf(),
             _ => Map::arena(),
         }
     }
@@ -578,15 +584,19 @@ impl Map {
     }
 
     /// Moves a box with half extents `half` by `vel * dt`, sliding along blocks
-    /// and the ground. Velocity is zeroed on any axis that hits something.
-    /// Walking into a ledge no higher than `STEP_UP` climbs it. Returns true
-    /// if the box ended up standing on something.
+    /// and the ground. Velocity is zeroed on any axis that hits a block.
+    /// Walking into a ledge no higher than `STEP_UP` climbs it. A ramp gentle
+    /// enough to walk is stood on like the ground; against a steeper one only
+    /// the velocity into it is lost, so you slide along it (surfing).
+    /// Returns true if the box ended up standing on something.
     pub fn move_and_slide(&self, pos: &mut Vec3, vel: &mut Vec3, half: Vec3, dt: f32) -> bool {
         let total = *vel * dt;
         let steps = (total.abs().max_element() / 0.25).ceil().clamp(1.0, 32.0) as usize;
-        let step = total / steps as f32;
+        let sub_dt = dt / steps as f32;
         let mut grounded = false;
         for _ in 0..steps {
+            // From the velocity left after the last part, which a ramp may have turned.
+            let step = *vel * sub_dt;
             // Horizontal axes first, so that walking off a ledge behaves sensibly.
             for axis in [0, 2, 1] {
                 let delta = step[axis];
@@ -625,6 +635,7 @@ impl Map {
                     vel[axis] = 0.0;
                 }
             }
+            grounded |= self.slide_off_ramps(pos, vel, half);
             // The ground holds up the middle of the box.
             if let Some(ground) = self.ground(pos.x, pos.z)
                 && pos.y - half.y < ground + 1e-3
@@ -637,6 +648,48 @@ impl Map {
             }
         }
         grounded
+    }
+
+    /// The first ramp a box at `center` overlaps: which way to push it out, and how far.
+    fn ramp_contact(&self, center: Vec3, half: Vec3) -> Option<(Vec3, f32)> {
+        self.ramps.iter().find_map(|ramp| ramp.push_out(center, half))
+    }
+
+    /// Takes a box out of the ramps it went into. Off a walkable face it is
+    /// lifted straight up and stands, as on the ground, so it does not slide
+    /// down a gentle slope; off a steep one it is pushed square out of it and
+    /// keeps all its speed along the face. Returns true if it stands.
+    fn slide_off_ramps(&self, pos: &mut Vec3, vel: &mut Vec3, half: Vec3) -> bool {
+        let mut grounded = false;
+        // A few times over, for where two ramps meet.
+        for _ in 0..4 {
+            let Some((out, depth)) = self.ramp_contact(*pos, half) else {
+                break;
+            };
+            if out.y >= WALKABLE {
+                pos.y += depth / out.y;
+                if vel.y <= 0.0 {
+                    vel.y = 0.0;
+                    grounded = true;
+                }
+            } else {
+                *pos += out * depth;
+                let into = vel.dot(out);
+                if into < 0.0 {
+                    *vel -= out * into;
+                }
+            }
+        }
+        grounded
+    }
+
+    /// Where a box would stand on a walkable ramp face under it, at most
+    /// `drop` down: the height of the box's centre.
+    fn ramp_floor(&self, pos: Vec3, half: Vec3, drop: f32) -> Option<f32> {
+        let lowered = pos - Vec3::Y * drop;
+        let (out, depth) = self.ramp_contact(lowered, half)?;
+        let center = lowered.y + depth / out.y;
+        (out.y >= WALKABLE && center <= pos.y + 1e-3).then_some(center)
     }
 
     /// Puts a box that was standing on something last frame back down on
@@ -657,6 +710,11 @@ impl Map {
                 floor = Some(block.max.y);
             }
         });
+        if let Some(ramp) = self.ramp_floor(*pos, half, drop).map(|center| center - half.y)
+            && floor.is_none_or(|f| ramp > f)
+        {
+            floor = Some(ramp);
+        }
         let Some(floor) = floor.filter(|floor| feet - floor <= drop) else {
             return false;
         };
@@ -669,12 +727,12 @@ impl Map {
     }
 
     /// True if a box with half extents `half` fits at `center` without
-    /// touching a block, with the middle of its bottom above the ground.
+    /// touching a block or a ramp, with the middle of its bottom above the ground.
     pub fn is_free(&self, center: Vec3, half: Vec3) -> bool {
         if self.ground(center.x, center.z).is_some_and(|ground| center.y - half.y < ground - 0.02) {
             return false;
         }
-        self.overlapping(center, half).is_none()
+        self.overlapping(center, half).is_none() && self.ramp_contact(center, half).is_none()
     }
 
     /// The first block a box at `center` overlaps, if any.
@@ -733,6 +791,25 @@ impl Map {
                 vel[axis] = if impact > 1.5 { -vel[axis] * restitution / grip } else { 0.0 };
                 hardest = hardest.max(impact);
             }
+            if let Some((normal, depth)) = self.ramp_contact(*pos, half) {
+                *pos += normal * depth;
+                let into = vel.dot(normal);
+                if into < 0.0 {
+                    let impact = -into;
+                    let along = *vel - normal * into;
+                    let bounce = if impact > 1.5 { normal * impact * RESTITUTION } else { Vec3::ZERO };
+                    // It comes to rest on a walkable slope, and slides down a steep one.
+                    let grip = if normal.y >= WALKABLE {
+                        GROUND_GRIP
+                    } else if impact > 1.5 {
+                        GRIP
+                    } else {
+                        1.0
+                    };
+                    *vel = along * grip + bounce;
+                    hardest = hardest.max(impact);
+                }
+            }
             let Some(terrain) = &self.terrain else {
                 continue;
             };
@@ -762,10 +839,16 @@ impl Map {
         })
     }
 
-    /// Distance along the ray to the closest block or the ground, if it is
-    /// nearer than `max`.
+    /// Distance along the ray to the closest block, ramp or the ground, if it
+    /// is nearer than `max`.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
         let block = self.raycast_blocks(origin, dir, max);
+        let ramp = self
+            .ramps
+            .iter()
+            .filter_map(|ramp| ramp.raycast(origin, dir, block.unwrap_or(max)))
+            .min_by(f32::total_cmp);
+        let block = ramp.or(block);
         let ground = self
             .terrain
             .as_ref()

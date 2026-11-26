@@ -1737,6 +1737,40 @@ mod tests {
         assert!((hop - full / 4.0).abs() < 0.05, "dash hopped {hop} m, a jump {full} m");
     }
 
+    /// On a face of a Surf ramp, going down the hall at 18 m/s with the
+    /// view along it, for `seconds`, holding `keys`. Returns the player, and
+    /// whether they were ever on the ground.
+    fn surf_for(keys: Vec2, seconds: f32) -> (LocalPlayer, bool) {
+        let map = crate::surf::surf();
+        let mut p = LocalPlayer { alive: true, ..default() };
+        // The left wall ramp, whose ridge is 9.14 m up here; feet 3 m under it.
+        let feet = 9.14 - 3.0;
+        let face = -40.0 + 3.0 / 60f32.to_radians().tan();
+        p.teleport(Vec3::new(face + PLAYER_HALF.x + 0.05, feet + PLAYER_HALF.y, 30.0));
+        p.vel = Vec3::new(0.0, 0.0, -18.0);
+        let mut stood = false;
+        play(&mut p, &map, 144.0, seconds, |p, _| {
+            stood |= p.grounded;
+            keys
+        });
+        (p, stood)
+    }
+
+    /// Holding the key into the ramp keeps you on it, sliding with no
+    /// friction; let go and you slide off it into the pit.
+    #[test]
+    fn strafing_into_a_ramp_surfs_it() {
+        let (p, stood) = surf_for(Vec2::NEG_X, 1.5);
+        assert!(!stood);
+        assert!(p.feet().y > 2.0, "fell off at {}", p.pos);
+        assert!(p.pos.x < -32.0, "left the ramp at {}", p.pos);
+        assert!(p.vel.length() > 18.0, "slowed to {}", p.vel);
+        assert!(p.pos.z < 30.0 - 18.0 * 1.5, "{}", p.pos);
+
+        let (p, _) = surf_for(Vec2::ZERO, 1.5);
+        assert!(p.grounded && p.feet().y.abs() < 0.01, "still up at {}", p.pos);
+    }
+
     /// Strafing right in the air at 12 m/s while turning right at a steady
     /// rate, as a mouse does: the speed gained in a second.
     fn strafe_gain(fps: f32) -> f32 {

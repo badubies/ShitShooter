@@ -12,7 +12,7 @@ use crate::{
     map::Map,
     net::Session,
     protocol::{GRENADE_KINDS, HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, MODE_HILL},
-    textures::{Textured, block_look, block_mesh},
+    textures::{Textured, block_look, block_mesh, ramp_mesh},
     ui::{BLUE, RED},
 };
 
@@ -323,23 +323,26 @@ fn build_map(
 
     // One material per distinct colour.
     let mut block_materials: Vec<([f32; 3], Handle<StandardMaterial>)> = Vec::new();
-    for block in map.0.blocks.iter().filter(|b| b.visible) {
-        let material = match block_materials.iter().find(|(c, _)| *c == block.color) {
+    let mut material_for = |color: [f32; 3]| -> Handle<StandardMaterial> {
+        match block_materials.iter().find(|(c, _)| *c == color) {
             Some((_, handle)) => handle.clone(),
             None => {
-                let [r, g, b] = block.color;
+                let [r, g, b] = color;
                 let mut material = StandardMaterial {
                     base_color: Color::srgb(r, g, b),
                     perceptual_roughness: 0.9,
                     ..default()
                 };
-                let (pattern, tile) = block_look(block.color);
+                let (pattern, tile) = block_look(color);
                 textured.dress(&mut material, pattern, tile, &mut images);
                 let handle = materials.add(material);
-                block_materials.push((block.color, handle.clone()));
+                block_materials.push((color, handle.clone()));
                 handle
             }
-        };
+        }
+    };
+    for block in map.0.blocks.iter().filter(|b| b.visible) {
+        let material = material_for(block.color);
         // A mesh of its own, so its texture is in metres and meets its
         // neighbours'.
         commands.spawn((
@@ -347,6 +350,14 @@ fn build_map(
             Mesh3d(meshes.add(block_mesh(block.min, block.max))),
             MeshMaterial3d(material),
             Transform::from_translation((block.min + block.max) / 2.0),
+        ));
+    }
+    for ramp in &map.0.ramps {
+        commands.spawn((
+            MapGeometry,
+            Mesh3d(meshes.add(ramp_mesh(ramp))),
+            MeshMaterial3d(material_for(ramp.color)),
+            Transform::default(),
         ));
     }
 
