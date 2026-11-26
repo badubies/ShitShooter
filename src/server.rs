@@ -45,6 +45,8 @@ pub struct ServerSettings {
     pub air_accel: u16,
     /// The bots never shoot (see `ClientMsg::SetBotsHoldFire`).
     pub bots_hold_fire: bool,
+    /// How well the bots fight: an index into `BOT_DIFFICULTY_NAMES`.
+    pub bot_difficulty: u8,
 }
 
 impl Default for ServerSettings {
@@ -59,6 +61,7 @@ impl Default for ServerSettings {
             mode: MODE_FFA,
             air_accel: DEFAULT_AIR_ACCEL,
             bots_hold_fire: false,
+            bot_difficulty: BOT_NORMAL,
         }
     }
 }
@@ -88,35 +91,89 @@ const BOT_VIEW_COS: f32 = 0.26;
 /// ...or anywhere this close.
 const BOT_HEARING: f32 = 6.0;
 const BOT_SIGHT_RANGE: f32 = 70.0;
-/// Seconds an enemy must be in sight before the first shot: at least this,
-/// and up to `BOT_REACTION_JITTER` more.
-const BOT_REACTION: f32 = 0.3;
-const BOT_REACTION_JITTER: f32 = 0.2;
-/// Beyond `BOT_FAR` metres, enemies take `BOT_SPOT_TIME` seconds longer
-/// to react to for every metre further, and the angle the aim wobbles by
-/// (`BOT_AIM_ERROR`) grows, twice as wide `BOT_FAR_DOUBLING` metres on:
-/// a far body is small and hard to make out.
-const BOT_FAR: f32 = 20.0;
-const BOT_SPOT_TIME: f32 = 0.008;
-const BOT_FAR_DOUBLING: f32 = 30.0;
-/// Radians per second.
+/// Radians per second, turning to look where it is going.
 const BOT_TURN_RATE: f32 = 6.0;
-/// Radius of the aim wobble, in radians, once settled on a target...
-const BOT_AIM_ERROR: f32 = 0.015;
-/// ...plus this many metres at any range...
-const BOT_AIM_SLOP: f32 = 0.15;
-/// ...plus `BOT_TRACKING` radians for every radian per second the enemy
-/// sweeps across its view beyond `BOT_EASY_TRACK` (one strafing up close
-/// is hard to follow; far away, easy).
-const BOT_EASY_TRACK: f32 = 0.3;
-const BOT_TRACKING: f32 = 0.12;
-/// How much of the enemy's movement during the bullet's flight a bot aims
-/// ahead by: somewhere in this range, rolled with each wobble.
-const BOT_LEAD: (f32, f32) = (0.5, 1.2);
+/// Beyond this many metres, a far body is small and hard to make out (see
+/// `BotSkill::spot_time` and `BotSkill::far_doubling`).
+const BOT_FAR: f32 = 20.0;
 /// Seconds over which a bot works out how fast its enemy is going.
 const BOT_VEL_SMOOTHING: f32 = 0.15;
-/// Seconds it takes the wobble to settle down to `BOT_AIM_ERROR`.
-const BOT_AIM_SETTLE: f32 = 1.5;
+
+/// How well bots fight at one of the `BOT_DIFFICULTY_NAMES`.
+struct BotSkill {
+    /// Seconds an enemy must be in sight before the first shot: at least
+    /// `reaction`, and up to `reaction_jitter` more...
+    reaction: f32,
+    reaction_jitter: f32,
+    /// ...and `spot_time` more for every metre beyond `BOT_FAR`.
+    spot_time: f32,
+    /// Radians per second, turning towards an enemy.
+    turn_rate: f32,
+    /// Radius of the aim wobble, in radians, once settled on a target,
+    /// growing beyond `BOT_FAR` to twice as wide `far_doubling` metres on...
+    aim_error: f32,
+    far_doubling: f32,
+    /// ...plus this many metres at any range...
+    aim_slop: f32,
+    /// ...plus `tracking` radians for every radian per second the enemy
+    /// sweeps across its view beyond `easy_track` (one strafing up close is
+    /// hard to follow; far away, easy).
+    easy_track: f32,
+    tracking: f32,
+    /// Seconds it takes the wobble to settle down from its widest.
+    settle: f32,
+    /// How much of the enemy's movement during the bullet's flight a bot
+    /// aims ahead by: somewhere in this range, rolled with each wobble.
+    lead: (f32, f32),
+}
+
+/// Easy, normal and hard.
+const _: () = assert!(BOT_EASY == 0 && BOT_NORMAL == 1 && BOT_HARD == 2);
+const BOT_SKILLS: [BotSkill; BOT_DIFFICULTY_NAMES.len()] = [
+    BotSkill {
+        reaction: 0.3,
+        reaction_jitter: 0.2,
+        spot_time: 0.008,
+        turn_rate: 6.0,
+        aim_error: 0.015,
+        far_doubling: 30.0,
+        aim_slop: 0.15,
+        easy_track: 0.3,
+        tracking: 0.12,
+        settle: 1.5,
+        lead: (0.5, 1.2),
+    },
+    BotSkill {
+        reaction: 0.22,
+        reaction_jitter: 0.15,
+        spot_time: 0.005,
+        turn_rate: 7.5,
+        aim_error: 0.011,
+        far_doubling: 45.0,
+        aim_slop: 0.1,
+        easy_track: 0.45,
+        tracking: 0.08,
+        settle: 1.1,
+        lead: (0.7, 1.1),
+    },
+    BotSkill {
+        reaction: 0.15,
+        reaction_jitter: 0.1,
+        spot_time: 0.003,
+        turn_rate: 9.0,
+        aim_error: 0.008,
+        far_doubling: 70.0,
+        aim_slop: 0.06,
+        easy_track: 0.6,
+        tracking: 0.05,
+        settle: 0.7,
+        lead: (0.85, 1.05),
+    },
+];
+
+fn bot_skill(difficulty: u8) -> &'static BotSkill {
+    BOT_SKILLS.get(difficulty as usize).unwrap_or(&BOT_SKILLS[BOT_NORMAL as usize])
+}
 /// Seconds a bot stays turned towards whoever hurt it.
 const BOT_GRUDGE: f32 = 3.0;
 /// Bullets vanish after this many seconds, as they do on the clients.
@@ -196,7 +253,7 @@ impl Bot {
             burst: 0,
             enemy: None,
             sight: 0.0,
-            reaction: BOT_REACTION,
+            reaction: 0.0,
             enemy_at: Vec3::ZERO,
             enemy_vel: Vec3::ZERO,
             aim_error: Vec2::ZERO,
@@ -874,6 +931,12 @@ impl Server {
             }
             ClientMsg::SetBotsHoldFire(hold) if is_leader && self.phase == Phase::Lobby => {
                 self.settings.bots_hold_fire = hold;
+                self.roster_dirty = true;
+            }
+            ClientMsg::SetBotDifficulty(difficulty)
+                if is_leader && self.phase == Phase::Lobby && (difficulty as usize) < BOT_DIFFICULTY_NAMES.len() =>
+            {
+                self.settings.bot_difficulty = difficulty;
                 self.roster_dirty = true;
             }
             ClientMsg::SwitchTeam if self.phase == Phase::Lobby => {
@@ -1626,6 +1689,7 @@ impl Server {
                 center: p.pos,
             })
             .collect();
+        let skill = bot_skill(self.settings.bot_difficulty);
         let mut rng = self.rng;
         let mut shots = Vec::new();
         for (id, player) in self.players.iter_mut() {
@@ -1635,7 +1699,7 @@ impl Server {
             let Some(mut bot) = player.bot.take() else {
                 continue;
             };
-            let enemy = bot_pick_enemy(&self.map, &self.smokes, *id, player, &mut bot, &bodies, team_mode, &mut rng, dt);
+            let enemy = bot_pick_enemy(&self.map, &self.smokes, *id, player, &mut bot, &bodies, team_mode, skill, &mut rng, dt);
             let target = if conquest {
                 bot_objective(&self.map, &self.flags, player, &mut bot, &mut rng, dt)
                     .map(|flag| (self.map.flags[flag].pos, self.map.flags[flag].radius * 0.7, true))
@@ -1644,7 +1708,7 @@ impl Server {
             };
             bot_move(&self.map, &self.nav, player, &mut bot, target, enemy, &mut rng, dt);
             let trigger = !self.settings.bots_hold_fire;
-            if let Some(shot) = bot_fight(*id, player, &mut bot, enemy, trigger, &mut rng, dt) {
+            if let Some(shot) = bot_fight(*id, player, &mut bot, enemy, trigger, skill, &mut rng, dt) {
                 shots.push(shot);
             }
             player.bot = Some(bot);
@@ -1795,6 +1859,7 @@ impl Server {
             mode: self.settings.mode,
             air_accel: self.settings.air_accel,
             bots_hold_fire: self.settings.bots_hold_fire,
+            bot_difficulty: self.settings.bot_difficulty,
         }
     }
 
@@ -1981,6 +2046,7 @@ fn bot_pick_enemy(
     bot: &mut Bot,
     bodies: &[Body],
     team_mode: bool,
+    skill: &BotSkill,
     rng: &mut u64,
     dt: f32,
 ) -> Option<Vec3> {
@@ -2038,7 +2104,7 @@ fn bot_pick_enemy(
         bot.enemy = Some(target.id);
         bot.sight = 0.0;
         let far = (target.center.distance(player.pos) - BOT_FAR).max(0.0);
-        bot.reaction = BOT_REACTION + BOT_REACTION_JITTER * random_unit(rng) + BOT_SPOT_TIME * far;
+        bot.reaction = skill.reaction + skill.reaction_jitter * random_unit(rng) + skill.spot_time * far;
         bot.enemy_vel = Vec3::ZERO;
         bot.wobble_in = 0.0;
         bot.retarget_in = 0.0;
@@ -2202,15 +2268,17 @@ fn bot_move(
     }
 }
 
-/// Reloads, turns the bot towards its enemy, and fires once it is lined up.
-/// Keeps a bot's gun loaded and aims it at `enemy`, and shoots when it is
-/// lined up, unless it may not pull the `trigger`.
+/// Keeps a bot's gun loaded and aims it at `enemy` as well as its `skill`
+/// allows, and shoots when it is lined up, unless it may not pull the
+/// `trigger`.
+#[allow(clippy::too_many_arguments)]
 fn bot_fight(
     id: PlayerId,
     player: &mut Player,
     bot: &mut Bot,
     enemy: Option<Vec3>,
     trigger: bool,
+    skill: &BotSkill,
     rng: &mut u64,
     dt: f32,
 ) -> Option<BotShot> {
@@ -2262,13 +2330,14 @@ fn bot_fight(
         let along = offset / distance;
         let relative = bot.enemy_vel - bot.vel;
         let sweep = (relative - along * relative.dot(along)).length() / distance;
-        let far = 1.0 + (distance - BOT_FAR).max(0.0) / BOT_FAR_DOUBLING;
-        let error = BOT_AIM_ERROR * far + BOT_AIM_SLOP / distance + BOT_TRACKING * (sweep - BOT_EASY_TRACK).max(0.0);
-        let unsettled = 1.0 + 1.5 * (1.0 - bot.sight / BOT_AIM_SETTLE).max(0.0);
+        let far = 1.0 + (distance - BOT_FAR).max(0.0) / skill.far_doubling;
+        let tracking = skill.tracking * (sweep - skill.easy_track).max(0.0);
+        let error = skill.aim_error * far + skill.aim_slop / distance + tracking;
+        let unsettled = 1.0 + 1.5 * (1.0 - bot.sight / skill.settle).max(0.0);
         let radius = error * unsettled * random_unit(rng).sqrt();
         let around = random_unit(rng) * std::f32::consts::TAU;
         bot.aim_error = Vec2::new(around.cos(), around.sin()) * radius;
-        bot.lead = BOT_LEAD.0 + (BOT_LEAD.1 - BOT_LEAD.0) * random_unit(rng);
+        bot.lead = skill.lead.0 + (skill.lead.1 - skill.lead.0) * random_unit(rng);
     }
     // Aim where the enemy will be when the bullet gets there, and above it
     // by as much as the bullet will drop on the way.
@@ -2282,8 +2351,8 @@ fn bot_fight(
     let to = target - eye;
     let yaw = (-to.x).atan2(-to.z) + bot.aim_error.x;
     let pitch = to.y.atan2(to.with_y(0.0).length()) + bot.aim_error.y;
-    player.yaw = turn_towards(player.yaw, yaw, BOT_TURN_RATE * dt);
-    player.pitch = turn_towards(player.pitch, pitch, BOT_TURN_RATE * dt);
+    player.yaw = turn_towards(player.yaw, yaw, skill.turn_rate * dt);
+    player.pitch = turn_towards(player.pitch, pitch, skill.turn_rate * dt);
     let lined_up = angle_between(player.yaw, yaw).abs() < 0.1 && (player.pitch - pitch).abs() < 0.1;
     if !trigger || !lined_up || bot.sight < bot.reaction || bot.reload > 0.0 || bot.cooldown > 0.0 || bot.ammo == 0 {
         return None;
@@ -2545,7 +2614,7 @@ mod tests {
         let mut loading_for = 0.0;
         // Empty: it starts loading, one shell per `reload` seconds, until full.
         loop {
-            bot_fight(1, &mut player, &mut bot, None, true, &mut rng, dt);
+            bot_fight(1, &mut player, &mut bot, None, true, bot_skill(BOT_NORMAL), &mut rng, dt);
             if bot.reload <= 0.0 {
                 break;
             }
@@ -2933,7 +3002,7 @@ mod tests {
         let mut rng = 12345;
         let mut off = 0.0;
         for tick in 0..60 * 11 {
-            bot_fight(1, &mut player, &mut bot, Some(enemy), false, &mut rng, 1.0 / 60.0);
+            bot_fight(1, &mut player, &mut bot, Some(enemy), false, bot_skill(BOT_EASY), &mut rng, 1.0 / 60.0);
             if tick >= 60 {
                 off += angle_between(straight, player.yaw) / (60.0 * 10.0);
             }
@@ -2973,6 +3042,49 @@ mod tests {
         server.start_match();
         server.handle_message(leader, ClientMsg::SetBotsHoldFire(false));
         assert!(server.settings.bots_hold_fire, "not during a match");
+    }
+
+    #[test]
+    fn only_the_leader_picks_how_well_bots_fight() {
+        let mut server = Server::bind(ServerSettings {
+            port: 0,
+            ..ServerSettings::default()
+        })
+        .unwrap();
+        for id in [1, 2] {
+            server.join_counter += 1;
+            let player = server.new_player(format!("P{id}"), None);
+            server.players.insert(id, player);
+        }
+        let leader = server.leader().unwrap();
+        let other = if leader == 1 { 2 } else { 1 };
+        assert_eq!(server.settings.bot_difficulty, BOT_NORMAL);
+        server.handle_message(other, ClientMsg::SetBotDifficulty(BOT_HARD));
+        assert_eq!(server.settings.bot_difficulty, BOT_NORMAL, "only the leader may");
+        server.handle_message(leader, ClientMsg::SetBotDifficulty(BOT_DIFFICULTY_NAMES.len() as u8));
+        assert_eq!(server.settings.bot_difficulty, BOT_NORMAL, "no such level");
+        server.handle_message(leader, ClientMsg::SetBotDifficulty(BOT_EASY));
+        let ServerMsg::Roster { bot_difficulty, .. } = server.roster_msg() else {
+            panic!("not a roster");
+        };
+        assert_eq!(bot_difficulty, BOT_EASY);
+        server.start_match();
+        server.handle_message(leader, ClientMsg::SetBotDifficulty(BOT_HARD));
+        assert_eq!(server.settings.bot_difficulty, BOT_EASY, "not during a match");
+    }
+
+    /// Each level is at least as good as the one below it, in every way.
+    #[test]
+    fn harder_bots_are_better_at_everything() {
+        for pair in BOT_SKILLS.windows(2) {
+            let (worse, better) = (&pair[0], &pair[1]);
+            assert!(better.reaction <= worse.reaction && better.reaction_jitter <= worse.reaction_jitter);
+            assert!(better.spot_time <= worse.spot_time && better.turn_rate >= worse.turn_rate);
+            assert!(better.aim_error <= worse.aim_error && better.far_doubling >= worse.far_doubling);
+            assert!(better.aim_slop <= worse.aim_slop && better.settle <= worse.settle);
+            assert!(better.easy_track >= worse.easy_track && better.tracking <= worse.tracking);
+            assert!(better.lead.1 - better.lead.0 <= worse.lead.1 - worse.lead.0);
+        }
     }
 
     /// Five seconds of a bot facing a person 12 m away across open ground,

@@ -109,6 +109,12 @@ sights were made here already. Each new gun gets:
   (`ClientMsg::SetBotsHoldFire`, and `--bots-hold-fire` on the command line).
   Bots holding fire still move and turn to their enemies. Protocol bumped
   to 15.
+- A lobby setting, "Bot skill: Easy / Normal / Hard", beside it
+  (`ClientMsg::SetBotDifficulty`, `--bot-difficulty` on the command line).
+  Each level is a `BotSkill` in `server.rs`: reaction, turn rate, aim
+  wobble and how it grows with range and with a target's sweep across the
+  view, and how well they lead. Easy is what the user tuned by hand.
+  Protocol bumped to 20.
 
 ### What the user wants (learned on the pistol)
 

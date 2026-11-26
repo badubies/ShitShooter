@@ -854,6 +854,8 @@ pub(crate) enum MatchChoice {
     AirAccel(u16),
     /// Whether the bots hold their fire.
     BotsHoldFire(bool),
+    /// How well the bots fight (`BOT_DIFFICULTY_NAMES`).
+    BotDifficulty(u8),
 }
 
 /// Under a map's name: whether it is the one picked.
@@ -949,6 +951,14 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
         (
             MatchChoice::BotsHoldFire(hold),
             small_button(name),
+            Pickable::default(),
+            observe(send_choice),
+        )
+    });
+    let bot_skill = (0..BOT_DIFFICULTY_NAMES.len() as u8).map(|level| {
+        (
+            MatchChoice::BotDifficulty(level),
+            small_button(BOT_DIFFICULTY_NAMES[level as usize]),
             Pickable::default(),
             observe(send_choice),
         )
@@ -1110,6 +1120,14 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                             ));
                                             for chip in bot_fire {
                                                 row.spawn(chip);
+                                            }
+                                        });
+                                    });
+                                    picker.spawn(group()).with_children(|group| {
+                                        group.spawn(section("Bot skill"));
+                                        group.spawn(Node { column_gap: px(6), ..default() }).with_children(|chips| {
+                                            for chip in bot_skill {
+                                                chips.spawn(chip);
                                             }
                                         });
                                     });
@@ -1435,6 +1453,7 @@ fn send_choice(
         MatchChoice::Map(id) => ClientMsg::SetMap(id),
         MatchChoice::AirAccel(value) => ClientMsg::SetAirAccel(value),
         MatchChoice::BotsHoldFire(hold) => ClientMsg::SetBotsHoldFire(hold),
+        MatchChoice::BotDifficulty(level) => ClientMsg::SetBotDifficulty(level),
     });
 }
 
@@ -1482,7 +1501,14 @@ fn update_lobby(
             LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_uppercase(),
             LobbyText::MatchLine => {
                 let bots = if session.bots_hold_fire { "  ·  bots hold fire" } else { "" };
-                format!("{map_name}  ·  air accel {}{bots}", session.air_accel() as u16)
+                // Only when there are bots to be easy or hard.
+                let skill = match BOT_DIFFICULTY_NAMES.get(session.bot_difficulty as usize) {
+                    Some(name) if session.roster.iter().any(|player| player.is_bot) => {
+                        format!("  ·  {} bots", name.to_lowercase())
+                    }
+                    _ => String::new(),
+                };
+                format!("{map_name}  ·  air accel {}{skill}{bots}", session.air_accel() as u16)
             }
             LobbyText::PickerNote if session.is_leader() => "Everyone sees your changes".to_string(),
             LobbyText::PickerNote => format!("Only {leader} can change these"),
@@ -1548,6 +1574,7 @@ fn style_match_choices(
             MatchChoice::Map(id) => (map.0.id == id, crate::map::plays(id, session.mode), ButtonKind::Tile),
             MatchChoice::AirAccel(value) => (air_accel == value, true, ButtonKind::Normal),
             MatchChoice::BotsHoldFire(hold) => (session.bots_hold_fire == hold, true, ButtonKind::Normal),
+            MatchChoice::BotDifficulty(level) => (session.bot_difficulty == level, true, ButtonKind::Normal),
         };
         let wanted = if picked { ButtonKind::Picked } else { rest };
         if *kind != wanted {

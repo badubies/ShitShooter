@@ -163,6 +163,7 @@ LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
     --bots-hold-fire     The bots never shoot
+    --bot-difficulty <L> How well bots fight: easy, normal or hard [default: normal]
     --map <NAME>         Map: arena, depot, valley or hamlet [default: arena]
                          (hamlet: ffa and teams only)
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
@@ -205,6 +206,13 @@ fn parse_args() -> Result<LaunchArgs, String> {
                 args.bots = Some(args.server.bots);
             }
             "--bots-hold-fire" => args.server.bots_hold_fire = true,
+            "--bot-difficulty" => {
+                let name = value("level")?;
+                args.server.bot_difficulty = protocol::BOT_DIFFICULTY_NAMES
+                    .iter()
+                    .position(|known| known.eq_ignore_ascii_case(&name))
+                    .ok_or_else(|| format!("unknown bot difficulty '{name}' (try: easy, normal, hard)"))? as u8;
+            }
             "--mode" => {
                 let name = value("name")?;
                 args.server.mode = ["ffa", "teams", "hill", "conquest"]

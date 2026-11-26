@@ -67,6 +67,11 @@ pub const MODE_HILL: u8 = 2;
 /// holding fewer of the map's flags bleeds them. Out of tickets, you lose.
 pub const MODE_CONQUEST: u8 = 3;
 pub const MODE_NAMES: [&str; 4] = ["Free for all", "Team deathmatch", "King of the hill", "Conquest"];
+/// How well the bots fight (see `ClientMsg::SetBotDifficulty`).
+pub const BOT_EASY: u8 = 0;
+pub const BOT_NORMAL: u8 = 1;
+pub const BOT_HARD: u8 = 2;
+pub const BOT_DIFFICULTY_NAMES: [&str; 3] = ["Easy", "Normal", "Hard"];
 /// The hill is everything within this distance of the map's hill point,
 /// measured along the ground (so any height counts).
 pub const HILL_RADIUS: f32 = 7.0;
@@ -194,7 +199,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-19:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-20:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -250,6 +255,9 @@ pub enum ClientMsg {
     /// Lobby leader only, in the lobby: whether the bots hold their fire.
     /// They still move about and turn to their enemies, but never shoot.
     SetBotsHoldFire(bool),
+    /// Lobby leader only, in the lobby: how well the bots fight, an index
+    /// into `BOT_DIFFICULTY_NAMES`.
+    SetBotDifficulty(u8),
     /// In the lobby: move yourself to the other team.
     SwitchTeam,
     /// Lobby leader only: abort the running match and return to the lobby.
@@ -327,6 +335,8 @@ pub enum ServerMsg {
         air_accel: u16,
         /// The bots never shoot (see `ClientMsg::SetBotsHoldFire`).
         bots_hold_fire: bool,
+        /// See `ClientMsg::SetBotDifficulty`.
+        bot_difficulty: u8,
     },
     MatchStarted {
         /// See `score_limit`.
