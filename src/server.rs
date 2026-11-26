@@ -204,7 +204,7 @@ const BOT_GRUDGE: f32 = 3.0;
 /// better to do, goes over to the body (giving up after `BOT_GLOAT_TIME`
 /// seconds) and crouches up and down on it `BOT_BOBS` times, `BOT_BOB`
 /// seconds down and as long up.
-const BOT_GLOAT_RANGE: f32 = 15.0;
+const BOT_GLOAT_RANGE: f32 = 25.0;
 const BOT_GLOAT_TIME: f32 = 6.0;
 const BOT_BOBS: u32 = 5;
 const BOT_BOB: f32 = 0.25;
