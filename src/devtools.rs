@@ -943,6 +943,8 @@ struct Captured {
 struct CueCount {
     gunshots: (u32, u32),
     hits: (u32, u32),
+    /// Bullets heard going past us or striking near us.
+    near_misses: (u32, u32),
     kills: (u32, u32),
     footsteps: (u32, u32),
     landings: (u32, u32),
@@ -961,6 +963,7 @@ fn count_cues(mut cues: MessageReader<crate::audio::SoundCue>, mut count: ResMut
         let slot = match cue.sound {
             Sound::Gunshot(_) => &mut count.gunshots,
             Sound::Hit | Sound::Headshot => &mut count.hits,
+            Sound::Whiz(..) | Sound::Impact(_) => &mut count.near_misses,
             Sound::Kill => &mut count.kills,
             Sound::Footstep(_) => &mut count.footsteps,
             Sound::Land(_) => &mut count.landings,

@@ -8,7 +8,7 @@ use bevy::{light::NotShadowCaster, prelude::*};
 
 use crate::{
     AppState,
-    audio::{BOLT_LOCK, PUMP_CLACK, Sound, SoundCue},
+    audio::{BOLT_LOCK, PUMP_CLACK, Sound, SoundCue, surface_under},
     gun_model::{FittedModels, GunHolder},
     map,
     net::{Connection, NetMsg, Session},
@@ -33,6 +33,12 @@ const BULLET_CONVERGE: f32 = 0.12;
 /// hands only if that is at most this far from where they fired from (metres):
 /// further, and their model is too far behind to go by.
 const REMOTE_MUZZLE_REACH: f32 = 2.0;
+/// Somebody's bullet passing our head closer than this (metres) is heard
+/// going by.
+const NEAR_MISS_RANGE: f32 = 2.5;
+/// Somebody's bullet striking something closer to us than this (metres) is
+/// heard hitting it.
+const IMPACT_RANGE: f32 = 6.0;
 /// Seconds the hit marker stays up after a hit.
 pub const HIT_MARKER_TIME: f32 = 0.18;
 /// A click on a semi-automatic gun still counts if the gun becomes ready
@@ -561,6 +567,10 @@ fn fly_bullets(
     mut bullets: Query<(Entity, &mut Bullet, &mut Transform)>,
 ) {
     let dt = time.delta_secs();
+    // Each shooter's nearest bullet past us and nearest strike by us this
+    // frame: a shotgun's pellets arrive together and are heard as one.
+    let mut near_misses = HashMap::new();
+    let mut impacts = HashMap::new();
     for (entity, mut bullet, mut transform) in &mut bullets {
         let bullet = &mut *bullet;
         let mine = bullet.shooter == session.my_id;
@@ -590,9 +600,32 @@ fn fly_bullets(
             }
             // Somebody else's bullet ends at our own body. Whether it hurt is
             // up to their client and the server.
-            if !mine && player.alive && session.enemies(bullet.shooter, session.my_id) {
+            let at_us = !mine && player.alive && session.enemies(bullet.shooter, session.my_id);
+            let mut hit_us = false;
+            if at_us {
                 let half = map::hitbox_half(player.crouching);
-                stopped |= map::ray_box(bullet.pos, dir, player.pos - half, player.pos + half).is_some_and(|t| t < reach);
+                hit_us = map::ray_box(bullet.pos, dir, player.pos - half, player.pos + half).is_some_and(|t| t < reach);
+                stopped |= hit_us;
+            }
+            // Being shot at is heard even when they miss: the bullet going
+            // past our head, or striking close by.
+            if at_us && !hit_us {
+                let ear = player.eye();
+                let along = (ear - bullet.pos).dot(dir);
+                if (0.0..reach).contains(&along) {
+                    let passing = bullet.pos + dir * along;
+                    let miss = passing.distance(ear);
+                    if miss < NEAR_MISS_RANGE {
+                        nearest(&mut near_misses, bullet.shooter, (miss, passing, bullet.weapon));
+                    }
+                }
+                if wall.is_some() && victim.is_none() {
+                    let struck = bullet.pos + dir * reach;
+                    let away = struck.distance(ear);
+                    if away < IMPACT_RANGE {
+                        nearest(&mut impacts, bullet.shooter, (away, struck, ()));
+                    }
+                }
             }
             if let Some((victim, headshot)) = victim {
                 stopped = true;
@@ -642,6 +675,26 @@ fn fly_bullets(
             rotation: Quat::from_rotation_arc(Vec3::NEG_Z, along.try_normalize().unwrap_or(dir)),
             scale: Vec3::new(BULLET_WIDTH, BULLET_WIDTH, drawn_length),
         };
+    }
+    for (miss, passing, weapon_id) in near_misses.into_values() {
+        sounds.write(SoundCue {
+            sound: Sound::Whiz(weapon_id, 1.0 - miss / NEAR_MISS_RANGE),
+            at: Some(passing),
+        });
+    }
+    for (_, struck, ()) in impacts.into_values() {
+        sounds.write(SoundCue {
+            sound: Sound::Impact(surface_under(&map.0, struck)),
+            at: Some(struck),
+        });
+    }
+}
+
+/// Keeps `found` for `shooter` if it is nearer (its first value) than what
+/// was kept for them already.
+fn nearest<T>(kept: &mut HashMap<PlayerId, (f32, Vec3, T)>, shooter: PlayerId, found: (f32, Vec3, T)) {
+    if kept.get(&shooter).is_none_or(|(distance, ..)| found.0 < *distance) {
+        kept.insert(shooter, found);
     }
 }
 

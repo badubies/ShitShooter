@@ -51,6 +51,9 @@ const STEP_MIN_SPEED: f32 = 2.0;
 const GUNSHOT_FULL_VOLUME_RANGE: f32 = 10.0;
 const EXPLOSION_FULL_VOLUME_RANGE: f32 = 16.0;
 const FOOTSTEP_FULL_VOLUME_RANGE: f32 = 4.0;
+/// A bullet going by is at full volume this close: how loud it is comes
+/// from how near it passed (see `Sound::Whiz`).
+const WHIZ_FULL_VOLUME_RANGE: f32 = 3.0;
 
 pub struct AudioPlugin;
 
@@ -115,6 +118,11 @@ pub enum Sound {
     Pin,
     /// The swish of a grenade being thrown.
     Throw,
+    /// Somebody's bullet from that gun going past us, this close (1 grazing
+    /// our ear, 0 hardly near).
+    Whiz(WeaponId, f32),
+    /// Somebody's bullet striking something close to us.
+    Impact(Surface),
     /// A grenade hitting something at this speed (m/s).
     Bounce(Surface, f32),
     /// A grenade come down rolling and skidding to a stop, at this speed (m/s).
@@ -165,6 +173,10 @@ struct Sounds {
     last_footstep: usize,
     pin: Handle<Clip>,
     throw: Handle<Clip>,
+    /// A bullet going by: slow ones only whiz, fast ones crack first.
+    whizzes: [Vec<Handle<Clip>>; 2],
+    /// Indexed by `Surface`.
+    impacts: [Vec<Handle<Clip>>; Surface::COUNT],
     /// Indexed by `Surface`.
     bounces: [Vec<Handle<Clip>>; Surface::COUNT],
     rolls: [Vec<Handle<Clip>>; Surface::COUNT],
@@ -223,6 +235,8 @@ fn setup(mut commands: Commands, mut clips: ResMut<Assets<Clip>>) {
         last_footstep: 0,
         pin: add(synth_pin()),
         throw: add(synth_throw()),
+        whizzes: [false, true].map(|crack| (0..WHIZ_TAKES).map(|take| add(synth_whiz(take, crack))).collect()),
+        impacts: Surface::ALL.map(|surface| (0..IMPACT_TAKES).map(|take| add(synth_impact(surface, take))).collect()),
         bounces: Surface::ALL.map(|surface| (0..BOUNCE_TAKES).map(|take| add(synth_bounce(surface, take))).collect()),
         rolls: Surface::ALL.map(|surface| (0..ROLL_TAKES).map(|take| add(synth_roll(surface, take))).collect()),
         explosions: [false, true].map(|far| (0..BLAST_TAKES).map(|take| add(synth_explosion(take, far))).collect()),
@@ -301,6 +315,12 @@ fn play_cues(
             Sound::Rustle => (sounds.rustle.clone(), 0.35, 0.9 + random * 0.2),
             Sound::Pin => (sounds.pin.clone(), 0.45, 0.98 + random * 0.04),
             Sound::Throw => (sounds.throw.clone(), 0.5, 0.92 + random * 0.16),
+            Sound::Whiz(weapon_id, closeness) => (
+                pick(&sounds.whizzes[cracks(weapon_id) as usize], random),
+                0.25 + 0.6 * closeness.clamp(0.0, 1.0),
+                0.9 + random * 0.2,
+            ),
+            Sound::Impact(surface) => (pick(&sounds.impacts[surface as usize], random), 0.5, 0.9 + random * 0.2),
             Sound::Bounce(surface, speed) => {
                 let takes = &sounds.bounces[surface as usize];
                 (
@@ -379,6 +399,7 @@ fn play_cues(
             Sound::Gunshot(_) => GUNSHOT_FULL_VOLUME_RANGE,
             Sound::Explosion | Sound::Flashbang => EXPLOSION_FULL_VOLUME_RANGE,
             Sound::SmokePop => GUNSHOT_FULL_VOLUME_RANGE,
+            Sound::Whiz(..) => WHIZ_FULL_VOLUME_RANGE,
             _ => FOOTSTEP_FULL_VOLUME_RANGE,
         };
         for (source, volume) in [(Some(source), volume * (1.0 - far)), (distant, volume * far * DISTANT_BOOST)] {
@@ -886,6 +907,122 @@ fn synth_throw() -> Vec<f32> {
         }
         ((whoosh + sleeve.run(noise) * 0.6) * 1.6).tanh() * 0.6
     })
+}
+
+// ---------------------------------------------------------------- bullets
+
+const WHIZ_TAKES: u32 = 3;
+const IMPACT_TAKES: u32 = 3;
+
+/// Whether that gun's bullets are fast enough to crack going by, as a
+/// rifle round's shock wave does.
+fn cracks(weapon_id: WeaponId) -> bool {
+    matches!(weapon_id, RIFLE | DMR | SNIPER)
+}
+
+/// A bullet going past close by: the air it tears through hisses by,
+/// high as it comes and dropping as it goes. A fast round's shock wave
+/// reaches us first as a sharp crack (`crack`), like a whip.
+fn synth_whiz(take: u32, crack: bool) -> Vec<f32> {
+    const LENGTH: f32 = 0.3;
+    let mut rng = 0x6e_0701 ^ (take * 2 + crack as u32 + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+    // Seconds in that it is nearest, and the pitch of the air either side.
+    let passing = if crack { vary(0.012, 0.2) } else { vary(0.05, 0.2) };
+    let (coming, going) = (vary(5000.0, 0.1), vary(1300.0, 0.12));
+    // How long it takes to come and to go: it is gone sooner than it came.
+    let (approach, fade) = (vary(0.02, 0.2), vary(0.05, 0.2));
+    let shock = vary(0.0004, 0.15);
+    let mut air = Biquad::new(Pass::Band, coming, 2.5);
+    let mut hiss = Biquad::new(Pass::Band, coming * 1.7, 1.0);
+    let mut snap = Biquad::new(Pass::Low, 8000.0, 0.7);
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+    let mut sound = samples(LENGTH, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let gone = 1.0 / (1.0 + (-(t - passing) / 0.008).exp());
+        let pitch = coming + (going - coming) * gone;
+        air.retune(Pass::Band, pitch, 2.5);
+        hiss.retune(Pass::Band, pitch * 1.7, 1.0);
+        let width = if t < passing { approach } else { fade };
+        let near = (-((t - passing) / width).powi(2)).exp();
+        let whoosh = (air.run(noise) * 2.2 + hiss.run(noise) * 0.7) * near;
+        let cracking = if crack {
+            // The N-shaped wave of a shock going by: a jump up, a straight
+            // fall through zero, and a jump back.
+            let wave = if t < shock { 1.0 - 2.0 * t / shock } else { 0.0 };
+            wave * 0.9 + snap.run(noise) * (-t * 350.0).exp() * 1.4
+        } else {
+            0.0
+        };
+        ((whoosh + cracking) * 1.6).tanh()
+    });
+    thin(&mut sound, 300.0);
+    finish(&mut sound, 0.8);
+    sound
+}
+
+/// A bullet striking near us. Hard ground and walls crack as chips fly
+/// off, and now and then the bullet whines away in a ricochet; earth and
+/// grass take it in a dull thwack and throw dirt up; gravel sprays
+/// stones; water spits.
+fn synth_impact(surface: Surface, take: u32) -> Vec<f32> {
+    if surface == Surface::Water {
+        return synth_plop(take + 30);
+    }
+    let mut rng = 0x6e_0801 ^ (surface as u32 + 1).wrapping_mul(0x9e37_79b9) ^ (take + 1).wrapping_mul(7919);
+    let mut random = || next_random(&mut rng);
+    let mut vary = |value: f32, spread: f32| value * (1.0 + spread * (random() * 2.0 - 1.0));
+    // (crack gain, crack cutoff, thud cutoff, thud gain, grains a second,
+    // grain pitches, how sharply they ring, their gain)
+    let (crack, crack_cutoff, thud_cutoff, thud_gain, grain_rate, (low, high), grain_q, grain_gain): (
+        f32,
+        f32,
+        f32,
+        f32,
+        f32,
+        (f32, f32),
+        f32,
+        f32,
+    ) = match surface {
+        Surface::Hard => (1.0, 9000.0, 900.0, 0.6, 2500.0, (2500.0, 7000.0), 6.0, 0.8),
+        Surface::Gravel => (0.6, 6500.0, 700.0, 0.9, 4000.0, (1200.0, 6000.0), 8.0, 1.6),
+        Surface::Dirt => (0.25, 3500.0, 450.0, 1.5, 1800.0, (1200.0, 4500.0), 3.0, 1.0),
+        _ => (0.15, 3000.0, 400.0, 1.4, 3500.0, (2500.0, 6500.0), 0.7, 0.9),
+    };
+    // One take in three off something hard whines away.
+    let ricochet = (surface == Surface::Hard && take == 1).then(|| (vary(3300.0, 0.1), vary(1900.0, 0.1)));
+    let length = if ricochet.is_some() { 0.6 } else { 0.35 };
+    let mut snap = Biquad::new(Pass::Low, vary(crack_cutoff, 0.1), 0.7);
+    let mut thud = Biquad::new(Pass::Low, vary(thud_cutoff, 0.1), 0.7);
+    let mut grains = Grains::new(if grain_q < 1.0 { 3000.0 } else { 900.0 });
+    let mut noise_rng = rng ^ 0x5bd1_e995;
+    let mut phase = 0.0_f32;
+    let mut sound = samples(length, |t| {
+        let noise = next_random(&mut noise_rng) * 2.0 - 1.0;
+        let snapping = snap.run(noise) * (-t * 500.0).exp() * (t / 0.0002).min(1.0) * crack * 2.0;
+        let thudding = thud.run(noise * (-t * 60.0).exp() * (t / 0.0005).min(1.0)) * thud_gain * 3.0;
+        let density = (-t / 0.04).exp();
+        if next_random(&mut noise_rng) < grain_rate * density / SAMPLE_RATE as f32 {
+            let size = next_random(&mut noise_rng).powi(3) * density;
+            grains.add(low * (high / low).powf(next_random(&mut noise_rng)), grain_q, size);
+        }
+        let whining = ricochet.map_or(0.0, |(from, to)| {
+            let since = t - 0.008;
+            if since < 0.0 {
+                return 0.0;
+            }
+            // Falling as it flies off, wavering as it tumbles.
+            let pitch = to + (from - to) * (-since * 6.0).exp();
+            phase += TAU * pitch * (1.0 + 0.015 * (TAU * 38.0 * since).sin()) / SAMPLE_RATE as f32;
+            phase.sin() * (since / 0.02).min(1.0) * (-since * 6.5).exp() * 0.35
+        });
+        let out = snapping + thudding + grains.run(noise) * grain_gain * grain_q.sqrt() + whining;
+        (out * 1.4).tanh()
+    });
+    muffle(&mut sound, 8000.0);
+    finish(&mut sound, 0.8);
+    sound
 }
 
 /// A grenade hitting something: on hard ground its thick metal body clanks
@@ -2439,6 +2576,10 @@ mod tests {
             all.extend((0..MAG_DROP_TAKES).map(|take| synth_mag_drop(surface, take)));
             all.extend((0..BOUNCE_TAKES).map(|take| synth_bounce(surface, take)));
             all.extend((0..ROLL_TAKES).map(|take| synth_roll(surface, take)));
+            all.extend((0..IMPACT_TAKES).map(|take| synth_impact(surface, take)));
+        }
+        for crack in [false, true] {
+            all.extend((0..WHIZ_TAKES).map(|take| synth_whiz(take, crack)));
         }
         for far in [false, true] {
             all.extend((0..BLAST_TAKES).map(|take| synth_explosion(take, far)));
@@ -2667,6 +2808,48 @@ mod tests {
             put(&mut heard, 0.0, &synth_explosion(1, true), far * DISTANT_BOOST);
             write(&format!("explosion_at_{metres}m"), &heard);
         }
+    }
+
+    /// Writes out the sounds of being shot at to listen to: each bullet
+    /// going by, each strike, and a burst of rifle fire cracking past then
+    /// chewing into the wall beside us. `cargo test write_bullets --
+    /// --ignored`, into `target/sounds` (or `$SOUND_DIR`).
+    #[test]
+    #[ignore]
+    fn write_bullets() {
+        let dir = std::env::var("SOUND_DIR").unwrap_or_else(|_| "target/sounds".into());
+        std::fs::create_dir_all(&dir).unwrap();
+        let rate = SAMPLE_RATE as f32;
+        let write = |name: &str, sound: &[f32]| std::fs::write(format!("{dir}/{name}.wav"), wav_bytes(sound)).unwrap();
+        for crack in [false, true] {
+            for take in 0..WHIZ_TAKES {
+                write(&format!("whiz_{}_{take}", if crack { "crack" } else { "plain" }), &synth_whiz(take, crack));
+            }
+        }
+        for surface in Surface::ALL {
+            let name = format!("{surface:?}").to_lowercase();
+            for take in 0..IMPACT_TAKES {
+                write(&format!("impact_{name}_{take}"), &synth_impact(surface, take));
+            }
+        }
+        let mut burst = vec![0.0; (2.5 * rate) as usize];
+        let mut put = |at: f32, sound: &[f32], volume: f32| {
+            for (i, s) in sound.iter().enumerate() {
+                burst[(at * rate) as usize + i] += s * volume;
+            }
+        };
+        let shot = synth_gunshot(RIFLE, 0, true);
+        for n in 0..8 {
+            let at = n as f32 * 0.11;
+            put(at, &shot, 0.4);
+            let closeness = 0.3 + 0.08 * n as f32;
+            if n < 4 {
+                put(at + 0.25, &synth_whiz(n % WHIZ_TAKES, true), 0.25 + 0.6 * closeness);
+            } else {
+                put(at + 0.25, &synth_impact(Surface::Hard, n % IMPACT_TAKES), 0.5);
+            }
+        }
+        write("shot_at", &burst);
     }
 
     /// Writes the footsteps out to listen to: each take, and a run of
