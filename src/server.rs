@@ -200,6 +200,16 @@ fn bot_skill(difficulty: u8) -> &'static BotSkill {
 }
 /// Seconds a bot stays turned towards whoever hurt it.
 const BOT_GRUDGE: f32 = 3.0;
+/// A bot that kills somebody within this many metres, and has nothing
+/// better to do, goes over to the body (giving up after `BOT_GLOAT_TIME`
+/// seconds) and crouches up and down on it `BOT_BOBS` times, `BOT_BOB`
+/// seconds down and as long up.
+const BOT_GLOAT_RANGE: f32 = 15.0;
+const BOT_GLOAT_TIME: f32 = 6.0;
+const BOT_BOBS: u32 = 5;
+const BOT_BOB: f32 = 0.25;
+/// Close enough to the body to start (metres along the ground).
+const BOT_GLOAT_REACH: f32 = 0.8;
 /// Bullets vanish after this many seconds, as they do on the clients.
 const BULLET_LIFETIME: f32 = 1.5;
 
@@ -257,6 +267,13 @@ struct Bot {
     investigate: Option<Vec3>,
     investigate_for: f32,
     last_noise: u64,
+    /// Where lies the body of somebody it just killed close by, for how much
+    /// longer it will go there, and for how long it has been bobbing on it.
+    gloat: Option<Vec3>,
+    gloat_for: f32,
+    bobbing: f32,
+    /// On the short box (see `bot_crouch`).
+    crouched: bool,
 }
 
 impl Bot {
@@ -294,6 +311,10 @@ impl Bot {
             investigate: None,
             investigate_for: 0.0,
             last_noise: 0,
+            gloat: None,
+            gloat_for: 0.0,
+            bobbing: 0.0,
+            crouched: false,
         }
     }
 }
@@ -1400,6 +1421,7 @@ impl Server {
             return;
         };
         let victim_team = victim.team & 1;
+        let body = victim.pos;
         // No friendly fire. Your own grenade still hurts you.
         if is_team_mode(mode) && attacker_id != victim_id && attacker_team == Some(victim.team) {
             return;
@@ -1459,6 +1481,18 @@ impl Server {
         {
             attacker.kills += 1;
             scorer = Some((attacker.kills, attacker.team as usize & 1));
+            let close = attacker.pos.distance(body) < BOT_GLOAT_RANGE;
+            if let Some(bot) = &mut attacker.bot {
+                // Whoever it was cross with is dead: no grudge left to get in the way.
+                if bot.provoked_by == Some(victim_id) {
+                    bot.provoked_by = None;
+                }
+                if close {
+                    bot.gloat = Some(body);
+                    bot.gloat_for = BOT_GLOAT_TIME;
+                    bot.bobbing = 0.0;
+                }
+            }
         }
         self.broadcast(&ServerMsg::Kill {
             killer: attacker_id,
@@ -2071,9 +2105,30 @@ fn crowds(body: Vec3, spawn: Vec3) -> bool {
 /// to spawn by the other: their boxes' width and a step to spare.
 const SPAWN_CLEARANCE: f32 = 2.0 * map::PLAYER_HALF.x + 0.7;
 
-/// Where a bot's eyes are (bots never crouch).
+/// Where a bot's eyes are.
 fn bot_eye(player: &Player) -> Vec3 {
-    player.pos + Vec3::Y * (map::STAND_EYE - map::PLAYER_HALF.y)
+    let crouched = player.flags & FLAG_CROUCH != 0;
+    let eye = if crouched { map::CROUCH_EYE } else { map::STAND_EYE };
+    player.pos + Vec3::Y * (eye - map::player_half(crouched).y)
+}
+
+/// Crouches the bot, or stands it back up if there is room, the way people
+/// do: the box shrinks towards the feet, and clients are told.
+fn bot_crouch(map: &Map, player: &mut Player, bot: &mut Bot, crouch: bool) {
+    let drop = map::PLAYER_HALF.y - map::CROUCH_HALF.y;
+    if crouch && !bot.crouched {
+        player.pos.y -= drop;
+    } else if !crouch && bot.crouched {
+        let standing = player.pos + Vec3::Y * drop;
+        if !map.is_free(standing, map::PLAYER_HALF) {
+            return;
+        }
+        player.pos = standing;
+    } else {
+        return;
+    }
+    bot.crouched = crouch;
+    player.flags = (player.flags & !FLAG_CROUCH) | if crouch { FLAG_CROUCH } else { 0 };
 }
 
 /// The point a bot aims at on a body: the upper chest.
@@ -2359,13 +2414,35 @@ fn bot_move(
     if (enemy.is_some() || bot.investigate.is_some_and(looked)) && bot.investigate.take().is_some() {
         bot.retarget_in = 0.0;
     }
-    // Careful when fighting or creeping up on a noise.
-    let speed = if enemy.is_some() || bot.investigate.is_some() { 5.5 } else { 7.0 };
+    // Gloating over a body, while there is nothing better to do: nobody to
+    // fight, nothing heard, nobody to get back at. Done, it stands up.
+    bot.gloat_for -= dt;
+    let distracted = enemy.is_some() || bot.investigate.is_some() || bot.provoked_by.is_some();
+    let bobbed = bot.bobbing >= BOT_BOBS as f32 * 2.0 * BOT_BOB;
+    let gave_up = bot.gloat_for <= 0.0 && bot.bobbing == 0.0;
+    if (distracted || bobbed || gave_up) && bot.gloat.take().is_some() {
+        bot.retarget_in = 0.0;
+    }
+    let on_body = bot.gloat.is_some_and(|body| (body - player.pos).with_y(0.0).length() < BOT_GLOAT_REACH);
+    if on_body {
+        bot.bobbing += dt;
+    }
+    let down = on_body && ((bot.bobbing / BOT_BOB) as u32).is_multiple_of(2);
+    bot_crouch(map, player, bot, down);
+    let half = map::player_half(bot.crouched);
+    // Careful when fighting or creeping up on a noise; still on a body.
+    let speed = if on_body {
+        0.0
+    } else if enemy.is_some() || bot.investigate.is_some() {
+        5.5
+    } else {
+        7.0
+    };
     bot.retarget_in -= dt;
     let to_goal = (bot.goal - player.pos).with_y(0.0);
     // A new target (a conquest flag) takes over at once.
     let off_target = target.is_some_and(|(center, radius, stay)| stay && (bot.goal - center).with_y(0.0).length() > radius + 0.5);
-    if let Some(spot) = bot.investigate {
+    if let Some(spot) = bot.investigate.or(bot.gloat) {
         bot.goal = spot;
     } else if bot.retarget_in <= 0.0 || to_goal.length() < 1.5 || (enemy.is_none() && off_target) {
         if let Some(enemy) = enemy {
@@ -2405,7 +2482,7 @@ fn bot_move(
     // Follow the way to the goal while not fighting.
     let mut steer = bot.goal;
     if enemy.is_none() {
-        let feet = player.pos - Vec3::Y * map::PLAYER_HALF.y;
+        let feet = player.pos - Vec3::Y * half.y;
         let goal = bot.goal.with_y(map.ground(bot.goal.x, bot.goal.z).unwrap_or(0.0));
         if bot.path_to.is_none_or(|to| to.distance(goal) > 0.5) {
             bot.path = nav.path(map, feet, goal).unwrap_or_default();
@@ -2425,16 +2502,16 @@ fn bot_move(
     bot.vel.z += (wish.z - bot.vel.z) * blend;
     bot.vel.y -= 22.0 * dt;
     let wanted = Vec3::new(bot.vel.x, 0.0, bot.vel.z);
-    let mut grounded = map.move_and_slide(&mut player.pos, &mut bot.vel, map::PLAYER_HALF, dt);
+    let mut grounded = map.move_and_slide(&mut player.pos, &mut bot.vel, half, dt);
     if bot.grounded && !grounded && bot.vel.y <= 0.0 {
         let drop = map::STEP_UP.max(speed * dt);
-        if map.snap_to_ground(&mut player.pos, map::PLAYER_HALF, drop) {
+        if map.snap_to_ground(&mut player.pos, half, drop) {
             grounded = true;
             bot.vel.y = 0.0;
         }
     }
     bot.grounded = grounded;
-    if let Some(pad) = map.pad_at(player.pos - Vec3::Y * map::PLAYER_HALF.y) {
+    if let Some(pad) = map.pad_at(player.pos - Vec3::Y * half.y) {
         // Bots aim with arrow pads from a standstill so they land where intended.
         bot.vel = match pad.direction() {
             Some(_) => pad.launch,
@@ -2443,7 +2520,7 @@ fn bot_move(
     } else if grounded {
         // Hop when blocked by something, and every now and then for fun.
         let blocked = Vec3::new(bot.vel.x, 0.0, bot.vel.z).length() < wanted.length() * 0.5;
-        if blocked || next_random(rng).is_multiple_of(90) {
+        if !on_body && (blocked || next_random(rng).is_multiple_of(90)) {
             bot.vel.y = 8.0;
         }
     }
@@ -2455,8 +2532,9 @@ fn bot_move(
         if bot.path_to.is_some() {
             bot.path_to = None;
         } else {
-            // A noise from somewhere it cannot get to is not worth the trouble.
+            // A noise, or a body, somewhere it cannot get to is not worth the trouble.
             bot.investigate = None;
+            bot.gloat = None;
             bot.retarget_in = 0.0;
         }
     }
@@ -2470,7 +2548,9 @@ fn bot_move(
         } else if wish.length_squared() > 0.01 {
             player.yaw = turn_towards(player.yaw, (-wish.x).atan2(-wish.z), BOT_TURN_RATE * 2.0 * dt);
         }
-        player.pitch = turn_towards(player.pitch, 0.0, BOT_TURN_RATE * dt);
+        // Looking down at the body it is on.
+        let pitch = if on_body { -0.6 } else { 0.0 };
+        player.pitch = turn_towards(player.pitch, pitch, BOT_TURN_RATE * dt);
     }
 }
 
@@ -2518,7 +2598,7 @@ fn bot_fight(
         bot.reload = stats.reload;
     }
     player.weapon = bot.gun;
-    player.flags = if bot.reload > 0.0 { FLAG_RELOAD } else { 0 };
+    player.flags = (bot.crouched as u8 * FLAG_CROUCH) | if bot.reload > 0.0 { FLAG_RELOAD } else { 0 };
     let enemy = enemy?;
     // Aims down sights at whoever it is after, between reloads.
     if bot.reload <= 0.0 && player.weapon != weapons::KNIFE {
@@ -3236,6 +3316,67 @@ mod tests {
         assert!((12..=14).contains(&running), "{running} steps");
         assert_eq!(steps_made(true, 4.0), 0, "crouched");
         assert_eq!(steps_made(false, 0.0), 0, "standing");
+    }
+
+    /// Having killed somebody close by, with nobody else about, a bot goes
+    /// over to the body and crouches up and down on it, then gets up and
+    /// goes about its business. Killed from far off, or with a noise to go
+    /// and see, it does not bother.
+    #[test]
+    fn bots_teabag_who_they_killed_close_by() {
+        // (crouched on the body at some point, ended up standing)
+        let gloat = |apart: f32, noise: bool| {
+            let mut server = Server::bind(ServerSettings {
+                port: 0,
+                bots: 1,
+                ..ServerSettings::default()
+            })
+            .unwrap();
+            server.join_counter += 1;
+            let human = server.new_player("Victim".into(), None);
+            server.players.insert(1000, human);
+            server.start_match();
+            server.countdown = 0.0;
+            let bot = server.players.iter().find(|(_, p)| p.bot.is_some()).map(|(id, _)| *id).unwrap();
+            // A spawn point with open ground `apart` metres in some direction.
+            let (bot_pos, victim_pos) = server
+                .map
+                .spawns
+                .iter()
+                .flat_map(|spawn| (0..16).map(move |step| (spawn.pos, step as f32 * std::f32::consts::TAU / 16.0)))
+                .map(|(from, yaw)| (from, from + map::look_dir(yaw, 0.0) * apart))
+                .find(|(from, to)| {
+                    server.map.is_free(*to, map::PLAYER_HALF)
+                        && server.map.line_of_sight(*from, *to)
+                        && server.map.line_of_sight(*from - Vec3::Y * 0.8, *to - Vec3::Y * 0.8)
+                        // Standing on something, not in the air.
+                        && !server.map.is_free(*to - Vec3::Y * 0.2, map::PLAYER_HALF)
+                })
+                .expect("no open ground on the map");
+            server.players.get_mut(&bot).unwrap().pos = bot_pos;
+            let victim = server.players.get_mut(&1000).unwrap();
+            victim.pos = victim_pos;
+            victim.armor = 0;
+            server.damage(1000, bot, 1000, weapons::RIFLE);
+            assert!(!server.players[&1000].alive);
+            if noise {
+                server.make_noise(1000, victim_pos + Vec3::X * 20.0, NoiseKind::Shot);
+                // Somebody else's, really: the dead make no noise.
+                server.noises.last_mut().unwrap().source = 2000;
+            }
+            let mut bobbed = false;
+            for _ in 0..60 * 8 {
+                server.update_bots(1.0 / 60.0);
+                let player = &server.players[&bot];
+                let crouched = player.flags & FLAG_CROUCH != 0;
+                let on_body = (player.pos - victim_pos).with_y(0.0).length() < 1.0;
+                bobbed |= crouched && on_body;
+            }
+            (bobbed, server.players[&bot].flags & FLAG_CROUCH == 0)
+        };
+        assert_eq!(gloat(6.0, false), (true, true), "killed close by");
+        assert_eq!(gloat(30.0, false), (false, true), "killed far off");
+        assert_eq!(gloat(6.0, true), (false, true), "heard a shot");
     }
 
     /// A bot hears an enemy's step close by, and goes to see roughly where
