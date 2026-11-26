@@ -163,9 +163,9 @@ pub fn grenade(kind: GrenadeKind) -> &'static GrenadeStats {
 /// The most grenades of any kind somebody can carry.
 pub const MOST_GRENADES: usize = 2;
 
-pub const GRENADE_THROW_SPEED: f32 = 21.0;
+pub const GRENADE_THROW_SPEED: f32 = 27.0;
 /// Right-click throws are lobbed gently, this much as hard.
-pub const GRENADE_LOB: f32 = 0.45;
+pub const GRENADE_LOB: f32 = 0.35;
 /// Frag damage at the centre of the blast, falling off to nothing at `GRENADE_RADIUS`.
 pub const GRENADE_DAMAGE: f32 = 130.0;
 pub const GRENADE_RADIUS: f32 = 7.0;

@@ -701,8 +701,11 @@ impl Map {
     /// contact, 0 if it touched nothing (above `BOUNCE_SOUND` it can be heard).
     pub fn step_grenade(&self, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> f32 {
         const RESTITUTION: f32 = 0.42;
-        /// Share of the sideways speed kept through each contact.
+        /// Share of the sideways speed kept through each contact with a wall...
         const GRIP: f32 = 0.84;
+        /// ...and with the floor, which it digs into rather than skating on.
+        const GROUND_GRIP: f32 = 0.4;
+        const GROUND_RESTITUTION: f32 = 0.35;
         let half = Vec3::splat(GRENADE_HALF);
         vel.y -= GRENADE_GRAVITY * dt;
         let steps = (vel.length() * dt / 0.1).ceil().clamp(1.0, 64.0);
@@ -724,9 +727,10 @@ impl Map {
                     block.max[axis] + half[axis]
                 };
                 let impact = vel[axis].abs();
-                *vel *= GRIP;
+                let (grip, restitution) = if axis == 1 { (GROUND_GRIP, GROUND_RESTITUTION) } else { (GRIP, RESTITUTION) };
+                *vel *= grip;
                 // Too slow to bounce: it stays put on that axis (resting on the floor).
-                vel[axis] = if impact > 1.5 { -vel[axis] * RESTITUTION / GRIP } else { 0.0 };
+                vel[axis] = if impact > 1.5 { -vel[axis] * restitution / grip } else { 0.0 };
                 hardest = hardest.max(impact);
             }
             let Some(terrain) = &self.terrain else {
@@ -742,7 +746,7 @@ impl Map {
             if into < 0.0 {
                 let impact = -into;
                 let along = *vel - normal * into;
-                *vel = along * GRIP + if impact > 1.5 { normal * impact * RESTITUTION } else { Vec3::ZERO };
+                *vel = along * GROUND_GRIP + if impact > 1.5 { normal * impact * GROUND_RESTITUTION } else { Vec3::ZERO };
                 hardest = hardest.max(impact);
             }
         }
