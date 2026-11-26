@@ -623,9 +623,13 @@ struct RosterKey {
     colors: Vec<u8>,
 }
 
+/// How wide one column of the scoreboard is: a team, or half of free for all.
+const ROSTER_COLUMN_WIDTH: f32 = 490.0;
 /// How wide the scoreboard's player list is at least.
-const ROSTER_WIDTH: f32 = 430.0;
-const STAT_WIDTH: f32 = 56.0;
+const ROSTER_WIDTH: f32 = ROSTER_COLUMN_WIDTH;
+const STAT_WIDTH: f32 = 52.0;
+/// Longer names are cut off at this width.
+const ROSTER_NAME_WIDTH: f32 = 150.0;
 
 fn roster_list(min_width: f32, last_match: bool) -> impl Bundle {
     (
@@ -642,23 +646,32 @@ fn roster_list(min_width: f32, last_match: bool) -> impl Bundle {
     )
 }
 
-/// A number in one of the two columns on the right of the player list.
-fn roster_stat(text: String, size: f32, color: Color) -> impl Bundle {
+/// Text that keeps to the outside edge of its column: the right edge on the
+/// right-hand team, which runs mirrored, and the left one elsewhere.
+fn outer_justify(right: bool) -> TextLayout {
+    TextLayout::justify(if right { Justify::Right } else { Justify::Left })
+}
+
+/// A number in one of the columns beside the names. They keep to the names'
+/// side, so on the mirrored team they line up on their left.
+fn roster_stat(text: String, size: f32, color: Color, right: bool) -> impl Bundle {
     (
         label(text, size, color),
-        TextLayout::justify(Justify::Right),
+        TextLayout::justify(if right { Justify::Left } else { Justify::Right }),
         Node {
             width: px(STAT_WIDTH),
+            flex_shrink: 0.0,
             ..default()
         },
     )
 }
 
-fn roster_row_node() -> Node {
+fn roster_row_node(right: bool) -> Node {
     Node {
         align_items: AlignItems::Center,
-        column_gap: px(10),
-        padding: UiRect::axes(px(10), px(7)),
+        flex_direction: if right { FlexDirection::RowReverse } else { FlexDirection::Row },
+        column_gap: px(8),
+        padding: UiRect::axes(px(10), px(6)),
         border: UiRect::all(px(1)),
         border_radius: BorderRadius::all(px(10)),
         ..default()
@@ -666,20 +679,38 @@ fn roster_row_node() -> Node {
 }
 
 /// The line over a group of players: a title, and the names of the columns.
-fn roster_heading(title: String, color: Color) -> impl Bundle {
+fn roster_heading(title: String, color: Color, right: bool) -> impl Bundle {
     (
-        roster_row_node(),
+        roster_row_node(right),
         children![
-            (weighted(title, 11.0, 700, color), Node { flex_grow: 1.0, ..default() }),
-            roster_stat("KILLS".into(), 11.0, DIM),
-            roster_stat("ASSISTS".into(), 11.0, DIM),
-            roster_stat("DEATHS".into(), 11.0, DIM),
-            roster_stat("DAMAGE".into(), 11.0, DIM),
+            (weighted(title, 11.0, 700, color), outer_justify(right), Node { flex_grow: 1.0, ..default() }),
+            roster_stat("KILLS".into(), 11.0, DIM, right),
+            roster_stat("ASSISTS".into(), 11.0, DIM, right),
+            roster_stat("DEATHS".into(), 11.0, DIM, right),
+            roster_stat("DAMAGE".into(), 11.0, DIM, right),
         ],
     )
 }
 
-fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey) -> impl Bundle {
+/// Over a team's players: its name and score, big, in its colour.
+fn roster_team_banner(name: &str, score: u32, color: Color, right: bool) -> impl Bundle + use<> {
+    (
+        Node {
+            align_items: AlignItems::Baseline,
+            justify_content: JustifyContent::SpaceBetween,
+            flex_direction: if right { FlexDirection::RowReverse } else { FlexDirection::Row },
+            padding: UiRect::axes(px(10), px(0)),
+            margin: UiRect::bottom(px(2)),
+            ..default()
+        },
+        children![
+            (heading(name, 26.0, color), TextLayout::no_wrap()),
+            (heading(&score.to_string(), 26.0, color), TextLayout::no_wrap()),
+        ],
+    )
+}
+
+fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey, right: bool) -> impl Bundle + use<> {
     let me = player.id == key.my_id;
     let (name, tag) = match player.name.strip_prefix("[bot] ") {
         Some(name) if player.is_bot => (name, "BOT"),
@@ -687,7 +718,7 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey) -> impl Bundl
         _ => (player.name.as_str(), ""),
     };
     (
-        roster_row_node(),
+        roster_row_node(right),
         // Your own line stands out.
         BackgroundColor(if me { ACCENT.with_alpha(0.10) } else { CARD }),
         BorderColor::all(if me { ACCENT.with_alpha(0.5) } else { Color::NONE }),
@@ -696,20 +727,34 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey) -> impl Bundl
                 Node {
                     width: px(14),
                     height: px(14),
+                    flex_shrink: 0.0,
                     border_radius: BorderRadius::all(px(4)),
                     ..default()
                 },
                 BackgroundColor(swatch),
             ),
-            (weighted(name, 16.0, 600, TEXT), TextLayout::no_wrap()),
+            // Long names are cut short so both teams' columns stay put.
+            (
+                Node {
+                    max_width: px(ROSTER_NAME_WIDTH),
+                    overflow: Overflow::clip(),
+                    flex_direction: if right { FlexDirection::RowReverse } else { FlexDirection::Row },
+                    ..default()
+                },
+                children![(weighted(name.to_string(), 16.0, 600, TEXT), TextLayout::no_wrap(), Node {
+                    flex_shrink: 0.0,
+                    ..default()
+                })],
+            ),
             (
                 weighted(tag, 10.0, 700, if tag == "LEADER" { ACCENT } else { DIM }),
+                outer_justify(right),
                 Node { flex_grow: 1.0, ..default() },
             ),
-            roster_stat(player.kills.to_string(), 16.0, TEXT),
-            roster_stat(player.assists.to_string(), 16.0, DIM),
-            roster_stat(player.deaths.to_string(), 16.0, DIM),
-            roster_stat(player.damage.to_string(), 16.0, DIM),
+            roster_stat(player.kills.to_string(), 16.0, TEXT, right),
+            roster_stat(player.assists.to_string(), 16.0, DIM, right),
+            roster_stat(player.deaths.to_string(), 16.0, DIM, right),
+            roster_stat(player.damage.to_string(), 16.0, DIM, right),
         ],
     )
 }
@@ -768,34 +813,54 @@ fn update_rosters(
         }
         list.shown = Some(key.clone());
         let column = || Node {
+            width: px(ROSTER_COLUMN_WIDTH),
+            flex_shrink: 0.0,
             flex_direction: FlexDirection::Column,
             row_gap: px(2),
             ..default()
         };
         commands.entity(entity).despawn_children().with_children(|groups| {
-            if !key.team_mode {
-                groups.spawn(column()).with_children(|rows| {
-                    rows.spawn(roster_heading("PLAYER".into(), DIM));
-                    for (player, color) in key.roster.iter().zip(&key.colors) {
-                        rows.spawn(roster_row(player, palette_color(*color), &key));
+            // Side by side, like the lobby, so a full match fits the screen.
+            groups.spawn(Node::default()).with_children(|sides| {
+                if !key.team_mode {
+                    // The best eight on the left, any more on the right.
+                    let everyone: Vec<_> = key.roster.iter().zip(&key.colors).collect();
+                    for (k, players) in everyone.chunks(TEAM_SIZE).enumerate() {
+                        if k > 0 {
+                            sides.spawn(Node {
+                                width: px(32),
+                                flex_shrink: 0.0,
+                                ..default()
+                            });
+                        }
+                        sides.spawn(column()).with_children(|rows| {
+                            rows.spawn(roster_heading("PLAYER".into(), DIM, false));
+                            for (player, color) in players {
+                                rows.spawn(roster_row(player, palette_color(**color), &key, false));
+                            }
+                        });
                     }
-                });
-                return;
-            }
-            // Our team (blue) first, then the enemy (red).
-            let mine = key.my_team & 1;
-            for team in [mine, mine ^ 1] {
-                let color = team_color(mine, team);
-                groups.spawn(column()).with_children(|rows| {
-                    let yours = if team == key.my_team & 1 { "  (YOURS)" } else { "" };
-                    let name = team_name(mine, team).to_uppercase();
-                    let title = format!("{name} TEAM{yours}  -  {}", key.team_scores[team as usize]);
-                    rows.spawn(roster_heading(title, color));
-                    for player in key.roster.iter().filter(|player| player.team & 1 == team) {
-                        rows.spawn(roster_row(player, color, &key));
+                    return;
+                }
+                // Our team (blue) on the left, the enemy (red) facing it on the
+                // right, as in the lobby.
+                let mine = key.my_team & 1;
+                for team in [mine, mine ^ 1] {
+                    let color = team_color(mine, team);
+                    let right = team != mine;
+                    if right {
+                        sides.spawn(team_seam());
                     }
-                });
-            }
+                    sides.spawn(column()).with_children(|rows| {
+                        let name = format!("{} team", team_name(mine, team));
+                        rows.spawn(roster_team_banner(&name, key.team_scores[team as usize], color, right));
+                        rows.spawn(roster_heading("PLAYER".into(), DIM, right));
+                        for player in key.roster.iter().filter(|player| player.team & 1 == team) {
+                            rows.spawn(roster_row(player, color, &key, right));
+                        }
+                    });
+                }
+            });
         });
     }
 }
@@ -1948,6 +2013,7 @@ enum Hud {
     PauseKills,
     PauseAssists,
     PauseDeaths,
+    PauseDamage,
     /// The scoreboard's title: the map and what wins, the mode, and the time left.
     ScoreCaption,
     ScoreMode,
@@ -2786,7 +2852,8 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         DespawnOnExit(AppState::Playing),
         children![(
             Node {
-                width: px(440),
+                // Room for five facts in a row.
+                width: px(520),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(10),
                 padding: UiRect::all(px(28)),
@@ -2818,6 +2885,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                         pause_fact("Kills", Hud::PauseKills),
                         pause_fact("Assists", Hud::PauseAssists),
                         pause_fact("Deaths", Hud::PauseDeaths),
+                        pause_fact("Damage", Hud::PauseDamage),
                     ],
                 ),
                 (primary_button("Resume"), observe(on_resume)),
@@ -3238,6 +3306,7 @@ fn update_hud(
             Hud::PauseKills => (me.map_or(0, |p| p.kills).to_string(), TEXT),
             Hud::PauseAssists => (me.map_or(0, |p| p.assists).to_string(), TEXT),
             Hud::PauseDeaths => (me.map_or(0, |p| p.deaths).to_string(), TEXT),
+            Hud::PauseDamage => (me.map_or(0, |p| p.damage).to_string(), TEXT),
             Hud::ScoreCaption => {
                 let wins = if session.mode == MODE_CONQUEST {
                     format!("{} TICKETS", session.score_limit)
