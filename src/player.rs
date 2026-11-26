@@ -46,7 +46,17 @@ pub const GRAVITY: f32 = 22.0;
 pub const LANDING_AIR_TIME: f32 = 0.25;
 const JUMP_SPEED: f32 = 8.0;
 const AIR_JUMPS: u32 = 1;
-const DASH_SPEED: f32 = 20.0;
+/// Bunny hopping takes a jump pressed close to landing, not jump held down.
+/// Pressed up to this long before touching down (with no air jump left, or
+/// the ground right below), the jump goes off on landing.
+const BHOP_EARLY: f32 = 0.1;
+/// For this long after a landing, speed above running speed is kept rather
+/// than lost to friction, so a jump pressed just after landing still carries it.
+const BHOP_LATE: f32 = 0.1;
+/// A dash brings your speed up to this (it never slows you).
+const DASH_SPEED: f32 = 13.0;
+/// A dash from the ground hops you up: half the jump's speed, a quarter of its height.
+const DASH_LIFT: f32 = JUMP_SPEED * 0.5;
 pub const DASH_COOLDOWN: f32 = 1.5;
 const MAX_SPEED: f32 = 45.0;
 const CROUCH_SPEED: f32 = 4.5;
@@ -319,6 +329,10 @@ pub struct LocalPlayer {
     /// Jump or dash pressed since the last movement step.
     jump_queued: bool,
     dash_queued: bool,
+    /// Seconds a jump pressed in the air waits for the ground (`BHOP_EARLY`).
+    jump_buffer: f32,
+    /// Seconds left of the landing's grace from friction (`BHOP_LATE`).
+    bhop_grace: f32,
     /// The yaw at the end of the last frame's movement.
     frame_yaw: f32,
     /// 0 = hip, 1 = fully aimed down sights.
@@ -396,6 +410,8 @@ impl Default for LocalPlayer {
             view_feet: Vec3::new(0.0, 10.0, 0.0) - PLAYER_HALF.y * Vec3::Y,
             jump_queued: false,
             dash_queued: false,
+            jump_buffer: 0.0,
+            bhop_grace: 0.0,
             frame_yaw: 0.0,
             aim: 0.0,
             choked_for: 0.0,
@@ -872,7 +888,6 @@ struct Held {
     yaw_from: f32,
     yaw_to: f32,
     crouch: bool,
-    jump: bool,
     aim: bool,
 }
 
@@ -895,7 +910,6 @@ fn movement(
         yaw_from: p.frame_yaw,
         yaw_to: p.yaw,
         crouch: input.pressed(Action::Crouch),
-        jump: input.pressed(Action::Jump),
         aim: input.pressed(Action::Aim),
     };
     advance(p, time.delta_secs(), &held, &map.0, session.air_accel(), session.frozen());
@@ -938,6 +952,8 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
     let dt = TICK;
     p.dash_cooldown = (p.dash_cooldown - dt).max(0.0);
     p.slide_boost_cooldown = (p.slide_boost_cooldown - dt).max(0.0);
+    p.jump_buffer = (p.jump_buffer - dt).max(0.0);
+    p.bhop_grace = (p.bhop_grace - dt).max(0.0);
     // Held in place at the spawn until the countdown is over; looking around is fine.
     if !p.alive || frozen {
         return;
@@ -965,11 +981,21 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
     let aiming = held.aim && !p.reloading() && p.slot != KNIFE_SLOT && p.hand.is_none();
     p.aim += (aiming as u8 as f32 - p.aim) * (dt * 14.0).min(1.0);
 
+    let top_speed = if p.crouching {
+        CROUCH_SPEED
+    } else if aiming {
+        AIM_SPEED
+    } else {
+        RUN_SPEED * p.weapon().mobility
+    };
     if p.grounded {
         p.air_jumps = AIR_JUMPS;
-        // Holding jump hops again the moment you land, skipping ground friction:
-        // that is what lets you keep (and build) speed by bunny hopping.
-        if held.jump {
+        // A jump pressed just before landing (buffered) or just after it hops
+        // again before friction takes the speed: that is what lets you keep
+        // (and build) speed by bunny hopping. Holding jump does not.
+        if p.jump_queued || p.jump_buffer > 0.0 {
+            p.jump_buffer = 0.0;
+            p.bhop_grace = 0.0;
             p.vel.y = JUMP_SPEED;
             p.grounded = false;
             p.sliding = false;
@@ -984,31 +1010,40 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
                 p.vel.x *= slowed / speed;
                 p.vel.z *= slowed / speed;
             }
+        } else if p.bhop_grace > 0.0 && p.horizontal_speed() > top_speed {
+            // Just landed with speed to keep: coast, waiting for the jump.
         } else {
-            let top_speed = if p.crouching {
-                CROUCH_SPEED
-            } else if aiming {
-                AIM_SPEED
-            } else {
-                RUN_SPEED * p.weapon().mobility
-            };
+            p.bhop_grace = 0.0;
             apply_friction(&mut p.vel, dt);
             accelerate(&mut p.vel, wish, top_speed, GROUND_ACCEL * top_speed, dt);
         }
     } else {
-        if p.jump_queued && p.air_jumps > 0 {
-            p.air_jumps -= 1;
-            p.vel.y = JUMP_SPEED;
+        if p.jump_queued {
+            // About to touch down: this press is a bunny hop, not the air jump.
+            let fall = (-p.vel.y * BHOP_EARLY + 0.5 * GRAVITY * BHOP_EARLY * BHOP_EARLY).max(0.0);
+            let landing = p.vel.y < 0.0 && !map.is_free(p.pos - Vec3::Y * fall, p.half());
+            if p.air_jumps > 0 && !landing {
+                p.air_jumps -= 1;
+                p.vel.y = JUMP_SPEED;
+            } else {
+                p.jump_buffer = BHOP_EARLY;
+            }
         }
         air_accelerate(&mut p.vel, wish, air_accel, dt);
     }
 
-    // Dash: redirect all momentum where you are steering, with a minimum speed.
+    // Dash: redirect all momentum where you are steering, with a minimum
+    // speed, and off the ground a little hop.
     if p.dash_queued && p.dash_cooldown <= 0.0 {
         p.dash_cooldown = DASH_COOLDOWN;
         let dir = if wish == Vec3::ZERO { forward } else { wish };
         let speed = p.vel.with_y(0.0).length().max(DASH_SPEED);
-        p.vel = Vec3::new(dir.x * speed, p.vel.y.max(0.0), dir.z * speed);
+        let lift = if p.grounded { DASH_LIFT } else { 0.0 };
+        p.vel = Vec3::new(dir.x * speed, p.vel.y.max(lift), dir.z * speed);
+        if p.grounded {
+            p.grounded = false;
+            p.sliding = false;
+        }
     }
 
     p.vel.y -= GRAVITY * dt;
@@ -1033,6 +1068,7 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
     if p.grounded {
         if !was_grounded && p.air_time > LANDING_AIR_TIME {
             p.landings = p.landings.wrapping_add(1);
+            p.bhop_grace = BHOP_LATE;
         }
         p.air_time = 0.0;
     } else {
@@ -1601,7 +1637,6 @@ mod tests {
             yaw_from: 0.0,
             yaw_to: 0.0,
             crouch: false,
-            jump: false,
             aim: false,
         }
     }
@@ -1618,9 +1653,9 @@ mod tests {
         }
     }
 
-    /// Holding jump hops again the step after landing, so the player is
-    /// almost never on the ground when a frame ends; every landing must
-    /// still be counted (it is what makes the sound).
+    /// Jump pressed a little before each landing hops again the step it
+    /// lands, so the player is almost never on the ground when a frame ends;
+    /// every landing must still be counted (it is what makes the sound).
     #[test]
     fn every_bunny_hop_landing_is_counted() {
         let map = floor();
@@ -1628,14 +1663,78 @@ mod tests {
         let hops = (4.0 / (2.0 * JUMP_SPEED / GRAVITY)) as u32;
         for fps in [30.0, 60.0, 144.0, 240.0] {
             let mut p = standing(&map);
-            let before = p.landings;
+            let (before, floor_y) = (p.landings, p.feet().y);
             let frames = (4.0 * fps) as u32;
             for _ in 0..frames {
-                let held = Held { jump: true, ..idle() };
-                advance(&mut p, 1.0 / fps, &held, &map, DEFAULT_AIR_ACCEL.into(), false);
+                // Pressed every frame on the ground or coming down onto it.
+                if p.grounded || (p.vel.y < 0.0 && p.feet().y < floor_y + 0.4) {
+                    p.jump_queued = true;
+                }
+                advance(&mut p, 1.0 / fps, &idle(), &map, DEFAULT_AIR_ACCEL.into(), false);
             }
             assert_eq!(p.landings - before, hops, "{fps} fps");
         }
+    }
+
+    /// Lands from a hop at 15 m/s with jump pressed `press` seconds from
+    /// the landing (negative is before it); the speed it carries on.
+    fn bhop_speed(press: f32) -> f32 {
+        let map = floor();
+        let mut p = standing(&map);
+        p.air_jumps = 0;
+        p.vel = Vec3::new(15.0, JUMP_SPEED, 0.0);
+        p.grounded = false;
+        let landing = 2.0 * JUMP_SPEED / GRAVITY;
+        let fps = 144.0;
+        let mut pressed = false;
+        play(&mut p, &map, fps, landing + 0.3, |p, t| {
+            if !pressed && t >= landing + press {
+                pressed = true;
+                p.jump_queued = true;
+            }
+            Vec2::ZERO
+        });
+        p.horizontal_speed()
+    }
+
+    #[test]
+    fn a_bunny_hop_must_be_timed() {
+        // Pressed a little before or after landing: the speed is kept.
+        for press in [-0.08, -0.02, 0.02, 0.07] {
+            let speed = bhop_speed(press);
+            assert!(speed > 14.5, "pressed {press} s from landing, kept {speed} m/s");
+        }
+        // Pressed too late: friction has had it.
+        let late = bhop_speed(0.25);
+        assert!(late < 13.0, "pressed late, kept {late} m/s");
+    }
+
+    #[test]
+    fn holding_jump_does_not_bunny_hop() {
+        let map = floor();
+        let mut p = standing(&map);
+        let before = p.landings;
+        p.jump_queued = true;
+        // Held from here on: no new press, so it lands and stays down.
+        play(&mut p, &map, 144.0, 1.5, |_, _| Vec2::ZERO);
+        assert!(p.grounded);
+        assert_eq!(p.landings - before, 1);
+    }
+
+    #[test]
+    fn a_dash_from_the_ground_hops_a_little() {
+        let map = floor();
+        let mut p = standing(&map);
+        let start = p.feet().y;
+        p.dash_queued = true;
+        let mut top = start;
+        play(&mut p, &map, 144.0, 0.6, |p, _| {
+            top = top.max(p.feet().y);
+            Vec2::ZERO
+        });
+        let full = JUMP_SPEED * JUMP_SPEED / (2.0 * GRAVITY);
+        let hop = top - start;
+        assert!((hop - full / 4.0).abs() < 0.05, "dash hopped {hop} m, a jump {full} m");
     }
 
     /// Strafing right in the air at 12 m/s while turning right at a steady
