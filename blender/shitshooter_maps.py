@@ -30,7 +30,8 @@ How a map is read (see blender/README.md for more):
     finish         a box: through it and the run is over
     finish spawn   where you wait after finishing a race (else a spawn)
     kill           boxes that count as falling off (else: falling 10 m
-                   below the lowest solid)
+                   below the lowest solid); unlike the others these can
+                   be tilted, to lie along a slope
   A map with a start and a finish is a course (race and time trial); one
   without is played in free for all and team deathmatch.
 - Blender's metres are the game's metres; Z is up.
@@ -39,7 +40,7 @@ How a map is read (see blender/README.md for more):
 bl_info = {
     "name": "ShitShooter map tools",
     "author": "ShitShooter",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (4, 2, 0),
     "location": "File > Export > ShitShooter map; 3D View > Sidebar > ShitShooter",
     "description": "Build maps for ShitShooter and export them for the game",
@@ -383,6 +384,18 @@ def gate(obj, problems):
     }
 
 
+def kill_box(obj, problems):
+    """A kill zone: a gate's box, plus its axes, so it can be turned any way
+    (a slab tipped to lie under a slope)."""
+    out = gate(obj, [])
+    if obj.empty_display_type != "CUBE":
+        problems.append(f"{obj.name}: shown as a box (Cube empty) it would show its size; its display size and scale are used")
+    m = obj.matrix_world.to_3x3()
+    # Across (X), up (Z), along (Y), in the game's order and coordinates.
+    out["axes"] = [game_point((m @ Vector(axis)).normalized()) for axis in ((1, 0, 0), (0, 0, 1), (0, 1, 0))]
+    return out
+
+
 def inside(point, box):
     """Is a marker's point inside a gate (roughly: within its turned box)?"""
     c, h, f = box["center"], box["half"], box["facing"]
@@ -414,7 +427,7 @@ def read_map(context):
         elif name == "finish":
             finish = gate(obj, problems)
         elif name.startswith("kill"):
-            found["kills"].append(gate(obj, problems))
+            found["kills"].append(kill_box(obj, problems))
         elif number and number.group(1) == "checkpoint":
             found["checkpoints"][int(number.group(2))] = gate(obj, problems)
         elif number:

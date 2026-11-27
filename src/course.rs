@@ -4,7 +4,7 @@
 //! the server only checks that what it is told comes in a sensible order.
 //! Pure math, for the server as much as the client.
 
-use bevy::math::{Quat, Vec3};
+use bevy::math::{Mat3, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 /// A box turned about the vertical: a checkpoint's gate, the start, the finish.
@@ -73,6 +73,33 @@ impl Zone {
     }
 }
 
+/// A box turned any way at all: a kill zone, which can lie along a slope.
+#[derive(Clone, Copy, Debug)]
+pub struct KillBox {
+    pub center: Vec3,
+    /// Half its size along each of its axes.
+    pub half: Vec3,
+    /// Its axes (across, up, along) as unit columns.
+    pub axes: Mat3,
+}
+
+impl KillBox {
+    pub fn contains(&self, point: Vec3) -> bool {
+        (self.axes.transpose() * (point - self.center)).abs().cmple(self.half).all()
+    }
+}
+
+impl From<Zone> for KillBox {
+    fn from(zone: Zone) -> Self {
+        let turn = Quat::from_rotation_y(zone.yaw);
+        KillBox {
+            center: zone.center,
+            half: zone.half,
+            axes: Mat3::from_cols(turn * Vec3::X, Vec3::Y, turn * Vec3::NEG_Z),
+        }
+    }
+}
+
 /// Where somebody who fell off comes back in: their box's centre, the way
 /// they face, and how fast they are going (put back in moving, so the
 /// ramp ahead carries them on).
@@ -99,7 +126,7 @@ pub struct Course {
     /// for after the last one).
     pub floors: Vec<f32>,
     /// Go into one of these and you have fallen off too.
-    pub kills: Vec<Zone>,
+    pub kills: Vec<KillBox>,
 }
 
 impl Course {
@@ -260,6 +287,27 @@ mod tests {
         assert!(zone.contains(along * 0.4) && !zone.contains(along * 0.6));
         let across = Vec3::new(-along.z, 0.0, along.x);
         assert!(zone.contains(across * 3.9) && !zone.contains(across * 4.1));
+        // As a kill box it covers the same ground.
+        let kill = KillBox::from(zone);
+        for point in [along * 0.4, along * 0.6, across * 3.9, across * 4.1, Vec3::Y * 0.9, Vec3::Y * 1.1] {
+            assert_eq!(kill.contains(point), zone.contains(point), "{point}");
+        }
+    }
+
+    #[test]
+    fn a_kill_box_can_lie_along_a_slope() {
+        // A thin slab tipped 30 degrees down towards -z.
+        let tip = Quat::from_rotation_x(-30_f32.to_radians());
+        let kill = KillBox {
+            center: Vec3::ZERO,
+            half: Vec3::new(10.0, 1.0, 100.0),
+            axes: Mat3::from_quat(tip),
+        };
+        let down_slope = tip * Vec3::NEG_Z;
+        assert!(kill.contains(down_slope * 90.0));
+        // Level with its centre but far along, it is well above the slab.
+        assert!(!kill.contains(Vec3::NEG_Z * 90.0));
+        assert!(!kill.contains(down_slope * 90.0 + tip * Vec3::Y * 1.5));
     }
 
     #[test]

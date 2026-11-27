@@ -20,11 +20,11 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use bevy::math::{Vec2, Vec3};
+use bevy::math::{Mat3, Vec2, Vec3};
 use serde::Deserialize;
 
 use crate::{
-    course::{Course, Respawn, Zone},
+    course::{Course, KillBox, Respawn, Zone},
     map::{Look, Map, PLAYER_HALF, Spawn},
     ramp::Ramp,
 };
@@ -54,7 +54,7 @@ struct File {
     finish_spawn: Option<Marker>,
     /// Go into one of these and you have fallen off.
     #[serde(default)]
-    kills: Vec<Gate>,
+    kills: Vec<Kill>,
 }
 
 #[derive(Deserialize)]
@@ -93,6 +93,32 @@ struct Gate {
     center: [f32; 3],
     half: [f32; 3],
     facing: [f32; 2],
+}
+
+/// A kill zone: a gate's box, which `axes` (across, up, along: unit
+/// vectors) can turn any way, as a slab under a slope. Without them it is
+/// only turned about the vertical, by `facing`.
+#[derive(Deserialize, Clone, Copy)]
+struct Kill {
+    #[serde(flatten)]
+    gate: Gate,
+    #[serde(default)]
+    axes: Option<[[f32; 3]; 3]>,
+}
+
+impl Kill {
+    fn kill_box(self) -> KillBox {
+        let flat = KillBox::from(self.gate.zone());
+        let Some(axes) = self.axes else { return flat };
+        let axes = axes.map(|axis| Vec3::from(axis).try_normalize());
+        match axes {
+            [Some(across), Some(up), Some(along)] => KillBox {
+                axes: Mat3::from_cols(across, up, along),
+                ..flat
+            },
+            _ => flat,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -194,7 +220,7 @@ fn build(id: u8, file: &File) -> Map {
             finish: finish.zone(),
             finish_point: file.finish_spawn.map_or(start_point, Marker::respawn),
             floors: vec![lo.y - FALL_BELOW; file.checkpoints.len() + 1],
-            kills: file.kills.iter().map(|kill| kill.zone()).collect(),
+            kills: file.kills.iter().map(|kill| kill.kill_box()).collect(),
         });
     }
     map.bounds = [Vec2::new(lo.x - 10.0, lo.z - 10.0), Vec2::new(hi.x + 10.0, hi.z + 10.0)];
@@ -398,7 +424,9 @@ mod tests {
                 "checkpoints": [{{"gate": {{"center": [0, 2, -30], "half": [5, 4, 0.5], "facing": [0, -1]}},
                                   "respawn": {{"at": [0, 0, -32], "facing": [0, -1], "speed": 20}}}}],
                 "finish": {{"center": [0, 2, -50], "half": [5, 4, 0.5], "facing": [0, -1]}},
-                "kills": [{{"center": [0, -20, -30], "half": [100, 5, 100], "facing": [0, -1]}}]
+                "kills": [{{"center": [0, -20, -30], "half": [100, 5, 100], "facing": [0, -1]}},
+                          {{"center": [0, -50, -150], "half": [100, 1, 100], "facing": [0, -1],
+                            "axes": [[1, 0, 0], [0, 0.7071, -0.7071], [0, -0.7071, -0.7071]]}}]
             }}"#,
             cube([-5.0, -1.0, -60.0], [5.0, 0.0, 0.0]),
             cube([-5.0, -1.0, -100.0], [5.0, 0.0, -70.0]),
@@ -426,6 +454,10 @@ mod tests {
         // A course catches a fall before the map's safety net does.
         assert!(course.floors.iter().all(|floor| *floor > map.abyss));
         assert!(!course.fallen(Vec3::new(0.0, 1.0, -30.0), 1));
+        // The second kill zone slopes down 45 degrees towards -z: in it 50 m
+        // down the slope, but not level with its centre 50 m on.
+        assert!(course.kills[1].contains(Vec3::new(0.0, -85.35, -185.35)));
+        assert!(!course.kills[1].contains(Vec3::new(0.0, -50.0, -200.0)));
     }
 
     /// The example made by `blender/example_surf_map.py` is a course.

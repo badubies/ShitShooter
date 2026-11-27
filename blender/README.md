@@ -61,7 +61,7 @@ Names are matched without regard to case, and Blender's `.001` endings are ignor
 | `respawn 1`, `respawn 2`, … | Where a fall after that checkpoint puts you, facing its Y axis and moving at its **speed** custom property (m/s; the Checkpoint button adds one). Each checkpoint needs one. |
 | `finish` | A box. Pass through it and your run is over. |
 | `finish spawn` | Optional: where you wait after finishing a race. Otherwise it's the first spawn. |
-| `kill` | Optional boxes that count as falling off: you go back to your last checkpoint (or the start). Otherwise you've fallen off 10 m below the lowest solid. |
+| `kill` | Optional boxes that count as falling off: you go back to your last checkpoint (or the start). Otherwise you've fallen off 10 m below the lowest solid. Unlike the other boxes, a kill box can be tilted any way, so a thin slab can lie under a slope. (The others only turn about Z.) |
 
 A map with a `start` and a `finish` is a **course**, played in **Race** and **Time trial**. A map without them is played in **Free for all** and **Team deathmatch**, and it only needs spawns.
 
