@@ -415,6 +415,8 @@ mod tests {
         // Through a gate facing -z is going -z.
         assert!(course.finish.entered(Vec3::new(0.0, 2.0, -49.0), Vec3::new(0.0, 2.0, -51.0)).is_some());
         assert!(course.fallen(Vec3::new(0.0, -20.0, -30.0), 1));
+        // A course catches a fall before the map's safety net does.
+        assert!(course.floors.iter().all(|floor| *floor > map.abyss));
         assert!(!course.fallen(Vec3::new(0.0, 1.0, -30.0), 1));
     }
 

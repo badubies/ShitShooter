@@ -254,6 +254,9 @@ pub struct Map {
     /// Maps made in Blender: the texture (`textures::Pattern::named`) for
     /// each colour that names one.
     pub textures: Vec<([f32; 3], String)>,
+    /// Fallen out of the map below this (well under anything solid): put
+    /// back in the middle. Courses catch falls well before it.
+    pub abyss: f32,
     /// The ground of the outdoor maps. Indoor maps stand on a floor block.
     pub terrain: Option<Terrain>,
     /// The corners of the part of the map that is played in (x, z): bots
@@ -452,6 +455,7 @@ impl Map {
             id,
             blocks: Vec::new(),
             ramps: Vec::new(),
+            abyss: -20.0,
             textures: Vec::new(),
             terrain: None,
             bounds: [Vec2::splat(-A + 4.0), Vec2::splat(A - 4.0)],
@@ -508,6 +512,8 @@ impl Map {
         self.index_blocks();
         let bounds: Vec<_> = self.ramps.iter().map(|ramp| (ramp.min, ramp.max)).collect();
         self.ramp_grid = BlockGrid::new(&bounds);
+        let lowest = self.blocks.iter().map(|b| b.min.y).chain(self.ramps.iter().map(|r| r.min.y)).fold(0.0_f32, f32::min);
+        self.abyss = (lowest - 20.0).min(-20.0);
         self
     }
 

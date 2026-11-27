@@ -1132,8 +1132,9 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
         p.grounded = false;
         p.sliding = false;
     }
-    // Safety net; the arena is sealed, so this should never trigger.
-    if p.pos.y < -20.0 || !p.pos.is_finite() {
+    // Safety net, far below the map: the arenas are sealed, and a course
+    // catches a fall long before it (`follow_course`).
+    if p.pos.y < map.abyss || !p.pos.is_finite() {
         p.pos = Vec3::new(0.0, 8.0, 0.0);
         p.vel = Vec3::ZERO;
     }
