@@ -26,6 +26,13 @@ const OUTLINE: f32 = 0.035;
 /// A teammate's name floats this far above the middle of their box.
 const TAG_HEIGHT: f32 = 1.3;
 
+/// On a course others start to fade once they are this close to our eyes
+/// (metres, to the nearest point of them)...
+const FADE_FROM: f32 = 4.0;
+/// ...and are this see-through by the time they are this close.
+const FADE_TO: f32 = 1.0;
+const FADE_MIN: f32 = 0.15;
+
 pub struct RemotePlugin;
 
 impl Plugin for RemotePlugin {
@@ -54,6 +61,7 @@ impl Plugin for RemotePlugin {
                         .chain()
                         .after(RemoteSystems)
                         .after(PlayerSystems::Camera),
+                    fade_close.after(RemoteSystems).after(PlayerSystems::Camera),
                 )
                     .run_if(in_state(AppState::Playing)),
             );
@@ -895,6 +903,124 @@ fn draw_ally_tags(
             visibility.set_if_neq(Visibility::Hidden);
         } else {
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// A remote player's own see-through copies of their materials, worn while
+/// they are faded (see `fade_close`).
+#[derive(Component)]
+struct Ghost {
+    /// Their paint job, and its copy.
+    skin: Handle<StandardMaterial>,
+    coat: Handle<StandardMaterial>,
+    /// The copy of the visor's material (`SharedAssets::dark`).
+    visor: Handle<StandardMaterial>,
+    /// Wearing the copies.
+    faded: bool,
+    alpha: f32,
+}
+
+/// How solid someone is whose nearest point is `distance` from our eyes.
+fn fade_alpha(distance: f32) -> f32 {
+    let t = ((distance - FADE_TO) / (FADE_FROM - FADE_TO)).clamp(0.0, 1.0);
+    FADE_MIN + (1.0 - FADE_MIN) * t * t * (3.0 - 2.0 * t)
+}
+
+/// A see-through copy of `material`.
+fn see_through(material: &StandardMaterial, alpha: f32) -> StandardMaterial {
+    StandardMaterial {
+        base_color: material.base_color.with_alpha(alpha),
+        alpha_mode: AlphaMode::Blend,
+        ..material.clone()
+    }
+}
+
+/// In a race or a time trial the others fade out as they come close, so
+/// someone right in front of us does not hide the course. They wear copies
+/// of their materials while they do, and their own again once clear.
+fn fade_close(
+    mut commands: Commands,
+    session: Res<Session>,
+    assets: Res<SharedAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut changes: MessageReader<AssetEvent<StandardMaterial>>,
+    camera: Single<&Transform, With<MainCamera>>,
+    mut remotes: Query<(Entity, &RemotePlayer, &Transform, Option<&mut Ghost>), Without<MainCamera>>,
+    children: Query<&Children>,
+    bodies: Query<(), With<Body>>,
+    mut meshes: Query<&mut MeshMaterial3d<StandardMaterial>>,
+) {
+    let eye = camera.translation;
+    let course = is_course_mode(session.mode);
+    // A paint job that arrived: copied into the coat of whoever wears it.
+    let repainted: Vec<_> =
+        changes.read().filter_map(|event| if let AssetEvent::Modified { id } = event { Some(*id) } else { None }).collect();
+    for (entity, remote, transform, ghost) in &mut remotes {
+        let alpha = if course && remote.alive {
+            // The nearest point of them: on the line from their feet to the top of their head.
+            let half = if remote.crouching { CROUCH_HALF.y } else { PLAYER_HALF.y };
+            let centre = transform.translation;
+            let nearest = Vec3::new(centre.x, eye.y.clamp(centre.y - half, centre.y + half), centre.z);
+            fade_alpha(eye.distance(nearest))
+        } else {
+            1.0
+        };
+        let faded = alpha < 0.99;
+        let mut ghost = match ghost {
+            Some(ghost) => ghost,
+            None if faded => {
+                let Some(skin) = children
+                    .get(entity)
+                    .into_iter()
+                    .flatten()
+                    .filter(|child| bodies.contains(**child))
+                    .find_map(|child| meshes.get(*child).ok())
+                    .map(|material| material.0.clone())
+                else {
+                    continue;
+                };
+                let (Some(coat), Some(visor)) = (materials.get(&skin), materials.get(&assets.dark)) else {
+                    continue;
+                };
+                let (coat, visor) = (see_through(coat, alpha), see_through(visor, alpha));
+                commands.entity(entity).insert(Ghost {
+                    skin,
+                    coat: materials.add(coat),
+                    visor: materials.add(visor),
+                    faded: false,
+                    alpha,
+                });
+                // Worn from the next frame on.
+                continue;
+            }
+            None => continue,
+        };
+        if faded && (repainted.contains(&ghost.skin.id()) || (alpha - ghost.alpha).abs() > 0.01) {
+            ghost.alpha = alpha;
+            if let Some(skin) = materials.get(&ghost.skin).cloned() {
+                materials.insert(&ghost.coat, see_through(&skin, alpha)).ok();
+            }
+            if let Some(mut visor) = materials.get_mut(&ghost.visor) {
+                visor.base_color.set_alpha(alpha);
+            }
+        }
+        if faded == ghost.faded {
+            continue;
+        }
+        ghost.faded = faded;
+        // Swap their body, head and visor over to (or back from) the copies.
+        let swaps = if faded {
+            [(ghost.skin.clone(), ghost.coat.clone()), (assets.dark.clone(), ghost.visor.clone())]
+        } else {
+            [(ghost.coat.clone(), ghost.skin.clone()), (ghost.visor.clone(), assets.dark.clone())]
+        };
+        for part in children.iter_descendants(entity) {
+            if let Ok(mut material) = meshes.get_mut(part)
+                && let Some((_, to)) = swaps.iter().find(|(from, _)| *from == material.0)
+            {
+                material.0 = to.clone();
+            }
         }
     }
 }
