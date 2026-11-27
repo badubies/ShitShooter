@@ -13,7 +13,9 @@
 //! for a course, the start, the checkpoints (each with where a fall after it
 //! puts you back), the finish and zones that count as falling off. A map
 //! with a start and a finish is a course, raced in the racing modes; any
-//! other is played in free for all and team deathmatch.
+//! other is played in free for all and team deathmatch. A file can also
+//! name the modes it was made for (`modes`), and is then offered in those
+//! alone.
 
 use std::{
     path::{Path, PathBuf},
@@ -26,6 +28,7 @@ use serde::Deserialize;
 use crate::{
     course::{Course, KillBox, Respawn, Zone},
     map::{Look, Map, PLAYER_HALF, Spawn},
+    modes::{self, Needs},
     ramp::Ramp,
 };
 
@@ -55,6 +58,13 @@ struct File {
     /// Go into one of these and you have fallen off.
     #[serde(default)]
     kills: Vec<Kill>,
+    /// The modes it was made for, by their keys ("race", "ffa"). Without
+    /// it, every mode the map has what it takes for.
+    #[serde(default)]
+    modes: Option<Vec<String>>,
+    /// The modes it is played in (their ids), worked out by `parse`.
+    #[serde(skip)]
+    plays: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -157,9 +167,44 @@ impl Gate {
     }
 }
 
+/// What a map file is missing to be played in a mode with these needs, if
+/// anything.
+fn lacks(file: &File, needs: Needs) -> Option<&'static str> {
+    let course = file.start.is_some() && file.finish.is_some();
+    match needs {
+        Needs::Arena => course.then_some("it is a course"),
+        Needs::Course => (!course).then_some("it has no start and finish"),
+        Needs::Hill => Some("a map file cannot mark a hill"),
+        Needs::Flags => Some("a map file cannot have flags"),
+    }
+}
+
+/// The modes a map file is played in: the ones it names, if it has what
+/// each needs, or else every mode it has what it takes for.
+fn modes_of(file: &File) -> Result<Vec<u8>, String> {
+    let Some(keys) = &file.modes else {
+        return Ok((0..modes::count()).filter(|mode| lacks(file, modes::info(*mode).needs).is_none()).collect());
+    };
+    let mut plays = Vec::new();
+    for key in keys {
+        // A mode this game does not know (the map is from a newer one) is passed over.
+        let Some(mode) = modes::by_key(key) else { continue };
+        if let Some(why) = lacks(file, modes::info(mode).needs) {
+            return Err(format!("it is made for {}, but {why}", modes::name(mode).to_lowercase()));
+        }
+        if !plays.contains(&mode) {
+            plays.push(mode);
+        }
+    }
+    if plays.is_empty() {
+        return Err(format!("it is made for modes this game does not have ({})", keys.join(", ")));
+    }
+    Ok(plays)
+}
+
 /// Reads a map file, checking it can be played: `Err` says what is wrong.
 fn parse(bytes: &[u8]) -> Result<File, String> {
-    let file: File = serde_json::from_slice(bytes).map_err(|err| format!("not a map file: {err}"))?;
+    let mut file: File = serde_json::from_slice(bytes).map_err(|err| format!("not a map file: {err}"))?;
     if file.format != FORMAT {
         return Err(format!("made for format {}, this game reads format {FORMAT}: export it again", file.format));
     }
@@ -181,6 +226,7 @@ fn parse(bytes: &[u8]) -> Result<File, String> {
         (None, Some(_)) => return Err("it has a finish but no start".into()),
         _ => {}
     }
+    file.plays = modes_of(&file)?;
     Ok(file)
 }
 
@@ -242,9 +288,8 @@ fn build(id: u8, file: &File) -> Map {
 pub struct Entry {
     /// Its file's name, without `.json`.
     pub name: String,
-    /// Raced in the racing modes (it has a start and a finish), rather than
-    /// fought on.
-    pub course: bool,
+    /// The modes it is played in (their ids).
+    pub modes: Vec<u8>,
     /// Its file, when this game read it from one (hosting); a game that
     /// joined somebody else's is sent the map instead.
     path: Option<PathBuf>,
@@ -312,7 +357,7 @@ pub fn load() -> Vec<String> {
         match read.and_then(|bytes| parse(&bytes).map(|file| (bytes, file))) {
             Ok((bytes, file)) => maps.push(Entry {
                 name,
-                course: file.start.is_some(),
+                modes: file.plays,
                 path: Some(path),
                 bytes: Some(Arc::new(bytes)),
             }),
@@ -331,30 +376,35 @@ pub fn count() -> usize {
     MAPS.read().unwrap().len()
 }
 
-/// The `index`th one's name, and whether it is a course.
-pub fn about(index: usize) -> Option<(String, bool)> {
-    MAPS.read().unwrap().get(index).map(|entry| (entry.name.clone(), entry.course))
+/// The `index`th one's name.
+pub fn name(index: usize) -> Option<String> {
+    MAPS.read().unwrap().get(index).map(|entry| entry.name.clone())
 }
 
-/// Every one's name, and whether it is a course: what a server tells
+/// True if the `index`th one is played in `mode`.
+pub fn plays(index: usize, mode: u8) -> bool {
+    MAPS.read().unwrap().get(index).is_some_and(|entry| entry.modes.contains(&mode))
+}
+
+/// Every one's name, and the modes it is played in: what a server tells
 /// whoever joins.
-pub fn list() -> Vec<(String, bool)> {
-    MAPS.read().unwrap().iter().map(|entry| (entry.name.clone(), entry.course)).collect()
+pub fn list() -> Vec<(String, Vec<u8>)> {
+    MAPS.read().unwrap().iter().map(|entry| (entry.name.clone(), entry.modes.clone())).collect()
 }
 
 /// Joined somebody's game: theirs are the maps there are. One of ours with
 /// the same name in the same place keeps what we know of it until we are
 /// sent theirs.
-pub fn take_list(list: Vec<(String, bool)>) {
+pub fn take_list(list: Vec<(String, Vec<u8>)>) {
     let mut maps = MAPS.write().unwrap();
     let old = std::mem::take(&mut *maps);
     *maps = list
         .into_iter()
         .enumerate()
-        .map(|(index, (name, course))| {
+        .map(|(index, (name, modes))| {
             let kept = old.get(index).filter(|entry| entry.name == name);
             Entry {
-                course,
+                modes,
                 path: kept.and_then(|entry| entry.path.clone()),
                 bytes: kept.and_then(|entry| entry.bytes.clone()),
                 name,
@@ -373,7 +423,7 @@ pub fn take_bytes(index: usize, bytes: Vec<u8>) -> Result<(), String> {
     let file = parse(&bytes)?;
     let mut maps = MAPS.write().unwrap();
     let entry = maps.get_mut(index).ok_or("no such map")?;
-    entry.course = file.start.is_some();
+    entry.modes = file.plays;
     entry.bytes = Some(Arc::new(bytes));
     Ok(())
 }
@@ -473,6 +523,26 @@ mod tests {
             assert!(!map.is_free(spawn.pos - Vec3::Y * 0.1, PLAYER_HALF), "a spawn in the air at {}", spawn.pos);
             assert!(course.start.contains(spawn.pos));
         }
+    }
+
+    #[test]
+    fn a_map_is_played_in_the_modes_it_names_or_the_ones_it_can_be() {
+        use crate::modes::{MODE_FFA, MODE_RACE, MODE_TEAMS, MODE_TRIAL};
+        // A course with nothing said: both racing modes.
+        assert_eq!(parse(course_file().as_bytes()).unwrap().plays, [MODE_RACE, MODE_TRIAL]);
+        // Somewhere to fight with nothing said: the modes that need no more.
+        let arena = format!(r#"{{"format": 1, "solids": [{}], "spawns": [{{"at": [0, 0, -5], "facing": [0, -1]}}]}}"#, cube([-5.0, -1.0, -9.0], [5.0, 0.0, 0.0]));
+        assert_eq!(parse(arena.as_bytes()).unwrap().plays, [MODE_FFA, MODE_TEAMS]);
+        // Naming them narrows it; one this game does not know is passed over.
+        let trial_only = course_file().replace(r#""format": 1,"#, r#""format": 1, "modes": ["TRIAL", "from the future"],"#);
+        assert_eq!(parse(trial_only.as_bytes()).unwrap().plays, [MODE_TRIAL]);
+        // Made for a mode it has not what it takes for: said, not played.
+        let wrong = arena.replace(r#""format": 1,"#, r#""format": 1, "modes": ["race"],"#);
+        assert!(parse(wrong.as_bytes()).err().unwrap().contains("made for race, but it has no start and finish"));
+        let hill = arena.replace(r#""format": 1,"#, r#""format": 1, "modes": ["hill"],"#);
+        assert!(parse(hill.as_bytes()).err().unwrap().contains("cannot mark a hill"));
+        let unknown = arena.replace(r#""format": 1,"#, r#""format": 1, "modes": ["from the future"],"#);
+        assert!(parse(unknown.as_bytes()).err().unwrap().contains("modes this game does not have"));
     }
 
     #[test]

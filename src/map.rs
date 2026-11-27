@@ -48,7 +48,7 @@ pub fn count() -> u8 {
 pub fn name(id: u8) -> String {
     match MAP_NAMES.get(id as usize) {
         Some(name) => name.to_string(),
-        None => crate::custom::about((id - BUILT_IN) as usize).map_or_else(|| "?".to_string(), |(name, _)| name),
+        None => crate::custom::name((id - BUILT_IN) as usize).unwrap_or_else(|| "?".to_string()),
     }
 }
 
@@ -59,10 +59,7 @@ pub fn by_name(name: &str) -> Option<u8> {
 
 /// True if map `id` is a surf course.
 pub fn is_course(id: u8) -> bool {
-    if id >= BUILT_IN {
-        return crate::custom::about((id - BUILT_IN) as usize).is_some_and(|(_, course)| course);
-    }
-    id == GAUNTLET
+    plays(id, modes::MODE_RACE)
 }
 
 /// What each built-in map has to play on, in the order of `MAP_NAMES`.
@@ -75,20 +72,17 @@ const BUILT_IN_OFFERS: [Offers; MAP_NAMES.len()] = {
     [all, all, all, fights, fights, course]
 };
 
-/// What map `id` has to play on. Maps made in Blender have no flags nor
-/// hill: they are a course or somewhere to fight.
-pub fn offers(id: u8) -> Offers {
-    match BUILT_IN_OFFERS.get(id as usize) {
-        Some(offers) => *offers,
-        None => Offers { course: is_course(id), ..Offers::default() },
-    }
-}
-
 /// True if map `id` can be played in `mode`: it has what the mode needs.
 /// The racing modes are run on the courses, and the courses are for nothing
-/// else.
+/// else. A map made in Blender says for itself (`custom.rs`).
 pub fn plays(id: u8, mode: u8) -> bool {
-    mode < modes::count() && offers(id).has(modes::info(mode).needs)
+    if mode >= modes::count() {
+        return false;
+    }
+    match BUILT_IN_OFFERS.get(id as usize) {
+        Some(offers) => offers.has(modes::info(mode).needs),
+        None => crate::custom::plays((id - BUILT_IN) as usize, mode),
+    }
 }
 
 /// The most maps any one mode is played on.

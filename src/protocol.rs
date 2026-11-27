@@ -309,8 +309,8 @@ pub enum ServerMsg {
     Welcome {
         id: PlayerId,
         /// The maps made in Blender this server has (`custom.rs`), in
-        /// order: each one's name, and whether it is a course.
-        maps: Vec<(String, bool)>,
+        /// order: each one's name, and the modes it is played in.
+        maps: Vec<(String, Vec<u8>)>,
     },
     /// The file of map `map`, one made in Blender (`custom.rs`), sent before
     /// it is played and again whenever the host's copy changes.
