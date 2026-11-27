@@ -163,8 +163,9 @@ SERVERS:
     --password <TEXT>    Lobby password (--host, --join and --server)
 
 LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
-    --mode <NAME>        Game mode: ffa, teams, hill, conquest, race or trial
-                         [default: ffa] (race, trial: no guns, no bots)
+    --mode <NAME>        Game mode: ffa, teams, hill, conquest, race, trial or
+                         sniper [default: ffa] (race, trial: no guns, no
+                         bots; sniper: no bots, on a map made for it)
     --frags <N>          Kills needed to win (doubled for teams) [default: 20]
     --minutes <N>        Match time limit                 [default: 10]
     --bots <N>           Start with N bots
@@ -172,8 +173,9 @@ LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
     --bot-difficulty <L> How well bots fight: easy, normal or hard [default: normal]
     --map <NAME>         Map: arena, depot, valley, hamlet, surf, gauntlet,
                          or one made in Blender, by its file's name
-                         [default: arena] (hamlet, surf: ffa and teams only;
-                         courses: race and trial, and they only there)
+                         [default: arena, or the first the mode is played
+                         on] (hamlet, surf: ffa and teams only; courses:
+                         race and trial, and they only there)
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
 
     --help               Show this text
@@ -224,10 +226,6 @@ fn parse_args() -> Result<LaunchArgs, String> {
             "--mode" => {
                 let name = value("name")?;
                 args.server.mode = modes::by_key(&name).ok_or_else(|| format!("unknown mode '{name}' (try: {})", modes::keys()))?;
-                // The racing modes are only run on the course.
-                if modes::is_course_mode(args.server.mode) && args.map.is_none() {
-                    args.server.map = map::GAUNTLET;
-                }
             }
             "--map" => {
                 let name = value("name")?;
@@ -252,6 +250,14 @@ fn parse_args() -> Result<LaunchArgs, String> {
     // A course on its own means a race.
     if map::is_course(args.server.map) && args.server.mode == modes::MODE_FFA {
         args.server.mode = modes::MODE_RACE;
+    }
+    // A mode on its own means the first map it is played on (the racing
+    // modes: the course).
+    if args.map.is_none()
+        && !map::plays(args.server.map, args.server.mode)
+        && let Some(id) = (0..map::count()).find(|id| map::plays(*id, args.server.mode))
+    {
+        args.server.map = id;
     }
     if !map::plays(args.server.map, args.server.mode) {
         return Err(format!(

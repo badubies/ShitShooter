@@ -5,7 +5,7 @@
 use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
-    course::Course,
+    course::{Course, Zone},
     modes::{self, Needs, Offers},
     protocol::{FLASH_BLIND, FLASH_RANGE, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE},
     props::{FLAGPOLE, PROPS},
@@ -289,6 +289,12 @@ pub struct Map {
     pub bases: [Vec<Spawn>; 2],
     /// The racing modes: the start, checkpoints and finish.
     pub course: Option<Course>,
+    /// Spawns set aside for a role, each with the role's name ("sniper"):
+    /// `spawns` are everybody else's. Only maps made in Blender have them.
+    pub posts: Vec<(String, Spawn)>,
+    /// Places a mode looks for by name ("finish"). Only maps made in
+    /// Blender have them.
+    pub zones: Vec<(String, Zone)>,
     pub look: Look,
     grid: BlockGrid,
     ramp_grid: BlockGrid,
@@ -478,6 +484,8 @@ impl Map {
             flags: Vec::new(),
             bases: [Vec::new(), Vec::new()],
             course: None,
+            posts: Vec::new(),
+            zones: Vec::new(),
             look: Look::default(),
             grid: BlockGrid::default(),
             ramp_grid: BlockGrid::default(),
@@ -514,6 +522,16 @@ impl Map {
             .find(|(point, _)| *point == name)
             .map_or(Vec3::ZERO, |(_, at)| Vec3::from(*at));
         Quat::from_rotation_y(yaw) * point + pos
+    }
+
+    /// The spawns set aside for `role`.
+    pub fn posts(&self, role: &str) -> impl Iterator<Item = &Spawn> {
+        self.posts.iter().filter(move |(name, _)| name == role).map(|(_, spawn)| spawn)
+    }
+
+    /// The place called `name`, if the map has one.
+    pub fn zone(&self, name: &str) -> Option<&Zone> {
+        self.zones.iter().find(|(known, _)| known == name).map(|(_, zone)| zone)
     }
 
     /// Indexes the blocks and ramps. Call once they are all in.

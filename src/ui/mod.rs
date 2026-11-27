@@ -149,6 +149,7 @@ impl Plugin for UiPlugin {
                     update_key_hints,
                     (
                         update_hud,
+                        show_dash_meter,
                         show_stats,
                         update_hud_shapes,
                         update_overlays,

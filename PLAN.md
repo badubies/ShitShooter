@@ -1,5 +1,63 @@
 # Plan
 
+## Round 8: a home for game modes, and the sniper mode
+
+Asked for on 2026-11-27: the game is no longer only a movement shooter, so
+give modes a structure that takes very different ones (a sniper against
+runners, prop hunt), and build the first.
+
+Before, a mode was a number checked in about 120 places, most of them in
+one 4,271-line `server.rs`. Now everything about a mode is in `src/modes/`:
+
+- [x] `modes/mod.rs`: one row per mode in `MODES` (`ModeInfo`): its name,
+  its `--mode` key, how players stand to each other (`Sides`: solo, two
+  teams, roles), what it needs of a map (`Needs`), whether it has guns,
+  bots, respawns and a clock, its `Rules` and its `ModeHud`. The lobby,
+  the browser, `--mode` and the map list read that table.
+- [x] `Rules`: plain functions the server calls (`start`, `tick`, `killed`,
+  `run`, `joined`, `time_up`, `spawns`, `kit`, `snap`, `stats`,
+  `bot_brief`, `fight_spots`). A mode fills in the ones it has something
+  to say to. What it keeps during a match is in `Server::state`. Rules
+  say who won; the server ends the match (`Server::conclude`).
+- [x] `ModeHud` (`modes/hud.rs`): the bar at the top, the scoreboard's
+  columns and ranking, how it is won, the word over the countdown.
+- [x] `server.rs` is `server/`: `mod.rs` (lobby, messages), `game.rs` (the
+  match and its rounds), `combat.rs`, `grenades.rs`, `spawn.rs`, `bots.rs`.
+  `ui.rs` is `ui/`: `mod.rs` (the look), `lobby.rs`, `hud.rs`,
+  `scoreboard.rs`.
+- [x] Per player, from the server (protocol 24): a `Kit` with every spawn
+  (their own guns, only certain guns or none; knife; grenades; health;
+  armor; which movement preset), which the server holds them to; a
+  `role`; and each mode's own part of the snapshot and the roster as an
+  enum (`ModeSnap`, `ModeStats`).
+- [x] `movement.rs`: the movement numbers as a `MoveTuning`. `STANDARD` is
+  the game as it was; a mode names another preset in its kit.
+- [x] Rounds within a match (`Server::start_round`, `ServerMsg::RoundStarted`),
+  being out of play without dying (`Server::take_out`, `ServerMsg::Out`),
+  modes where the dead stay out (`ModeInfo::respawns`), and watching the
+  living on your own side whatever a side is (`Session::allies`).
+- [x] A map file can name the modes it is for (`modes`), set a spawn aside
+  for a role (`role`), and have a finish that is somewhere to get to.
+  The exporter has a "Made for" choice. `blender/example_sniper_map.py`
+  builds a grey-box yard: `assets/maps/Sniper Yard.json`.
+- [x] Sniper (`modes/sniper/`): one player on a platform with the rifle,
+  everybody else unarmed and on foot, from cover to cover to the finish
+  under it. Shot, you are out until the next turn. Everybody is the
+  sniper twice; the most runners shot wins, getting across breaks a tie.
+  To tune by playing: `TURN_TIME`, `INTERMISSION`, `RUNNER_HEALTH`, `LAPS`
+  in `modes/sniper/mod.rs`, and `RUNNER` and `SNIPER` in `movement.rs`.
+
+To add a mode: a folder in `src/modes/` (`mod.rs` for its constants,
+`rules.rs`, `client.rs`), a `MODE_` id and a row in `MODES`, its plugin in
+`ClientPlugin`; a `Needs` if it wants something new of a map (and what a
+map file must have for it, in `custom.rs`), and a movement preset if its
+players move differently.
+
+Still to build for prop hunt: a body per player (model, collision box, eye
+height) in place of the one `PLAYER_HALF` everybody shares, a third-person
+and a free camera, props placed from Blender as things with a name, a
+hiding phase.
+
 ## Round 7: maps made in Blender
 
 Asked for on 2026-11-27: a way for anyone to build surf maps in Blender

@@ -251,13 +251,9 @@ fn fire(
         });
     }
     // Only to what this life's kit has.
-    let carried_slot = |slot: usize| match slot {
-        KNIFE_SLOT => player.knife,
-        gun => gun == 0 || !player.one_gun,
-    };
     if let Some(slot) = wanted
         && !cooking
-        && carried_slot(slot)
+        && player.carries(slot)
     {
         if player.hand.take().is_some() || player.slot != slot {
             if player.slot != KNIFE_SLOT {

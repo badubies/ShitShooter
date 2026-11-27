@@ -51,6 +51,7 @@ impl Plugin for RemotePlugin {
                 Update,
                 (
                     size_gun_boxes.after(GunModelSystems::Show),
+                    show_guns.after(RemoteSystems),
                     settle_corpses,
                     spawn_own_corpse.after(PlayerSystems::Simulate).before(spectate),
                     spectate
@@ -86,6 +87,8 @@ pub struct RemotePlayer {
     /// Aiming down sights, and 0 -> 1 eased towards it.
     aiming: bool,
     aim: f32,
+    /// Nothing in hand this life: no gun is shown.
+    unarmed: bool,
     health: i32,
     armor: i32,
     /// 0 = standing, 1 = crouched; eased so the model does not snap.
@@ -118,6 +121,15 @@ pub struct Gun(pub PlayerId);
 
 #[derive(Component)]
 struct GunBox;
+
+/// Whoever has nothing in hand this life (a racer, a runner) is seen
+/// carrying nothing.
+fn show_guns(remotes: Query<&RemotePlayer>, mut guns: Query<(&Gun, &mut Visibility)>) {
+    for (gun, mut visibility) in &mut guns {
+        let unarmed = remotes.iter().any(|remote| remote.id == gun.0 && remote.unarmed);
+        visibility.set_if_neq(if unarmed { Visibility::Hidden } else { Visibility::Inherited });
+    }
+}
 
 /// The rim drawn around a teammate (see `SharedAssets::ally_outline`), one
 /// on the body and one on the head. Shown only when they are on our team.
@@ -179,6 +191,8 @@ fn apply_snapshots(
             // They just died: their body stays behind where they fell, apart
             // from them, so it stays put when they respawn.
             if remote.alive && !snap.alive
+                // Unless they are only out of play: nobody fell.
+                && snap.flags & FLAG_AWAY == 0
                 && let Some(info) = session.roster.iter().find(|p| p.id == snap.id)
             {
                 let material = skins.material(snap.id, info.color, &model, &mut images, &mut materials);
@@ -200,6 +214,7 @@ fn apply_snapshots(
             remote.armor = snap.armor;
             remote.weapon = snap.weapon;
             remote.sight = snap.sight;
+            remote.unarmed = snap.flags & FLAG_UNARMED != 0;
             let wanted = if snap.alive {
                 Visibility::Inherited
             } else {
@@ -241,6 +256,7 @@ fn apply_snapshots(
                         yaw: snap.yaw,
                         pitch: snap.pitch,
                         aiming: snap.flags & FLAG_AIM != 0,
+                        unarmed: snap.flags & FLAG_UNARMED != 0,
                         aim: 0.0,
                         health: snap.health,
                         armor: snap.armor,
@@ -416,7 +432,8 @@ fn spawn_own_corpse(
     old_corpses: Query<Entity, With<OwnCorpse>>,
     mut spawned: Local<bool>,
 ) {
-    if !player.on_death_screen() {
+    // Out of play without having died, there is no body.
+    if !player.on_death_screen() || player.killed_by.is_none() {
         *spawned = false;
         return;
     }
@@ -569,12 +586,10 @@ fn spectate(
         return;
     }
     let (fell_at, fell_yaw, fell_pitch) = *state.fell.get_or_insert((camera.translation, player.yaw, player.pitch));
-    // Living teammates, in a fixed order to step through.
+    // The living on our side, in a fixed order to step through.
     let mut team: Vec<_> = remotes
         .iter()
-        .filter(|(remote, ..)| {
-            session.team_mode() && remote.alive && remote.id != session.my_id && !session.enemies(session.my_id, remote.id)
-        })
+        .filter(|(remote, ..)| remote.alive && session.allies(session.my_id, remote.id))
         .map(|(remote, transform, _)| (remote.id, transform.translation))
         .collect();
     team.sort_by_key(|(id, _)| *id);
@@ -598,7 +613,7 @@ fn spectate(
         },
     };
     spectate.watching = stop.checked_sub(1).map(|i| team[i].0);
-    spectate.alone = session.team_mode() && team.is_empty();
+    spectate.alone = crate::modes::info(session.mode).sides != crate::modes::Sides::Solo && team.is_empty();
     spectate.can_watch = spectate.watching.is_none() && !team.is_empty();
 
     // Their body is not in the way of their eyes; everybody else shows as usual.

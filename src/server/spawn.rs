@@ -78,6 +78,7 @@ impl Server {
             return;
         };
         player.alive = true;
+        player.away = false;
         player.health = kit.health;
         player.armor = kit.armor;
         player.kit = kit.clone();

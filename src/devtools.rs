@@ -43,7 +43,11 @@ impl Plugin for DevToolsPlugin {
         let add_bots = if launch.bots.is_some() { 0 } else { 3 };
         let bots_hold_fire = launch.server.bots_hold_fire;
         let mode = launch.server.mode;
-        let map = launch.map.unwrap_or(if is_course_mode(mode) { crate::map::GAUNTLET } else { 1 });
+        // Depot, or where the mode is not played there, the first map it is.
+        let map = launch.map.unwrap_or_else(|| {
+            let played = |id: &u8| crate::map::plays(*id, mode);
+            Some(1).filter(played).or_else(|| (0..crate::map::count()).find(played)).unwrap_or(1)
+        });
         if let Some(dir) = selftest {
             let dir = PathBuf::from(dir);
             let _ = std::fs::create_dir_all(&dir);

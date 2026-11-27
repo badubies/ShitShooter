@@ -65,6 +65,26 @@ Names are matched without regard to case, and Blender's `.001` endings are ignor
 
 A map with a `start` and a `finish` is a **course**, played in **Race** and **Time trial**. A map without them is played in **Free for all** and **Team deathmatch**, and it only needs spawns.
 
+### A map made for one mode
+
+**Made for** in the sidebar says which mode a map is for. **Automatic** is the rule above. A map made for a mode is offered in that mode only, and **Check map** says what it still needs.
+
+**Sniper**: one player is the sniper on a platform, and everybody else runs for it on foot, unarmed, from cover to cover. A map for it needs:
+
+| Name | What it is |
+| --- | --- |
+| `spawn` | Where the runners start: far from the platform, and out of the sniper's sight, behind a wall. |
+| `spawn sniper` | Where the sniper stands, up on the platform, facing its Y axis down the map. |
+| `finish` | A box under the platform. A runner inside it has made it. Make it big enough to run into. |
+
+It has no `start`. The sniper walks and cannot jump, so a wall round the platform higher than a step (0.5 m) keeps them on it; about 0.9 m can still be shot over. Runners can crouch, so cover about 1.1 m high hides a crouched runner and 2.3 m a standing one. The further a piece of cover is from the platform, the more ground it hides behind it.
+
+`blender/example_sniper_map.py` builds a plain yard to start from:
+
+```
+blender --background --factory-startup --python blender/example_sniper_map.py -- <repo root>
+```
+
 ## Surf tips
 
 - Riders arrive at a ramp falling, and they can't climb a face by strafing; they can only hold their height. Put each ramp you jump to lower than the one before, so riders fall onto it rather than slam into its end. Big drops onto a steep face can't be ridden out, so keep falls to about 10 to 15 m.

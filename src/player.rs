@@ -269,6 +269,9 @@ pub struct LocalPlayer {
     pub dead_for: f32,
     /// We asked the server to respawn us early.
     pub respawn_asked: bool,
+    /// Out of play until the next round without having died (through a
+    /// finish, or the round over): watching, like the dead.
+    pub out: bool,
     /// Dead and watching a teammate: the eyes we see through. Our view and
     /// gun are theirs meanwhile (see `see_through`).
     pub pov: Option<Vec3>,
@@ -399,6 +402,7 @@ impl Default for LocalPlayer {
             view_kick: Vec2::ZERO,
             kick_hold: 0.0,
             killed_by: None,
+            out: false,
             killed_with: None,
             dead_for: 0.0,
             respawn_asked: false,
@@ -538,6 +542,14 @@ impl LocalPlayer {
     /// 0 -> 1 through the current reload step (see `reload_step`).
     pub fn reload_progress(&self) -> f32 {
         if self.reloading() { (1.0 - self.reload / self.reload_step()).clamp(0.0, 1.0) } else { 0.0 }
+    }
+
+    /// True if this life's kit has something in `slot` (a gun's, or the knife's).
+    pub fn carries(&self, slot: usize) -> bool {
+        match slot {
+            KNIFE_SLOT => self.knife,
+            gun => gun == 0 || !self.one_gun,
+        }
     }
 
     /// The weapon in hand.
@@ -721,6 +733,13 @@ fn handle_net(
                 // A frag being cooked drops (the server throws it down for us).
                 player.hand = None;
             }
+            ServerMsg::Out { id } if *id == session.my_id => {
+                player.alive = false;
+                player.out = true;
+                player.dead_for = 0.0;
+                player.respawn_asked = false;
+                player.hand = None;
+            }
             _ => {}
         }
     }
@@ -741,9 +760,9 @@ pub fn ask_respawn(player: &mut LocalPlayer, connection: &mut Connection, mode: 
 }
 
 impl LocalPlayer {
-    /// Showing the death screen: dead, and not yet put back in.
+    /// Showing the death screen: dead (or out of play), and not yet put back in.
     pub fn on_death_screen(&self) -> bool {
-        !self.alive && self.killed_by.is_some()
+        !self.alive && (self.killed_by.is_some() || self.out)
     }
 
     /// Dead, we see through a teammate's eyes: the view turns with theirs and

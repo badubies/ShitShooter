@@ -86,10 +86,45 @@ pub const STANDARD: MoveTuning = MoveTuning {
     slide_end_speed: 5.0,
 };
 
+/// Running for the sniper's platform: on foot and no more. A slow run, a
+/// crouch to hide behind things, a small jump; no dash, no second jump, no
+/// slide, and nothing to gain from hopping.
+pub const RUNNER: MoveTuning = MoveTuning {
+    run_speed: 5.5,
+    air_accel: Some(10.0),
+    air_control_accel: 12.0,
+    jump_speed: 6.5,
+    air_jumps: 0,
+    bhop_early: 0.0,
+    bhop_late: 0.0,
+    dash_speed: 0.0,
+    max_speed: 9.0,
+    crouch_speed: 3.0,
+    slide_min_speed: f32::INFINITY,
+    ..STANDARD
+};
+
+/// Up on the platform with the rifle: a walk along it, feet on the ground.
+pub const SNIPER: MoveTuning = MoveTuning {
+    run_speed: 4.0,
+    aim_speed: 2.5,
+    crouch_speed: 2.5,
+    jump_speed: 0.0,
+    air_jumps: 0,
+    bhop_early: 0.0,
+    bhop_late: 0.0,
+    dash_speed: 0.0,
+    max_speed: 6.0,
+    slide_min_speed: f32::INFINITY,
+    ..STANDARD
+};
+
 /// Ids of `PRESETS`, as `Kit::moves` names them.
 pub const MOVES_STANDARD: u8 = 0;
+pub const MOVES_RUNNER: u8 = 1;
+pub const MOVES_SNIPER: u8 = 2;
 
-pub static PRESETS: [MoveTuning; 1] = [STANDARD];
+pub static PRESETS: [MoveTuning; 3] = [STANDARD, RUNNER, SNIPER];
 
 /// Preset `id`, or the standard one for a number that is none.
 pub fn preset(id: u8) -> &'static MoveTuning {
@@ -114,6 +149,7 @@ mod tests {
         assert_eq!((t.slide_min_speed, t.slide_boost_speed, t.slide_boost_cooldown), (7.0, 15.0, 2.0));
         assert_eq!((t.slide_decel, t.slide_end_speed), (6.0, 5.0));
         assert_eq!(*preset(MOVES_STANDARD), STANDARD);
+        assert_eq!((*preset(MOVES_RUNNER), *preset(MOVES_SNIPER)), (RUNNER, SNIPER));
         assert_eq!(*preset(200), STANDARD);
     }
 }

@@ -52,7 +52,7 @@ impl Server {
                 player.regen -= whole;
                 player.health = (player.health + whole as i32).min(player.kit.health);
             }
-            if !player.alive {
+            if !player.alive && modes::info(self.settings.mode).respawns {
                 player.respawn_in -= dt;
                 if player.respawn_in <= 0.0 {
                     self.spawn_player(*id);
@@ -133,7 +133,9 @@ impl Server {
                         pos: p.pos.to_array(),
                         yaw: p.yaw,
                         pitch: p.pitch,
-                        flags: p.flags,
+                        flags: p.flags
+                            | if p.away { FLAG_AWAY } else { 0 }
+                            | if p.kit.guns == Guns::None { FLAG_UNARMED } else { 0 },
                         weapon: p.weapon,
                         sight: p.sight,
                         health: p.health,
@@ -188,8 +190,6 @@ impl Server {
         self.team_scores = [0, 0];
         self.armor_respawn = vec![0.0; self.map.armor_spots.len()];
         self.bot_range = typical_range(&self.map, self.settings.mode);
-        self.state = Box::new(());
-        (self.rules().start)(self);
         for player in self.players.values_mut() {
             player.kills = 0;
             player.deaths = 0;
@@ -197,8 +197,11 @@ impl Server {
             player.damage = 0;
             player.hurt_by.clear();
             player.alive = false;
+            player.away = false;
             player.role = 0;
         }
+        self.state = Box::new(());
+        (self.rules().start)(self);
         if is_team_mode(self.settings.mode) {
             self.balance_bots();
         }
@@ -214,6 +217,42 @@ impl Server {
         for id in ids {
             self.spawn_player(id);
         }
+    }
+
+    /// A new round of the match, for a mode that has them: everybody is put
+    /// back in (the rules say where, and with what), and held for the
+    /// countdown; the clock then runs down from `time`.
+    pub(crate) fn start_round(&mut self, time: f32) {
+        self.countdown = COUNTDOWN;
+        self.time_left = time;
+        self.grenades.clear();
+        self.smokes.clear();
+        self.bullets.clear();
+        self.noises.clear();
+        // The roster first: who is what this round.
+        let roster = self.roster_msg();
+        self.broadcast(&roster);
+        self.roster_dirty = false;
+        self.broadcast(&ServerMsg::RoundStarted {
+            countdown: self.countdown,
+            time_left: time,
+        });
+        let ids: Vec<PlayerId> = self.players.keys().copied().collect();
+        for id in ids {
+            self.spawn_player(id);
+        }
+    }
+
+    /// Takes a living player out of play until they are next spawned,
+    /// without their having died: no kill, no death, no body.
+    pub(crate) fn take_out(&mut self, id: PlayerId) {
+        let Some(player) = self.players.get_mut(&id).filter(|player| player.alive) else {
+            return;
+        };
+        player.alive = false;
+        player.away = true;
+        player.cooking = None;
+        self.broadcast(&ServerMsg::Out { id });
     }
 
     pub(crate) fn end_match(&mut self, winner: Winner) {

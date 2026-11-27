@@ -61,7 +61,7 @@ pub fn next_air_accel(current: u16) -> u16 {
 // brings every number both sides must agree on.
 #[allow(unused_imports)]
 pub use crate::modes::{
-    Guns, Kit, MODE_CONQUEST, MODE_FFA, MODE_HILL, MODE_RACE, MODE_TEAMS, MODE_TRIAL, ModeSnap, ModeStats,
+    Guns, Kit, MODE_CONQUEST, MODE_FFA, MODE_HILL, MODE_RACE, MODE_SNIPER, MODE_TEAMS, MODE_TRIAL, ModeSnap, ModeStats,
     conquest::{CAPTURE_CROWD, CAPTURE_TIME, CONQUEST_TICKETS, FLAG_HEIGHT, TICKET_BLEED},
     course::{RACE_END_DELAY, RACE_FINISH_GRACE},
     hill::{HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, HILL_SCORE_LIMIT},
@@ -148,6 +148,13 @@ pub const FLAG_CROUCH: u8 = 1;
 pub const FLAG_RELOAD: u8 = 2;
 /// Aiming down sights (so a teammate watching through their eyes sees it).
 pub const FLAG_AIM: u8 = 4;
+/// Only the server sets these two. Out of play without having died (through
+/// a finish, say): gone, with no body left behind.
+pub const FLAG_AWAY: u8 = 8;
+/// Nothing in hand this life.
+pub const FLAG_UNARMED: u8 = 16;
+/// The bits a player's own game may set.
+pub const CLIENT_FLAGS: u8 = FLAG_CROUCH | FLAG_RELOAD | FLAG_AIM;
 
 pub type PlayerId = u64;
 
@@ -340,6 +347,17 @@ pub enum ServerMsg {
         countdown: f32,
         /// Seconds played since it ended (a race's clock).
         elapsed: f32,
+    },
+    /// A new round of a match under way (a mode with rounds): everybody is
+    /// put back in, and held for a countdown as at the start of the match.
+    RoundStarted {
+        countdown: f32,
+        time_left: f32,
+    },
+    /// Somebody is out of play until the next round without having died:
+    /// they watch like the dead do, and leave no body.
+    Out {
+        id: PlayerId,
     },
     MatchEnded {
         winner: Winner,

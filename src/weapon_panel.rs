@@ -524,6 +524,8 @@ fn update_panel(
                 set_border(border, HUD_EDGE.with_alpha(HUD_EDGE.alpha() * strip));
             }
             Part::StripChip(slot) => {
+                // Only what this life's kit has.
+                set_shown(&mut node, player.carries(slot));
                 let on = slot == player.slot;
                 set_background(background, Color::srgba(1.0, 1.0, 1.0, if on { 0.1 * strip } else { 0.0 }));
                 set_border(border, ACCENT.with_alpha(if on { 0.7 * strip } else { 0.0 }));
@@ -538,9 +540,12 @@ fn update_panel(
                 let on = if slot == player.slot { 1.0 } else { 0.7 };
                 set_image(thumbnails.get(in_hand_preview(slot)), Color::WHITE.with_alpha(on * strip));
             }
-            Part::GrenadeLabel => set_color(fade(DIM)),
+            Part::GrenadeLabel => {
+                set_shown(&mut node, player.can_throw);
+                set_color(fade(DIM));
+            }
             Part::GrenadeIcon(index) => {
-                set_shown(&mut node, (index as f32) < carried.max);
+                set_shown(&mut node, player.can_throw && (index as f32) < carried.max);
                 // A pop when one is ready again.
                 let pulse = (1.0 - state.since_ready.get(index).copied().unwrap_or(1.0) / 0.32).max(0.0);
                 if let Some(mut transform) = transform {

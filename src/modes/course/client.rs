@@ -1,8 +1,7 @@
 //! The racing modes on the client: telling the server about our run as we
 //! time it, the announcements for our checkpoints and finish and for
-//! everybody else's, going back to the start or the last checkpoint, and
-//! keeping guns out of sight. The timing itself is in `course.rs`, and runs
-//! with our movement (`player.rs`).
+//! everybody else's, and going back to the start or the last checkpoint. The
+//! timing itself is in `course.rs`, and runs with our movement (`player.rs`).
 
 use bevy::prelude::*;
 
@@ -15,7 +14,6 @@ use crate::{
     net::{Connection, NetMsg, Session},
     player::{LocalPlayer, PlayerSystems, Racing},
     protocol::*,
-    remote::Gun,
     settings::{Action, ActionInput},
     ui::{ACCENT, TEXT},
     world::GameMap,
@@ -40,7 +38,6 @@ impl Plugin for RacePlugin {
                         .run_if(in_state(AppState::Playing))
                         .run_if(resource_exists::<Connection>),
                     announce_runs.run_if(resource_exists::<Connection>),
-                    hide_guns,
                 ),
             );
     }
@@ -185,18 +182,6 @@ fn announce_runs(
                 feed.say(format!("{name}: a best of {}{lead}", format_time(*time)));
             }
         }
-    }
-}
-
-/// On a course nobody carries a gun.
-fn hide_guns(session: Res<Session>, mut guns: Query<&mut Visibility, With<Gun>>) {
-    let wanted = if is_course_mode(session.mode) {
-        Visibility::Hidden
-    } else {
-        Visibility::Inherited
-    };
-    for mut visibility in &mut guns {
-        visibility.set_if_neq(wanted);
     }
 }
 

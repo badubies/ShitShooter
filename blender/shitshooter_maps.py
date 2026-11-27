@@ -34,13 +34,18 @@ How a map is read (see blender/README.md for more):
                    be tilted, to lie along a slope
   A map with a start and a finish is a course (race and time trial); one
   without is played in free for all and team deathmatch.
+- A map can be made for one mode instead (sidebar > Made for). Sniper wants:
+    spawn          where the runners start, far from the platform
+    spawn sniper   where the sniper stands, up on the platform
+    finish         a box under the platform: a runner inside it made it
+  and no start.
 - Blender's metres are the game's metres; Z is up.
 """
 
 bl_info = {
     "name": "ShitShooter map tools",
     "author": "ShitShooter",
-    "version": (1, 3, 0),
+    "version": (1, 4, 0),
     "blender": (4, 2, 0),
     "location": "File > Export > ShitShooter map; 3D View > Sidebar > ShitShooter",
     "description": "Build maps for ShitShooter and export them for the game",
@@ -54,7 +59,7 @@ import re
 
 import bmesh
 import bpy
-from bpy.props import FloatProperty, StringProperty
+from bpy.props import EnumProperty, FloatProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Matrix, Vector
 
@@ -371,6 +376,24 @@ def marker(obj, problems):
     return out
 
 
+# What a map is made for (the scene's "Made for"): the game's key for the
+# mode, and what it is called here.
+MADE_FOR = {"SNIPER": ("sniper", "a sniper map")}
+
+
+def made_for(context):
+    """The mode the scene is made for ("SNIPER"), or "AUTO"."""
+    return getattr(context.scene, "shitshooter_mode", "AUTO")
+
+
+def kind_of(data):
+    """What a map file is, in a word or two, for the messages."""
+    for key, name in MADE_FOR.values():
+        if key in data.get("modes", []):
+            return name
+    return "a course" if "start" in data else "a free-for-all map"
+
+
 def gate(obj, problems):
     if obj.empty_display_type != "CUBE":
         problems.append(f"{obj.name}: shown as a box (Cube empty) it would show its size; its display size and scale are used")
@@ -411,8 +434,9 @@ def read_map(context):
     # Every object's place, up to date (a script may just have moved them).
     context.view_layer.update()
     problems, fatal = [], []
-    found = {"spawns": [], "checkpoints": {}, "respawns": {}, "kills": []}
+    found = {"spawns": [], "posts": [], "checkpoints": {}, "respawns": {}, "kills": []}
     start = finish = finish_spawn = None
+    mode = made_for(context)
     for obj in context.scene.objects:
         if obj.type != "EMPTY" or not obj.visible_get():
             continue
@@ -420,6 +444,8 @@ def read_map(context):
         number = re.match(r"(checkpoint|respawn) ?(\d+)$", name)
         if name == "finish spawn":
             finish_spawn = marker(obj, problems)
+        elif name.startswith("spawn") and "sniper" in name:
+            found["posts"].append((obj.name, dict(marker(obj, problems), role="sniper")))
         elif name.startswith("spawn"):
             found["spawns"].append((obj.name, marker(obj, problems)))
         elif name == "start":
@@ -433,15 +459,29 @@ def read_map(context):
         elif number:
             found["respawns"][int(number.group(2))] = marker(obj, problems)
     found["spawns"].sort(key=lambda item: item[0])
+    found["posts"].sort(key=lambda item: item[0])
     spawns = [m for _, m in found["spawns"]]
+    posts = [m for _, m in found["posts"]]
 
     shapes = solids(context, problems)
     if not shapes:
         fatal.append("no solids: add a mesh")
     if not spawns:
         fatal.append("no spawn: add one (sidebar > ShitShooter > Spawn)")
-    if (start is None) != (finish is None):
-        fatal.append("a course needs both a start and a finish" if start or finish else "")
+    if mode == "SNIPER":
+        if start is not None:
+            fatal.append("a sniper map has no start: delete it, or set Made for back to Automatic for a course")
+        if finish is None:
+            fatal.append("no finish: add one under the platform (sidebar > ShitShooter > Finish); a runner inside it made it")
+        if not posts:
+            fatal.append("no spawn for the sniper: add one on the platform (sidebar > ShitShooter > Sniper spawn)")
+        if len(posts) > 1:
+            problems.append(f"{len(posts)} sniper spawns: the sniper comes in at one of them")
+    else:
+        if (start is None) != (finish is None):
+            fatal.append("a course needs both a start and a finish")
+        if posts:
+            problems.append("sniper spawns do nothing unless the map is made for Sniper (sidebar > Made for)")
     checkpoints = []
     numbers = sorted(found["checkpoints"])
     if numbers and start is None:
@@ -466,7 +506,12 @@ def read_map(context):
     data = {"format": FORMAT, "solids": shapes, "spawns": spawns}
     if sky:
         data["sky"] = sky
-    if start and finish:
+    if mode == "SNIPER":
+        data["modes"] = [MADE_FOR[mode][0]]
+        data["spawns"] = spawns + posts
+        if finish:
+            data["finish"] = finish
+    elif start and finish:
         data.update(start=start, finish=finish, checkpoints=checkpoints)
         if finish_spawn:
             data["finish_spawn"] = finish_spawn
@@ -483,8 +528,7 @@ def export(context, path):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, separators=(",", ":"))
-    course = "a course" if "start" in data else "a free-for-all map"
-    summary = f"Exported {os.path.basename(path)}: {course}, {len(data['solids'])} solids, {len(data.get('checkpoints', []))} checkpoints"
+    summary = f"Exported {os.path.basename(path)}: {kind_of(data)}, {len(data['solids'])} solids, {len(data.get('checkpoints', []))} checkpoints"
     return True, [summary] + problems
 
 
@@ -545,8 +589,7 @@ class SHITSHOOTER_OT_check(bpy.types.Operator):
         if fatal:
             tell(self, False, ["Cannot be exported:"] + fatal + problems)
         else:
-            course = "a course" if "start" in data else "a free-for-all map"
-            tell(self, True, [f"Fine: {course}, {len(data['solids'])} solids, {len(data.get('checkpoints', []))} checkpoints"] + problems)
+            tell(self, True, [f"Fine: {kind_of(data)}, {len(data['solids'])} solids, {len(data.get('checkpoints', []))} checkpoints"] + problems)
         return {"FINISHED"}
 
 
@@ -583,6 +626,8 @@ class SHITSHOOTER_OT_add_marker(bpy.types.Operator):
         at = context.scene.cursor.location.copy()
         if self.what == "spawn":
             new_empty(context, "spawn", "ARROWS", 1.0, at)
+        elif self.what == "sniper spawn":
+            new_empty(context, "spawn sniper", "ARROWS", 1.0, at)
         elif self.what in ("start", "finish", "kill"):
             obj = new_empty(context, self.what, "CUBE", 1.0, at)
             obj.scale = {"start": (6, 6, 2), "finish": (12, 1, 12), "kill": (200, 200, 5)}[self.what]
@@ -646,12 +691,16 @@ class SHITSHOOTER_PT_panel(bpy.types.Panel):
             col.label(text=os.path.basename(path))
         col.operator("export_scene.shitshooter_map", text="Export as...")
         layout.operator("shitshooter.check", icon="CHECKMARK")
+        layout.prop(context.scene, "shitshooter_mode", text="Made for")
         box = layout.box()
         box.label(text="Add at the 3D cursor")
         row = box.row(align=True)
         row.operator("shitshooter.add_ramp", text="Ramp").one_sided = False
         row.operator("shitshooter.add_ramp", text="Wall").one_sided = True
-        for what, label in (("spawn", "Spawn"), ("start", "Start"), ("checkpoint", "Checkpoint"), ("finish", "Finish"), ("kill", "Kill zone")):
+        markers = [("spawn", "Spawn"), ("start", "Start"), ("checkpoint", "Checkpoint"), ("finish", "Finish"), ("kill", "Kill zone")]
+        if made_for(context) == "SNIPER":
+            markers = [("spawn", "Spawn"), ("sniper spawn", "Sniper spawn"), ("finish", "Finish")]
+        for what, label in markers:
             box.operator("shitshooter.add_marker", text=label).what = what
 
 
@@ -672,11 +721,21 @@ CLASSES = (
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.shitshooter_mode = EnumProperty(
+        name="Made for",
+        description="The game mode this map is made for",
+        items=[
+            ("AUTO", "Automatic", "A course (race and time trial) if it has a start and a finish, else free for all and team deathmatch"),
+            ("SNIPER", "Sniper", "One sniper on a platform, everybody else running for the finish under it"),
+        ],
+        default="AUTO",
+    )
     bpy.types.TOPBAR_MT_file_export.append(menu_export)
 
 
 def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(menu_export)
+    del bpy.types.Scene.shitshooter_mode
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
 

@@ -21,7 +21,9 @@ pub(super) enum Hud {
     Feed(usize, FeedPart),
     /// "Get ready" before our first spawn.
     Center,
-    /// On the death screen: who killed us.
+    /// On the death screen: "FRAGGED BY", or that we are out of play.
+    KilledHow,
+    /// Who killed us.
     Killer,
     /// Under it: how many kills that makes for them.
     KillerNote,
@@ -31,6 +33,8 @@ pub(super) enum Hud {
     WatchedHealth,
     WatchedArmor,
     WatchedGun,
+    /// Over them: "RESPAWN IN", or what we wait for where nobody respawns.
+    RespawnLabel,
     /// The seconds until we respawn.
     RespawnIn,
     /// How to respawn now.
@@ -584,6 +588,7 @@ pub(super) fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>
         children![
             hud_text(20.0, TEXT, Hud::Speed),
             (
+                DashMeter,
                 Node {
                     align_items: AlignItems::Center,
                     column_gap: px(8),
@@ -636,7 +641,7 @@ pub(super) fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>
                         },
                         Pickable::IGNORE,
                         children![
-                            (weighted("FRAGGED BY", 12.0, 700, DANGER_TEXT), hud_shadow(), Pickable::IGNORE),
+                            (weighted("", 12.0, 700, DANGER_TEXT), Hud::KilledHow, hud_shadow(), Pickable::IGNORE),
                             (heading("", 34.0, RED), Hud::Killer, hud_shadow(), Pickable::IGNORE),
                             (label("", 15.0, TEXT), Hud::KillerNote, hud_shadow(), Pickable::IGNORE),
                         ],
@@ -746,7 +751,7 @@ pub(super) fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>
                         },
                         Pickable::IGNORE,
                         children![
-                            (weighted("RESPAWN IN", 12.0, 700, TEXT), hud_shadow(), Pickable::IGNORE),
+                            (weighted("", 12.0, 700, TEXT), Hud::RespawnLabel, hud_shadow(), Pickable::IGNORE),
                             (label("", 13.0, TEXT), Hud::RespawnHint, hud_shadow(), Pickable::IGNORE),
                         ],
                     ),
@@ -1145,6 +1150,16 @@ impl FpsCounter {
     }
 }
 
+/// The dash's cooldown, shown only to those who can dash this life.
+#[derive(Component)]
+pub(super) struct DashMeter;
+
+pub(super) fn show_dash_meter(player: Res<LocalPlayer>, mut meters: Query<&mut Node, With<DashMeter>>) {
+    for mut node in &mut meters {
+        set_shown(&mut node, player.moves.dash_speed > 0.0);
+    }
+}
+
 pub(super) fn update_hud(
     session: Res<Session>,
     map: Res<GameMap>,
@@ -1161,6 +1176,7 @@ pub(super) fn update_hud(
     fps.tick(time.delta_secs());
     let ping = connection.as_ref().map_or(0.0, |c| c.ping_ms());
     let mode_hud = &modes::info(session.mode).hud;
+    let respawns = modes::info(session.mode).respawns;
     let top = (mode_hud.top_bar)(&session);
     let my_team = session.team_of(session.my_id);
     let map_name = crate::map::name(map.0.id);
@@ -1243,9 +1259,13 @@ pub(super) fn update_hud(
                 None => (String::new(), TEXT),
             },
             Hud::Center => {
-                let ready = !player.alive && player.killed_by.is_none();
+                let ready = !player.alive && player.killed_by.is_none() && !player.out;
                 (if ready { "Get ready..." } else { "" }.to_string(), DANGER)
             }
+            Hud::KilledHow => (if player.killed_by.is_some() { "FRAGGED BY" } else { "OUT OF PLAY" }.to_string(), DANGER_TEXT),
+            // Out without having been killed: nobody to name.
+            Hud::Killer if player.killed_by.is_none() => ("WATCHING".to_string(), TEXT),
+            Hud::KillerNote if player.killed_by.is_none() => ("until everybody is put back in".to_string(), TEXT),
             Hud::Killer => (if by_myself { "YOURSELF".to_string() } else { killer.to_uppercase() }, RED),
             Hud::KillerNote => {
                 let tally = match killer_kills {
@@ -1284,6 +1304,10 @@ pub(super) fn update_hud(
                 };
                 (line, TEXT)
             }
+            // Where nobody respawns, the clock at the top says how long is left.
+            Hud::RespawnLabel => (if respawns { "RESPAWN IN" } else { "OUT UNTIL" }.to_string(), TEXT),
+            Hud::RespawnIn if !respawns => ("…".to_string(), TEXT),
+            Hud::RespawnHint if !respawns => ("the next turn".to_string(), TEXT),
             Hud::RespawnIn => {
                 let left = (RESPAWN_DELAY - player.dead_for).max(0.0).ceil();
                 (if player.respawn_asked { "…".to_string() } else { format!("{left:.0}") }, TEXT)

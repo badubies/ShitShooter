@@ -157,6 +157,8 @@ pub(crate) struct Player {
     pub(crate) role: u8,
     /// What they were given this life: the rules decide it at each spawn.
     pub(crate) kit: Kit,
+    /// Out of play without having died (see `Server::take_out`).
+    pub(crate) away: bool,
     pub(crate) bot: Option<Bot>,
 }
 
@@ -377,7 +379,7 @@ impl Server {
                 player.pos = Vec3::from(state.pos);
                 player.yaw = state.yaw;
                 player.pitch = state.pitch;
-                player.flags = state.flags;
+                player.flags = state.flags & CLIENT_FLAGS;
                 player.weapon = state.weapon;
                 player.sight = state.sight;
             }
@@ -445,7 +447,14 @@ impl Server {
                             elapsed: self.elapsed,
                         },
                     );
-                    self.spawn_player(id);
+                    (self.rules().joined)(self, id);
+                    // Where the dead stay out, so does whoever comes late: until
+                    // the mode puts everybody back in.
+                    if modes::info(self.settings.mode).respawns {
+                        self.spawn_player(id);
+                    } else {
+                        self.roster_dirty = true;
+                    }
                 }
             }
             ClientMsg::Loadout { grenade } => {
@@ -603,13 +612,17 @@ impl Server {
         if mode >= modes::count() {
             return;
         }
+        // Nowhere to play it (a mode that needs a map made for it, and there is none).
+        let maps = map::count();
+        if !(0..maps).any(|id| map::plays(id, mode)) {
+            return;
+        }
         self.settings.mode = mode;
         // Nobody races bots.
         if !modes::info(mode).bots {
             self.players.retain(|_, player| player.bot.is_none());
         }
         if !map::plays(self.settings.map, mode) {
-            let maps = map::count();
             if let Some(id) = (0..maps).find(|id| map::plays(*id, mode)) {
                 self.settings.map = id;
             }
@@ -709,6 +722,7 @@ impl Server {
             stride: 0.0,
             role: 0,
             kit: Kit::standard(),
+            away: false,
             bot,
         }
     }

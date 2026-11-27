@@ -398,9 +398,10 @@ fn build_map(
         }
     }
 
-    // A course's start line, checkpoints and finish: a glowing frame round
-    // each, with a faint curtain across it.
-    if let Some(course) = &map.0.course {
+    // A course's start line, checkpoints and finish, and a finish to run for
+    // on a map with no course: a glowing frame round each, with a faint
+    // curtain across it.
+    {
         let mut gate = |zone: &crate::course::Zone, forward: f32, color: LinearRgba| {
             let frame = materials.add(StandardMaterial {
                 base_color: Color::BLACK,
@@ -444,12 +445,18 @@ fn build_map(
                 NotShadowCaster,
             ));
         };
-        // The start's front, where you leave it.
-        gate(&course.start, 1.0, LinearRgba::rgb(0.2, 1.0, 0.35));
-        for (zone, _) in &course.gates {
-            gate(zone, 0.0, LinearRgba::rgb(0.2, 0.75, 1.0));
+        const FINISH: LinearRgba = LinearRgba::rgb(1.0, 0.75, 0.15);
+        if let Some(course) = &map.0.course {
+            // The start's front, where you leave it.
+            gate(&course.start, 1.0, LinearRgba::rgb(0.2, 1.0, 0.35));
+            for (zone, _) in &course.gates {
+                gate(zone, 0.0, LinearRgba::rgb(0.2, 0.75, 1.0));
+            }
+            gate(&course.finish, 0.0, FINISH);
         }
-        gate(&course.finish, 0.0, LinearRgba::rgb(1.0, 0.75, 0.15));
+        if let Some(zone) = map.0.zone(crate::custom::FINISH_ZONE) {
+            gate(zone, 0.0, FINISH);
+        }
     }
 
     for (index, spot) in map.0.armor_spots.iter().enumerate() {

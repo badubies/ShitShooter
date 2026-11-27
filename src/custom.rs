@@ -15,7 +15,9 @@
 //! with a start and a finish is a course, raced in the racing modes; any
 //! other is played in free for all and team deathmatch. A file can also
 //! name the modes it was made for (`modes`), and is then offered in those
-//! alone.
+//! alone. A spawn can be set aside for a role (`role`: "sniper"), and a
+//! finish with no start is somewhere to get to rather than the end of a
+//! course: the sniper mode is played on a map with both.
 
 use std::{
     path::{Path, PathBuf},
@@ -45,7 +47,7 @@ struct File {
     sky: Option<[f32; 3]>,
     solids: Vec<Solid>,
     #[serde(default)]
-    spawns: Vec<Marker>,
+    spawns: Vec<SpawnMarker>,
     #[serde(default)]
     start: Option<Gate>,
     #[serde(default)]
@@ -94,6 +96,16 @@ struct Marker {
     facing: [f32; 2],
     #[serde(default)]
     speed: f32,
+}
+
+/// Where players come in: a marker, and whose it is ("sniper") if it is not
+/// anybody's.
+#[derive(Deserialize)]
+struct SpawnMarker {
+    #[serde(flatten)]
+    marker: Marker,
+    #[serde(default)]
+    role: Option<String>,
 }
 
 /// A box turned about the vertical: half its size across, up and along,
@@ -176,8 +188,24 @@ fn lacks(file: &File, needs: Needs) -> Option<&'static str> {
         Needs::Course => (!course).then_some("it has no start and finish"),
         Needs::Hill => Some("a map file cannot mark a hill"),
         Needs::Flags => Some("a map file cannot have flags"),
+        Needs::Sniper => {
+            if file.start.is_some() {
+                Some("it is a course")
+            } else if file.finish.is_none() {
+                Some("it has no finish for the runners to reach")
+            } else if !file.spawns.iter().any(|spawn| spawn.role.as_deref().is_some_and(|role| role.eq_ignore_ascii_case(SNIPER_ROLE))) {
+                Some("it has no spawn for the sniper")
+            } else {
+                None
+            }
+        }
     }
 }
+
+/// The role of the spawn the sniper comes in at, and the name of the place
+/// the runners run for (a finish with no start).
+pub const SNIPER_ROLE: &str = "sniper";
+pub const FINISH_ZONE: &str = "finish";
 
 /// The modes a map file is played in: the ones it names, if it has what
 /// each needs, or else every mode it has what it takes for.
@@ -218,15 +246,18 @@ fn parse(bytes: &[u8]) -> Result<File, String> {
             return Err(format!("solid {index} is not a solid shape"));
         }
     }
-    if file.spawns.is_empty() {
+    if !file.spawns.iter().any(|spawn| spawn.role.is_none()) {
         return Err("it has no spawn".into());
     }
-    match (&file.start, &file.finish) {
-        (Some(_), None) => return Err("it has a start but no finish".into()),
-        (None, Some(_)) => return Err("it has a finish but no start".into()),
-        _ => {}
+    if file.start.is_some() && file.finish.is_none() {
+        return Err("it has a start but no finish".into());
     }
     file.plays = modes_of(&file)?;
+    // A finish alone is somewhere to get to, in a mode that has one.
+    let finish_used = file.plays.iter().any(|mode| modes::info(*mode).needs == Needs::Sniper);
+    if file.start.is_none() && file.finish.is_some() && !finish_used {
+        return Err("it has a finish but no start".into());
+    }
     Ok(file)
 }
 
@@ -244,21 +275,25 @@ fn build(id: u8, file: &File) -> Map {
         }
         map.ramps.push(ramp);
     }
-    map.spawns = file
-        .spawns
-        .iter()
-        .map(|marker| {
-            let at = marker.respawn();
-            Spawn { pos: at.pos, yaw: at.yaw }
-        })
-        .collect();
+    for marker in &file.spawns {
+        let at = marker.marker.respawn();
+        let spawn = Spawn { pos: at.pos, yaw: at.yaw };
+        match &marker.role {
+            Some(role) => map.posts.push((role.to_lowercase(), spawn)),
+            None => map.spawns.push(spawn),
+        }
+    }
+    if let (None, Some(finish)) = (file.start, file.finish) {
+        map.zones.push((FINISH_ZONE.to_string(), finish.zone()));
+    }
 
     let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
     for ramp in &map.ramps {
         (lo, hi) = (lo.min(ramp.min), hi.max(ramp.max));
     }
     if let (Some(start), Some(finish)) = (file.start, file.finish) {
-        let start_point = file.spawns[0].respawn();
+        // The first spawn that is anybody's.
+        let start_point = file.spawns.iter().find(|spawn| spawn.role.is_none()).unwrap_or(&file.spawns[0]).marker.respawn();
         map.course = Some(Course {
             start: start.zone(),
             start_point,
@@ -545,6 +580,74 @@ mod tests {
         assert!(parse(unknown.as_bytes()).err().unwrap().contains("modes this game does not have"));
     }
 
+    fn sniper_file() -> String {
+        format!(
+            r#"{{
+                "format": 1,
+                "modes": ["sniper"],
+                "solids": [{}],
+                "spawns": [{{"at": [0, 0, -5], "facing": [0, -1]}}, {{"at": [3, 0, -5], "facing": [0, -1]}},
+                           {{"at": [0, 0, -90], "facing": [0, 1], "role": "Sniper"}}],
+                "finish": {{"center": [0, 2, -80], "half": [5, 2, 3], "facing": [0, -1]}}
+            }}"#,
+            cube([-10.0, -1.0, -100.0], [10.0, 0.0, 0.0]),
+        )
+    }
+
+    #[test]
+    fn a_sniper_map_has_a_spawn_for_the_sniper_and_a_finish_to_reach() {
+        use crate::modes::MODE_SNIPER;
+        let file = parse(sniper_file().as_bytes()).unwrap();
+        assert_eq!(file.plays, [MODE_SNIPER]);
+        let map = build(9, &file);
+        assert!(map.course.is_none());
+        assert_eq!(map.spawns.len(), 2, "the runners' spawns only");
+        assert_eq!(map.posts(SNIPER_ROLE).count(), 1);
+        let finish = map.zone(FINISH_ZONE).expect("a finish");
+        assert!(finish.contains(Vec3::new(0.0, 0.9, -80.0)) && !finish.contains(map.spawns[0].pos));
+        // Without what the mode needs, it says what is missing.
+        let no_post = sniper_file().replace(r#", "role": "Sniper""#, "");
+        assert!(parse(no_post.as_bytes()).err().unwrap().contains("no spawn for the sniper"));
+        let no_finish = sniper_file().replace(r#""finish""#, r#""unused""#);
+        assert!(parse(no_finish.as_bytes()).err().unwrap().contains("no finish for the runners"));
+        // Nobody's spawn at all: nowhere for the runners.
+        let only_post = sniper_file().replace(r#"{"at": [0, 0, -5], "facing": [0, -1]}, {"at": [3, 0, -5], "facing": [0, -1]},"#, "");
+        assert!(parse(only_post.as_bytes()).err().unwrap().contains("no spawn"));
+    }
+
+    /// The example made by `blender/example_sniper_map.py` is a map for the
+    /// sniper mode: runners at one end, the sniper up on the platform at
+    /// the other, looking down the yard, with the finish under it.
+    #[test]
+    fn the_example_sniper_map_is_one() {
+        use crate::modes::MODE_SNIPER;
+        let bytes = std::fs::read("blender/example sniper.json").expect("the example map");
+        let file = parse(&bytes).unwrap();
+        assert_eq!(file.plays, [MODE_SNIPER]);
+        let map = build(9, &file);
+        assert_eq!(map.spawns.len(), 8);
+        let post = map.posts(SNIPER_ROLE).next().expect("a spawn for the sniper");
+        let finish = map.zone(FINISH_ZONE).expect("a finish");
+        for spawn in map.spawns.iter().chain([post]) {
+            assert!(map.is_free(spawn.pos, PLAYER_HALF), "a spawn inside something at {}", spawn.pos);
+            assert!(!map.is_free(spawn.pos - Vec3::Y * 0.1, PLAYER_HALF), "a spawn in the air at {}", spawn.pos);
+            assert!(!finish.contains(spawn.pos), "a spawn in the finish at {}", spawn.pos);
+        }
+        // The sniper is high up, far from the runners, facing them.
+        let runners = map.spawns[0].pos;
+        assert!(post.pos.y > runners.y + 10.0 && post.pos.distance(runners) > 150.0);
+        let facing = crate::map::look_dir(post.yaw, 0.0);
+        assert!(facing.dot((runners - post.pos).with_y(0.0).normalize()) > 0.9, "the sniper looks away from the yard");
+        // Nobody is in the sniper's sights where they come in.
+        let eye = post.pos + Vec3::Y * (crate::map::STAND_EYE - PLAYER_HALF.y);
+        for spawn in &map.spawns {
+            let to = spawn.pos - eye;
+            assert!(map.raycast(eye, to.normalize(), to.length() - 0.5).is_some(), "the sniper sees the spawn at {}", spawn.pos);
+        }
+        // The finish is on the ground, under the platform.
+        assert!(finish.contains(Vec3::new(post.pos.x, PLAYER_HALF.y, post.pos.z)));
+    }
+
     #[test]
     fn broken_files_say_what_is_wrong() {
         assert!(parse(b"{").err().unwrap().contains("not a map file"));
@@ -552,5 +655,8 @@ mod tests {
         assert!(parse(no_finish.as_bytes()).err().unwrap().contains("no finish"));
         let old = course_file().replace(r#""format": 1"#, r#""format": 0"#);
         assert!(parse(old.as_bytes()).err().unwrap().contains("export it again"));
+        // A finish with no start is for the sniper mode alone.
+        let no_start = course_file().replace(r#""start""#, r#""unused""#).replace(r#""format": 1,"#, r#""format": 1, "modes": ["ffa"],"#);
+        assert!(parse(no_start.as_bytes()).err().unwrap().contains("a finish but no start"));
     }
 }

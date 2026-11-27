@@ -19,6 +19,7 @@ pub mod ffa;
 pub mod hill;
 #[cfg(feature = "client")]
 pub mod hud;
+pub mod sniper;
 pub mod teams;
 
 /// Each mode's own part of the game: what it draws and plays on top of the
@@ -29,7 +30,7 @@ pub struct ClientPlugin;
 #[cfg(feature = "client")]
 impl bevy::app::Plugin for ClientPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        app.add_plugins((conquest::client::ConquestPlugin, course::client::RacePlugin));
+        app.add_plugins((conquest::client::ConquestPlugin, course::client::RacePlugin, sniper::client::SniperPlugin));
     }
 }
 
@@ -53,6 +54,9 @@ pub const MODE_RACE: u8 = 4;
 /// Time trial: the same course, each on your own clock, which starts as you
 /// leave the start; as many runs as you like, and the best time wins.
 pub const MODE_TRIAL: u8 = 5;
+/// Sniper: one player on a platform with a rifle, everybody else running for
+/// it from cover to cover. Everybody takes turns up there (see `sniper`).
+pub const MODE_SNIPER: u8 = 6;
 
 /// How the players of a mode stand to each other.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -61,6 +65,22 @@ pub enum Sides {
     Solo,
     /// Two teams that cannot hurt their own.
     Teams,
+    /// Players are told apart by what they are this round (`PlayerInfo::role`),
+    /// and those who are the same cannot hurt each other.
+    Roles,
+}
+
+impl Sides {
+    /// True if two players, each given as (team, role), are on the same
+    /// side: they cannot hurt each other, and the dead of them may watch
+    /// the living.
+    pub fn allies(self, a: (u8, u8), b: (u8, u8)) -> bool {
+        match self {
+            Sides::Solo => false,
+            Sides::Teams => a.0 & 1 == b.0 & 1,
+            Sides::Roles => a.1 == b.1,
+        }
+    }
 }
 
 /// What a map must have for a mode to be played on it.
@@ -74,6 +94,9 @@ pub enum Needs {
     Flags,
     /// A start, checkpoints and a finish. Courses are for nothing else.
     Course,
+    /// A spawn for the sniper, spawns for the runners, and the finish they
+    /// run for.
+    Sniper,
 }
 
 /// What a map has, which decides the modes it is offered in.
@@ -91,6 +114,8 @@ impl Offers {
             Needs::Hill => self.hill && !self.course,
             Needs::Flags => self.flags && !self.course,
             Needs::Course => self.course,
+            // Only a map made in Blender has those, and it says so itself.
+            Needs::Sniper => false,
         }
     }
 }
@@ -106,6 +131,9 @@ pub struct ModeInfo {
     pub armed: bool,
     /// Bots can play it.
     pub bots: bool,
+    /// The dead come back by themselves, `RESPAWN_DELAY` after dying. Without
+    /// it they are out until the mode puts everybody back in (a new round).
+    pub respawns: bool,
     /// The dead may ask to come back before `RESPAWN_DELAY` is up.
     pub early_respawn: bool,
     /// The match ends when the clock runs out. Without it, the leader ends it.
@@ -136,6 +164,8 @@ pub struct Rules {
     pub killed: fn(&mut Server, &Kill) -> Option<Winner>,
     /// A player's game says what happened on their run of the course.
     pub run: fn(&mut Server, PlayerId, RunEvent),
+    /// Somebody joined a match already under way.
+    pub joined: fn(&mut Server, PlayerId),
     /// Who wins when the clock runs out, or the leader ends a match that has none.
     pub time_up: fn(&Server) -> Winner,
     /// Where this player may come in (place and facing), given where the
@@ -161,6 +191,7 @@ impl Rules {
         tick: |_, _| None,
         killed: |_, _| None,
         run: |_, _, _| {},
+        joined: |_, _| {},
         time_up: |_| Winner::Nobody,
         spawns: |_, _, _| None,
         kit: |_, _| Kit::standard(),
@@ -190,6 +221,18 @@ pub enum ModeSnap {
     Hill(u8),
     /// The map's flags, in order.
     Conquest(Vec<FlagSnap>),
+    Sniper {
+        /// Whose turn it is on the platform (0: nobody's).
+        sniper: PlayerId,
+        /// The turn being played, from 1, of how many.
+        turn: u8,
+        turns: u8,
+        /// This turn: runners shot, and runners through to the platform.
+        shot: u8,
+        through: u8,
+        /// The turn is over, and the next has not begun.
+        between: bool,
+    },
 }
 
 /// A mode's own part of a player's line on the scoreboard.
@@ -204,6 +247,10 @@ pub enum ModeStats {
         /// How many checkpoints they are through (in a time trial, on the
         /// run they are on).
         gates: u8,
+    },
+    Sniper {
+        /// How many times they made it to the platform.
+        reached: u8,
     },
 }
 
@@ -276,7 +323,7 @@ pub struct BotBrief {
     pub hold: Option<(Vec3, f32)>,
 }
 
-pub static MODES: [ModeInfo; 6] = [
+pub static MODES: [ModeInfo; 7] = [
     ModeInfo {
         name: "Free for all",
         key: "ffa",
@@ -284,6 +331,7 @@ pub static MODES: [ModeInfo; 6] = [
         needs: Needs::Arena,
         armed: true,
         bots: true,
+        respawns: true,
         early_respawn: true,
         timed: true,
         score_limit: |frags| frags,
@@ -298,6 +346,7 @@ pub static MODES: [ModeInfo; 6] = [
         needs: Needs::Arena,
         armed: true,
         bots: true,
+        respawns: true,
         early_respawn: true,
         timed: true,
         score_limit: |frags| frags * 2,
@@ -312,6 +361,7 @@ pub static MODES: [ModeInfo; 6] = [
         needs: Needs::Hill,
         armed: true,
         bots: true,
+        respawns: true,
         early_respawn: true,
         timed: true,
         score_limit: |_| hill::HILL_SCORE_LIMIT,
@@ -326,6 +376,7 @@ pub static MODES: [ModeInfo; 6] = [
         needs: Needs::Flags,
         armed: true,
         bots: true,
+        respawns: true,
         // Every death costs the team the whole wait.
         early_respawn: false,
         timed: true,
@@ -341,6 +392,7 @@ pub static MODES: [ModeInfo; 6] = [
         needs: Needs::Course,
         armed: false,
         bots: false,
+        respawns: true,
         early_respawn: true,
         timed: true,
         score_limit: |_| 0,
@@ -355,6 +407,7 @@ pub static MODES: [ModeInfo; 6] = [
         needs: Needs::Course,
         armed: false,
         bots: false,
+        respawns: true,
         early_respawn: true,
         // It goes on until the leader ends it.
         timed: false,
@@ -362,6 +415,22 @@ pub static MODES: [ModeInfo; 6] = [
         rules: course::rules::TRIAL,
         #[cfg(feature = "client")]
         hud: course::client::TRIAL_HUD,
+    },
+    ModeInfo {
+        name: "Sniper",
+        key: "sniper",
+        sides: Sides::Roles,
+        needs: Needs::Sniper,
+        armed: true,
+        bots: false,
+        // Shot, you are out until the next turn.
+        respawns: false,
+        early_respawn: false,
+        timed: true,
+        score_limit: |_| 0,
+        rules: sniper::rules::RULES,
+        #[cfg(feature = "client")]
+        hud: sniper::client::HUD,
     },
 ];
 
@@ -412,8 +481,8 @@ mod tests {
     fn the_modes_are_where_their_ids_say() {
         let at = |mode: u8| MODES[mode as usize].key;
         assert_eq!(
-            [at(MODE_FFA), at(MODE_TEAMS), at(MODE_HILL), at(MODE_CONQUEST), at(MODE_RACE), at(MODE_TRIAL)],
-            ["ffa", "teams", "hill", "conquest", "race", "trial"]
+            [at(MODE_FFA), at(MODE_TEAMS), at(MODE_HILL), at(MODE_CONQUEST), at(MODE_RACE), at(MODE_TRIAL), at(MODE_SNIPER)],
+            ["ffa", "teams", "hill", "conquest", "race", "trial", "sniper"]
         );
         for (mode, info) in MODES.iter().enumerate() {
             assert_eq!(by_key(&info.key.to_uppercase()), Some(mode as u8));

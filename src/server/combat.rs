@@ -89,6 +89,8 @@ impl Server {
     pub(crate) fn damage(&mut self, victim_id: PlayerId, attacker_id: PlayerId, amount: i32, weapon_id: WeaponId) {
         let mode = self.settings.mode;
         let attacker_team = self.players.get(&attacker_id).map(|attacker| attacker.team);
+        let attacker_side = self.players.get(&attacker_id).map(|attacker| (attacker.team, attacker.role));
+        let sides = modes::info(mode).sides;
         // The dead take no more hurt: the rest of a shotgun's pellets, or a
         // grenade going off over a body, must not kill them again.
         let Some(victim) = self.players.get_mut(&victim_id).filter(|victim| victim.alive) else {
@@ -97,7 +99,7 @@ impl Server {
         let victim_team = victim.team & 1;
         let body = victim.pos;
         // No friendly fire. Your own grenade still hurts you.
-        if is_team_mode(mode) && attacker_id != victim_id && attacker_team == Some(victim.team) {
+        if attacker_id != victim_id && attacker_side.is_some_and(|attacker| sides.allies(attacker, (victim.team, victim.role))) {
             return;
         }
         victim.since_damage = 0.0;

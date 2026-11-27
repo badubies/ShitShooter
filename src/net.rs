@@ -153,10 +153,22 @@ impl Session {
         self.roster.iter().find(|p| p.id == id).map_or(0, |p| p.team & 1)
     }
 
+    /// A player's (team, role): what side they are on, as the mode counts sides.
+    fn side_of(&self, id: PlayerId) -> (u8, u8) {
+        self.roster.iter().find(|p| p.id == id).map_or((0, 0), |p| (p.team & 1, p.role))
+    }
+
+    /// True if `a` and `b` are two players on the same side: the same team
+    /// in a team mode, the same thing in a mode of roles. They cannot hurt
+    /// each other, and one who is out may watch the other.
+    pub fn allies(&self, a: PlayerId, b: PlayerId) -> bool {
+        a != b && crate::modes::info(self.mode).sides.allies(self.side_of(a), self.side_of(b))
+    }
+
     /// True if `a` and `b` can hurt each other: two different players who are
-    /// not on the same team.
+    /// not on the same side.
     pub fn enemies(&self, a: PlayerId, b: PlayerId) -> bool {
-        a != b && !(self.team_mode() && self.team_of(a) == self.team_of(b))
+        a != b && !self.allies(a, b)
     }
 }
 
@@ -432,6 +444,17 @@ fn update_session(
                 session.armor_taken = 0;
                 session.time_left = *time_left;
                 next_state.set(AppState::Playing);
+            }
+            // A new round: held in place for its countdown, like the match's.
+            ServerMsg::RoundStarted { countdown, time_left } => {
+                session.countdown = if *countdown > 0.0 { *countdown } else { -1.0 };
+                if session.frozen() {
+                    sounds.write(SoundCue {
+                        sound: Sound::Countdown,
+                        at: None,
+                    });
+                }
+                session.time_left = *time_left;
             }
             ServerMsg::MatchEnded { winner, team_scores } => {
                 // The roster that came just before this has everybody's final
