@@ -3,4 +3,5 @@
 /dist
 # Blender keeps the previous save of a .blend as .blend1
 *.blend1
+__pycache__
 .DS_Store

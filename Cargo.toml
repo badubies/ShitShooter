@@ -20,6 +20,8 @@ postcard = { version = "1.2.0", features = ["use-std"] }
 renet = { version = "2.0.1", default-features = false }
 renet_netcode = { version = "2.0.1", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
+# Maps made in Blender are JSON files (see `src/custom.rs`).
+serde_json = "1.0.154"
 
 # Only for setting the window's icon: Bevy has no setting for it. Must stay the
 # same winit version Bevy uses.

@@ -218,7 +218,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-21:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-23:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -352,11 +352,20 @@ pub struct ClientState {
 pub enum ServerMsg {
     Welcome {
         id: PlayerId,
+        /// The maps made in Blender this server has (`custom.rs`), in
+        /// order: each one's name, and whether it is a course.
+        maps: Vec<(String, bool)>,
+    },
+    /// The file of map `map`, one made in Blender (`custom.rs`), sent before
+    /// it is played and again whenever the host's copy changes.
+    MapFile {
+        map: u8,
+        data: Vec<u8>,
     },
     Roster {
         players: Vec<PlayerInfo>,
         leader: PlayerId,
-        /// Index into `map::MAP_NAMES`.
+        /// Index into `map::MAP_NAMES`, or past it (`map::BUILT_IN`).
         map: u8,
         /// One of the `MODE_*` constants.
         mode: u8,

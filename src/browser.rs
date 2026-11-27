@@ -190,7 +190,8 @@ fn explain(err: &AskError, server: SocketAddr) -> String {
     }
 }
 
-/// The picture of map `id`, from `assets/ui/maps`.
+/// The picture of map `id`, from `assets/ui/maps`: the built-in ones have
+/// one, the ones made in Blender do not.
 pub(crate) fn map_picture(asset_server: &AssetServer, id: u8) -> Option<Handle<Image>> {
     let name = MAP_NAMES.get(id as usize)?;
     Some(asset_server.load(format!("ui/maps/{}.jpg", name.to_lowercase())))
@@ -200,8 +201,10 @@ fn mode_name(mode: u8) -> &'static str {
     MODE_NAMES.get(mode as usize).copied().unwrap_or("?")
 }
 
+/// A lobby's map: a built-in one, or one made in Blender (whose name we may
+/// not know until we join).
 fn map_name(map: u8) -> &'static str {
-    MAP_NAMES.get(map as usize).copied().unwrap_or("?")
+    MAP_NAMES.get(map as usize).copied().unwrap_or("Custom map")
 }
 
 // ---------------------------------------------------------------- the page

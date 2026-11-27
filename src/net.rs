@@ -201,6 +201,10 @@ impl Connection {
 pub fn host(commands: &mut Commands, settings: ServerSettings, name: &str) -> Result<(), String> {
     let port = settings.port;
     let password = settings.password.clone();
+    // Maps added to the maps folder since the game started are there to pick.
+    for problem in crate::custom::load() {
+        warn!("{problem}");
+    }
     let server = Server::bind(settings)
         .map_err(|e| format!("Could not host on port {port}: {e}"))?;
     let connection = Connection::open(SocketAddr::from((Ipv4Addr::LOCALHOST, port)), &password, name)?;
@@ -358,9 +362,19 @@ fn update_session(
     }
     for NetMsg(msg) in messages.read() {
         match msg {
-            ServerMsg::Welcome { id } => {
+            ServerMsg::Welcome { id, maps } => {
                 session.my_id = *id;
+                crate::custom::take_list(maps.clone());
                 next_state.set(AppState::Lobby);
+            }
+            ServerMsg::MapFile { map, data } => {
+                let index = map.saturating_sub(crate::map::BUILT_IN) as usize;
+                match crate::custom::take_bytes(index, data.clone()) {
+                    // Playing on it already (it changed): build it again.
+                    Ok(()) if game_map.0.id == *map => game_map.0 = Map::for_game(*map, session.mode),
+                    Ok(()) => {}
+                    Err(why) => warn!("map {map} from the server: {why}"),
+                }
             }
             ServerMsg::Roster {
                 players,

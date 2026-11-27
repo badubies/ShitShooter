@@ -333,7 +333,9 @@ fn build_map(
                     perceptual_roughness: 0.9,
                     ..default()
                 };
-                let (pattern, tile) = block_look(color);
+                // A map made in Blender names its textures; the rest go by colour.
+                let named = map.0.textures.iter().find(|(c, _)| *c == color).and_then(|(_, name)| crate::textures::named(name));
+                let (pattern, tile) = named.unwrap_or_else(|| block_look(color));
                 textured.dress(&mut material, pattern, tile, &mut images);
                 let handle = materials.add(material);
                 block_materials.push((color, handle.clone()));

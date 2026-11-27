@@ -12,6 +12,10 @@ Download the launcher for your computer from the [latest release](https://github
 
 The game is installed to `%LOCALAPPDATA%\ShitShooter` on Windows, `~/Library/Application Support/ShitShooter` on a Mac and `~/.local/share/ShitShooter` on Linux, so the launcher can live anywhere (desktop, downloads...). Without internet it starts the version already installed. Any arguments given to the launcher are passed on to the game, e.g. `ShitShooterLauncher.exe --join 1.2.3.4`. If its window can't open (no display or no OpenGL), it prints its progress to a terminal instead.
 
+## Making maps
+
+Maps can be built in Blender and exported into a `maps` folder next to the game. They show up in the lobby's map picker, and whoever hosts sends theirs to everyone who joins. See [blender/README.md](blender/README.md).
+
 ## Running a lobby server (Raspberry Pi)
 
 A lobby server is an always-on machine where players open and join lobbies without anyone having to host on their own PC. In the game it's **Play online** on the main menu: it lists the server's lobbies (any lobby with someone in it), and **Open a lobby** opens one of your own. The server's address goes in the box at the top of that page. Whoever opens a lobby leads it and picks the mode, map and bots as usual. A lobby closes 30 seconds after the last person leaves.

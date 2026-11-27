@@ -1055,8 +1055,12 @@ fn selftest_course(
     // the map's picture in the lobby.
     if test.reached(step + 2, at + 1.4) {
         let [lo, hi] = map.0.bounds;
-        let middle = Vec3::new((lo.x + hi.x) / 2.0, 70.0, (lo.y + hi.y) / 2.0);
-        player.teleport(Vec3::new(lo.x + 30.0, 215.0, lo.y - 10.0));
+        // Looking down at the middle of it from high behind the start.
+        let start = course.start_point.pos;
+        let (top, bottom) = (start.y, course.finish_point.pos.y);
+        let middle = Vec3::new((lo.x + hi.x) / 2.0, (top + bottom) / 2.0 - 20.0, (lo.y + hi.y) / 2.0);
+        let away = (start - middle).with_y(0.0).normalize_or_zero();
+        player.teleport((start + away * 80.0).with_y(top + 64.0));
         let to = middle - player.eye();
         player.yaw = (-to.x).atan2(-to.z);
         player.pitch = to.y.atan2(to.with_y(0.0).length());

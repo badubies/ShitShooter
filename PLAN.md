@@ -1,5 +1,30 @@
 # Plan
 
+## Round 7: maps made in Blender
+
+Asked for on 2026-11-27: a way for anyone to build surf maps in Blender
+and play them. Three generated courses (Cascade, Riptide, Maelstrom),
+tuned with an autopilot that rode every face dead straight and said
+nothing about fun, were dropped with it.
+
+- [x] `blender/shitshooter_maps.py`, a Blender add-on: File > Export >
+  ShitShooter map (.json), and a sidebar tab to export again in one click,
+  check the map, and add ramps and course markers. Each loose part of a
+  visible mesh is one convex solid (its hull, computed in Blender); empties
+  named `spawn`, `start`, `checkpoint N`, `respawn N`, `finish`, `finish
+  spawn` and `kill` make the course. See `blender/README.md`.
+- [x] `src/custom.rs`: reads every `*.json` in `maps/` (beside the exe, and
+  where it was started), lists them after the built-in maps (ids from
+  `map::BUILT_IN`), builds them. A map with a start and a finish is a
+  course (race, trial); else free for all and teams. Kill zones are new on
+  `Course`. Materials name textures (`textures::named`).
+- [x] The host sends its list with `Welcome` and the map being played as
+  `MapFile` (on joining, and when it is picked), so only the host needs
+  the file; it reads it again at every match start, so export, start a
+  match, and you ride the new version. Protocol 23.
+- [x] `blender/example_surf_map.py` builds `blender/example_surf.blend` and
+  exports `maps/example surf.json`; `build-release.ps1` ships `maps/`.
+
 ## Round 5: a surf course, and racing on it
 
 Asked for on 2026-11-26: a better surf map, an obstacle course of chained

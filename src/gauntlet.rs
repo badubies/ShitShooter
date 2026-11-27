@@ -416,6 +416,7 @@ fn build() -> (Map, Vec<Mark>) {
         finish,
         finish_point,
         floors,
+        kills: Vec::new(),
     });
 
     // Pillars down from under the middle of the ramps to the pit floor.

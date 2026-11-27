@@ -31,18 +31,57 @@ pub const STEP_UP: f32 = 0.5;
 const GRID_CELL: f32 = 8.0;
 
 pub const MAP_NAMES: [&str; 6] = ["Arena", "Depot", "Valley", "Hamlet", "Surf", "Gauntlet"];
-/// The id of the surf course, the one map with a `Course`.
+/// The id of the built-in surf course, the one built-in map with a `Course`.
 pub const GAUNTLET: u8 = 5;
+
+/// Maps made in Blender (`custom.rs`) come after the built-in ones: map
+/// `BUILT_IN + i` is the `i`th of them.
+pub const BUILT_IN: u8 = MAP_NAMES.len() as u8;
+
+/// How many maps there are: the built-in ones and the ones made in Blender.
+pub fn count() -> u8 {
+    BUILT_IN + crate::custom::count() as u8
+}
+
+/// Map `id`'s name.
+pub fn name(id: u8) -> String {
+    match MAP_NAMES.get(id as usize) {
+        Some(name) => name.to_string(),
+        None => crate::custom::about((id - BUILT_IN) as usize).map_or_else(|| "?".to_string(), |(name, _)| name),
+    }
+}
+
+/// The id of the map called `name` (any case), if there is one.
+pub fn by_name(name: &str) -> Option<u8> {
+    (0..count()).find(|id| self::name(*id).eq_ignore_ascii_case(name))
+}
+
+/// True if map `id` is a surf course.
+pub fn is_course(id: u8) -> bool {
+    if id >= BUILT_IN {
+        return crate::custom::about((id - BUILT_IN) as usize).is_some_and(|(_, course)| course);
+    }
+    id == GAUNTLET
+}
 
 /// True if map `id` can be played in `mode`. Hamlet is built for close
 /// fights only, and Surf for riding ramps: neither has flags for conquest
-/// nor a hill. The racing modes are run on a course, and the course is
-/// for nothing else.
+/// nor a hill. The racing modes are run on the courses, and the courses
+/// are for nothing else.
 pub fn plays(id: u8, mode: u8) -> bool {
-    if is_course_mode(mode) || id == GAUNTLET {
-        return is_course_mode(mode) && id == GAUNTLET;
+    if is_course_mode(mode) || is_course(id) {
+        return is_course_mode(mode) && is_course(id);
     }
-    !matches!(id, 3 | 4) || mode == MODE_FFA || mode == MODE_TEAMS
+    // Maps made in Blender that are not courses have no flags nor hill.
+    !(matches!(id, 3 | 4) || id >= BUILT_IN) || mode == MODE_FFA || mode == MODE_TEAMS
+}
+
+/// The most maps any one mode is played on.
+pub fn most_maps_in_a_mode() -> usize {
+    (0..crate::protocol::MODE_NAMES.len() as u8)
+        .map(|mode| (0..MAP_NAMES.len() as u8).filter(|id| plays(*id, mode)).count())
+        .max()
+        .unwrap_or(1)
 }
 
 pub fn player_half(crouching: bool) -> Vec3 {
@@ -205,13 +244,16 @@ impl Default for Look {
 }
 
 pub struct Map {
-    /// Index into `MAP_NAMES`.
+    /// Index into `MAP_NAMES`, or past it, a map made in Blender (`BUILT_IN`).
     pub id: u8,
     /// Do not change after `finish`: the grid indexes them.
     pub blocks: Vec<Block>,
     /// Sloped solids, to stand on or (the steep ones) to surf. Do not
     /// change after `finish` either.
     pub ramps: Vec<Ramp>,
+    /// Maps made in Blender: the texture (`textures::Pattern::named`) for
+    /// each colour that names one.
+    pub textures: Vec<([f32; 3], String)>,
     /// The ground of the outdoor maps. Indoor maps stand on a floor block.
     pub terrain: Option<Terrain>,
     /// The corners of the part of the map that is played in (x, z): bots
@@ -410,6 +452,7 @@ impl Map {
             id,
             blocks: Vec::new(),
             ramps: Vec::new(),
+            textures: Vec::new(),
             terrain: None,
             bounds: [Vec2::splat(-A + 4.0), Vec2::splat(A - 4.0)],
             pads: Vec::new(),
@@ -516,6 +559,12 @@ impl Map {
             3 => crate::hamlet::hamlet(),
             4 => crate::surf::surf(),
             GAUNTLET => crate::gauntlet::gauntlet(),
+            id if id >= BUILT_IN => crate::custom::map((id - BUILT_IN) as usize, id).unwrap_or_else(|| {
+                // Not sent it yet: somewhere to stand meanwhile.
+                let mut map = Map::arena();
+                map.id = id;
+                map
+            }),
             _ => Map::arena(),
         }
     }

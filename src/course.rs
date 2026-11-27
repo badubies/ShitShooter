@@ -98,13 +98,15 @@ pub struct Course {
     /// `i` checkpoints (so one more than there are checkpoints, the last
     /// for after the last one).
     pub floors: Vec<f32>,
+    /// Go into one of these and you have fallen off too.
+    pub kills: Vec<Zone>,
 }
 
 impl Course {
     /// Has a body whose box is centred at `pos`, through `passed`
     /// checkpoints, fallen off?
     pub fn fallen(&self, pos: Vec3, passed: usize) -> bool {
-        self.floors.get(passed).or(self.floors.last()).is_some_and(|floor| pos.y < *floor)
+        self.floors.get(passed).or(self.floors.last()).is_some_and(|floor| pos.y < *floor) || self.kills.iter().any(|kill| kill.contains(pos))
     }
 
     /// Where to come back in, through `passed` checkpoints.
@@ -229,6 +231,7 @@ mod tests {
             finish: gate(30.0),
             finish_point: respawn,
             floors: vec![-1.0, -2.0, -3.0],
+            kills: Vec::new(),
         }
     }
 

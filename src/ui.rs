@@ -24,7 +24,6 @@ use crate::{
     race::{BACK_TO_START, ordinal},
     grenade::SmokeFog,
     gun_model::FittedModels,
-    map::MAP_NAMES,
     menu::{Field, MenuPage},
     net::{self, Connection, Session},
     paint::{Skins, palette_color},
@@ -1042,7 +1041,7 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
     commands.insert_resource(FinalScoresOpen(false));
     let share = session.share_address.clone();
     let server_label = session.server_label.clone();
-    let pictures: Vec<_> = (0..MAP_NAMES.len() as u8).map(|id| crate::browser::map_picture(&asset_server, id)).collect();
+    let pictures: Vec<_> = (0..crate::map::count()).map(|id| crate::browser::map_picture(&asset_server, id)).collect();
     let modes = (0..MODE_NAMES.len() as u8).map(|mode| {
         (
             MatchChoice::Mode(mode),
@@ -1183,11 +1182,12 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
                                     });
                                     picker.spawn(group()).with_children(|group| {
                                         group.spawn(section("Map"));
-                                        // A column per map, so the cards keep their size
-                                        // when the maps the mode isn't played on are hidden.
+                                        // A column for each map of the mode with the most,
+                                        // so the cards keep their size when the maps the
+                                        // mode isn't played on are hidden.
                                         let grid = Node {
                                             display: Display::Grid,
-                                            grid_template_columns: RepeatedGridTrack::flex(MAP_NAMES.len() as u16, 1.0),
+                                            grid_template_columns: RepeatedGridTrack::flex(crate::map::most_maps_in_a_mode() as u16, 1.0),
                                             column_gap: px(10),
                                             min_width: px(0),
                                             ..default()
@@ -1542,7 +1542,7 @@ fn map_card(id: u8, picture: Option<Handle<Image>>) -> impl Bundle {
                 },
                 Pickable::IGNORE,
                 children![
-                    (weighted(MAP_NAMES.get(id as usize).copied().unwrap_or("?"), 14.0, 700, TEXT), Pickable::IGNORE),
+                    (weighted(crate::map::name(id), 14.0, 700, TEXT), Pickable::IGNORE),
                     (MapNote(id), label("", 11.0, DIM), Pickable::IGNORE),
                 ],
             ),
@@ -1611,7 +1611,7 @@ fn update_lobby(
         final_scores.0 = false;
     }
     let leader = session.name_of(session.leader).to_string();
-    let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
+    let map_name = crate::map::name(map.0.id);
     for (kind, mut text) in &mut texts {
         let value = match kind {
             LobbyText::Caption if session.is_leader() => "YOUR LOBBY  ·  YOU PICK THE MATCH".to_string(),
@@ -1639,7 +1639,7 @@ fn update_lobby(
             LobbyText::Result => session.last_result.clone().unwrap_or_default(),
             LobbyText::FinalCaption => match &session.last_match {
                 Some(last) => {
-                    let map = MAP_NAMES.get(last.map as usize).copied().unwrap_or("?");
+                    let map = crate::map::name(last.map);
                     let mode = MODE_NAMES.get(last.mode as usize).copied().unwrap_or("?");
                     format!("LAST MATCH  ·  {map}  ·  {mode}").to_uppercase()
                 }
@@ -3268,7 +3268,7 @@ fn update_hud(
     let ping = connection.as_ref().map_or(0.0, |c| c.ping_ms());
     let top = top_bar(&session);
     let my_team = session.team_of(session.my_id);
-    let map_name = MAP_NAMES.get(map.0.id as usize).copied().unwrap_or("?");
+    let map_name = crate::map::name(map.0.id);
     let mode_name = MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?");
     let me = session.roster.iter().find(|p| p.id == session.my_id);
     // Where we stand: best score first, as on the scoreboard.

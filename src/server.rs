@@ -1017,7 +1017,8 @@ impl Server {
                 self.join_counter += 1;
                 let player = self.new_player(name, None);
                 self.players.insert(id, player);
-                self.send(id, &ServerMsg::Welcome { id });
+                self.send(id, &ServerMsg::Welcome { id, maps: crate::custom::list() });
+                self.send_map_file(Some(id));
                 // Roster first, so the newcomer knows everyone before any spawn arrives.
                 let roster = self.roster_msg();
                 self.broadcast(&roster);
@@ -1116,7 +1117,7 @@ impl Server {
             }
             ClientMsg::NextMap if is_leader && self.phase == Phase::Lobby => {
                 // The next map played in this mode.
-                let maps = map::MAP_NAMES.len() as u8;
+                let maps = map::count();
                 let next = (1..=maps)
                     .map(|step| (self.settings.map + step) % maps)
                     .find(|id| map::plays(*id, self.settings.mode))
@@ -1634,6 +1635,7 @@ impl Server {
     }
 
     fn start_match(&mut self) {
+        self.reload_map_file();
         self.log(format_args!("match started"));
         self.phase = Phase::Playing;
         self.countdown = COUNTDOWN;
@@ -1872,7 +1874,7 @@ impl Server {
             self.players.retain(|_, player| player.bot.is_none());
         }
         if !map::plays(self.settings.map, mode) {
-            let maps = map::MAP_NAMES.len() as u8;
+            let maps = map::count();
             if let Some(id) = (0..maps).find(|id| map::plays(*id, mode)) {
                 self.settings.map = id;
             }
@@ -1886,7 +1888,7 @@ impl Server {
 
     /// Plays on map `id` from the next match on, if the mode is played there.
     fn set_map(&mut self, id: u8) {
-        if id as usize >= map::MAP_NAMES.len() || !map::plays(id, self.settings.mode) || id == self.settings.map {
+        if id >= map::count() || !map::plays(id, self.settings.mode) || id == self.settings.map {
             return;
         }
         self.settings.map = id;
@@ -1895,8 +1897,36 @@ impl Server {
     }
 
     fn rebuild_map(&mut self) {
+        self.send_map_file(None);
         self.map = Map::for_game(self.settings.map, self.settings.mode);
         self.nav = nav_for(&self.map, self.settings.mode);
+    }
+
+    /// The map being played's file, to `to` (everybody, for `None`), if it
+    /// is one made in Blender: they build it from that.
+    fn send_map_file(&mut self, to: Option<PlayerId>) {
+        let map = self.settings.map;
+        let Some(data) = map.checked_sub(map::BUILT_IN).and_then(|index| crate::custom::bytes(index as usize)) else { return };
+        let msg = ServerMsg::MapFile { map, data: data.to_vec() };
+        match to {
+            Some(id) => self.send(id, &msg),
+            None => self.broadcast(&msg),
+        }
+    }
+
+    /// A map made in Blender is read again from its file at the start of
+    /// each match: export it again and the next match is on the new one.
+    fn reload_map_file(&mut self) {
+        let Some(index) = self.settings.map.checked_sub(map::BUILT_IN) else { return };
+        match crate::custom::reload(index as usize) {
+            Ok(true) => {
+                self.log(format_args!("{} changed: reloaded", map::name(self.settings.map)));
+                self.rebuild_map();
+                self.roster_dirty = true;
+            }
+            Ok(false) => {}
+            Err(why) => self.log(format_args!("{why}; playing the last good one")),
+        }
     }
 
     fn add_bot(&mut self) {

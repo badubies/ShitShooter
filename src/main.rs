@@ -15,6 +15,7 @@
 // Shared by the game and the servers.
 mod canvas;
 mod course;
+mod custom;
 mod gauntlet;
 mod hamlet;
 mod hub;
@@ -171,9 +172,10 @@ LOBBY SETTINGS (for --host, --server, and each lobby a --hub opens):
     --bots <N>           Start with N bots
     --bots-hold-fire     The bots never shoot
     --bot-difficulty <L> How well bots fight: easy, normal or hard [default: normal]
-    --map <NAME>         Map: arena, depot, valley, hamlet, surf or gauntlet
+    --map <NAME>         Map: arena, depot, valley, hamlet, surf, gauntlet,
+                         or one made in Blender, by its file's name
                          [default: arena] (hamlet, surf: ffa and teams only;
-                         gauntlet: race and trial, and they only there)
+                         courses: race and trial, and they only there)
     --airaccel <N>       Air acceleration: 10, 20, 30 or 100 [default: 20]
 
     --help               Show this text
@@ -234,10 +236,10 @@ fn parse_args() -> Result<LaunchArgs, String> {
             }
             "--map" => {
                 let name = value("name")?;
-                args.server.map = map::MAP_NAMES
-                    .iter()
-                    .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown map '{name}' (try: arena, depot, valley, hamlet, surf, gauntlet)"))? as u8;
+                args.server.map = map::by_name(&name).ok_or_else(|| {
+                    let names: Vec<String> = (0..map::count()).map(|id| map::name(id).to_lowercase()).collect();
+                    format!("unknown map '{name}' (try: {})", names.join(", "))
+                })?;
                 args.map = Some(args.server.map);
             }
             "--airaccel" => {
@@ -252,14 +254,14 @@ fn parse_args() -> Result<LaunchArgs, String> {
             other => return Err(format!("unknown option '{other}'")),
         }
     }
-    // The course on its own means a race.
-    if args.server.map == map::GAUNTLET && args.server.mode == protocol::MODE_FFA {
+    // A course on its own means a race.
+    if map::is_course(args.server.map) && args.server.mode == protocol::MODE_FFA {
         args.server.mode = protocol::MODE_RACE;
     }
     if !map::plays(args.server.map, args.server.mode) {
         return Err(format!(
             "{} is not played in {}",
-            map::MAP_NAMES[args.server.map as usize],
+            map::name(args.server.map),
             protocol::MODE_NAMES[args.server.mode as usize].to_lowercase()
         ));
     }
@@ -267,6 +269,9 @@ fn parse_args() -> Result<LaunchArgs, String> {
 }
 
 fn main() {
+    // The maps made in Blender, so `--map` can name them; what is wrong with
+    // any that cannot be played goes to the log once it is open.
+    let map_problems = custom::load();
     let args = match parse_args() {
         Ok(args) => args,
         Err(message) => {
@@ -305,6 +310,9 @@ fn main() {
 
     if args.hub {
         attach_console(true);
+        for problem in &map_problems {
+            eprintln!("{problem}");
+        }
         let max_lobbies = args.max_lobbies.unwrap_or(hub::DEFAULT_MAX_LOBBIES);
         match hub::Hub::bind(args.server.clone(), max_lobbies) {
             Ok(hub) => {
@@ -325,6 +333,9 @@ fn main() {
         // The server has no game window, so it always needs a console: the
         // terminal it was started from, or a new window.
         attach_console(true);
+        for problem in &map_problems {
+            eprintln!("{problem}");
+        }
         match Server::bind(args.server.clone()) {
             Ok(server) => {
                 println!(
@@ -356,6 +367,9 @@ fn run_game(args: LaunchArgs) {
 
     open_log_file();
     install_crash_reporter();
+    for problem in custom::load() {
+        log_line(&problem);
+    }
 
     // The self-test's window opens behind whatever has focus, to watch or
     // not: it draws off screen (see `devtools`), whatever covers it.

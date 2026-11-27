@@ -17,4 +17,8 @@ try {
 # The game loads models, textures and sounds from assets\ next to the exe.
 if (Test-Path dist\assets) { Remove-Item -Recurse -Force dist\assets }
 if (Test-Path assets) { Copy-Item -Recurse assets dist\assets }
-Write-Host "Built dist\shitshooter.exe and dist\assets (send both)"
+# Maps made in Blender, which the game reads from maps\ next to the exe. Maps
+# already in dist\maps are kept; ours are added or replaced.
+New-Item -ItemType Directory -Force dist\maps | Out-Null
+if (Test-Path maps) { Copy-Item maps\*.json dist\maps -Force }
+Write-Host "Built dist\shitshooter.exe, dist\assets and dist\maps (send all three; only a host needs maps)"

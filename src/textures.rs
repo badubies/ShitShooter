@@ -141,6 +141,36 @@ fn look(material: &str) -> Option<(Pattern, f32)> {
     })
 }
 
+/// The textures a map made in Blender can name (`Map::textures`), by its
+/// material's name, and the metres one tile covers.
+const NAMED: [(&str, Pattern, f32); 16] = {
+    use Pattern::*;
+    [
+        ("panels", Panels, 4.0),
+        ("slab", Slab, 4.0),
+        ("concrete", Concrete, 2.5),
+        ("paint", Paint, 2.0),
+        ("plaster", Plaster, 2.5),
+        ("brick", Brick, 1.6),
+        ("cinder", Cinder, 1.6),
+        ("stone", Stone, 2.0),
+        ("rock", Rock, 3.0),
+        ("wood", Wood, 1.0),
+        ("boards", Boards, 1.0),
+        ("metal", Metal, 2.0),
+        ("corrugated", Corrugated, 1.2),
+        ("rust", Rust, 2.0),
+        ("asphalt", Asphalt, 4.0),
+        ("ground", Ground, 4.0),
+    ]
+};
+
+/// The texture called `name` (by `NAMED`, any case) and its tile, if any.
+pub fn named(name: &str) -> Option<(Pattern, f32)> {
+    let name = name.to_lowercase();
+    NAMED.iter().find(|(known, ..)| *known == name).map(|(_, pattern, tile)| (*pattern, *tile))
+}
+
 /// The texture a map block gets, by its colour, and the metres one tile
 /// covers. Unknown colours get concrete.
 pub fn block_look(color: [f32; 3]) -> (Pattern, f32) {
