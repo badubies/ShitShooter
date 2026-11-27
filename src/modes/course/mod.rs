@@ -4,6 +4,8 @@
 //! finish wins. Time trial: each on their own clock, which starts as they
 //! leave the start; as many runs as they like, and the best time wins.
 
+#[cfg(feature = "client")]
+pub mod client;
 pub mod rules;
 
 /// A race goes on for at most this many seconds after the first finish.

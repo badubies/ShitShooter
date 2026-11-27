@@ -17,7 +17,21 @@ pub mod conquest;
 pub mod course;
 pub mod ffa;
 pub mod hill;
+#[cfg(feature = "client")]
+pub mod hud;
 pub mod teams;
+
+/// Each mode's own part of the game: what it draws and plays on top of the
+/// rest. They all run all the time and mind only their own mode.
+#[cfg(feature = "client")]
+pub struct ClientPlugin;
+
+#[cfg(feature = "client")]
+impl bevy::app::Plugin for ClientPlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        app.add_plugins((conquest::client::ConquestPlugin, course::client::RacePlugin));
+    }
+}
 
 // In the team modes players are split into two teams that cannot hurt each
 // other.
@@ -100,7 +114,11 @@ pub struct ModeInfo {
     /// one player, kills for a team, seconds on the hill, tickets. 0 where
     /// it is won on time, not on a score.
     pub score_limit: fn(u32) -> u32,
+    /// What the server asks it as a match goes on.
     pub rules: Rules,
+    /// What it tells the interface to show.
+    #[cfg(feature = "client")]
+    pub hud: hud::ModeHud,
 }
 
 /// A mode's rules: what the server asks it as a match goes on. Each is a plain
@@ -270,6 +288,8 @@ pub static MODES: [ModeInfo; 6] = [
         timed: true,
         score_limit: |frags| frags,
         rules: ffa::RULES,
+        #[cfg(feature = "client")]
+        hud: hud::ModeHud::KILLS,
     },
     ModeInfo {
         name: "Team deathmatch",
@@ -282,6 +302,8 @@ pub static MODES: [ModeInfo; 6] = [
         timed: true,
         score_limit: |frags| frags * 2,
         rules: teams::RULES,
+        #[cfg(feature = "client")]
+        hud: hud::ModeHud::TEAMS,
     },
     ModeInfo {
         name: "King of the hill",
@@ -294,6 +316,8 @@ pub static MODES: [ModeInfo; 6] = [
         timed: true,
         score_limit: |_| hill::HILL_SCORE_LIMIT,
         rules: hill::RULES,
+        #[cfg(feature = "client")]
+        hud: hill::HUD,
     },
     ModeInfo {
         name: "Conquest",
@@ -307,6 +331,8 @@ pub static MODES: [ModeInfo; 6] = [
         timed: true,
         score_limit: |_| conquest::CONQUEST_TICKETS,
         rules: conquest::rules::RULES,
+        #[cfg(feature = "client")]
+        hud: conquest::client::HUD,
     },
     ModeInfo {
         name: "Race",
@@ -319,6 +345,8 @@ pub static MODES: [ModeInfo; 6] = [
         timed: true,
         score_limit: |_| 0,
         rules: course::rules::RACE,
+        #[cfg(feature = "client")]
+        hud: course::client::RACE_HUD,
     },
     ModeInfo {
         name: "Time trial",
@@ -332,6 +360,8 @@ pub static MODES: [ModeInfo; 6] = [
         timed: false,
         score_limit: |_| 0,
         rules: course::rules::TRIAL,
+        #[cfg(feature = "client")]
+        hud: course::client::TRIAL_HUD,
     },
 ];
 

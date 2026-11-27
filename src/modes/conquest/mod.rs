@@ -1,6 +1,8 @@
 //! Conquest: each team has tickets. Every death costs one, and the team
 //! holding fewer of the map's flags bleeds them. Out of tickets, you lose.
 
+#[cfg(feature = "client")]
+pub mod client;
 pub mod rules;
 
 /// Tickets each team starts a conquest match with.

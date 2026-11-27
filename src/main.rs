@@ -40,8 +40,6 @@ mod browser;
 #[cfg(feature = "client")]
 mod combat;
 #[cfg(feature = "client")]
-mod conquest;
-#[cfg(feature = "client")]
 mod devtools;
 #[cfg(feature = "client")]
 mod graphics;
@@ -65,8 +63,6 @@ mod paint_editor;
 mod ping;
 #[cfg(feature = "client")]
 mod player;
-#[cfg(feature = "client")]
-mod race;
 #[cfg(feature = "client")]
 mod remote;
 #[cfg(feature = "client")]
@@ -403,7 +399,7 @@ fn run_game(args: LaunchArgs) {
             remote::RemotePlugin,
             combat::CombatPlugin,
             grenade::GrenadePlugin,
-            (ping::PingPlugin, conquest::ConquestPlugin, minimap::MinimapPlugin, race::RacePlugin),
+            (ping::PingPlugin, modes::ClientPlugin, minimap::MinimapPlugin),
             paint::PaintPlugin,
             paint_editor::PaintEditorPlugin,
             gun_model::GunModelPlugin,

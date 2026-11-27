@@ -11,11 +11,13 @@ use crate::{
     audio::{Sound, SoundCue},
     combat::{KillFeed, Notices},
     course::{Run, RunEvent, format_gap, format_time},
+    modes::hud::{Column, ModeHud, TopBar},
     net::{Connection, NetMsg, Session},
     player::{LocalPlayer, PlayerSystems, Racing},
     protocol::*,
     remote::Gun,
     settings::{Action, ActionInput},
+    ui::{ACCENT, TEXT},
     world::GameMap,
 };
 
@@ -206,5 +208,77 @@ mod tests {
     fn places_read_as_ordinals() {
         let names: Vec<_> = [1, 2, 3, 4, 11, 12, 13, 21, 22].into_iter().map(ordinal).collect();
         assert_eq!(names, ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd"]);
+    }
+}
+
+// ---------------------------------------------------------------- what the interface shows
+
+pub const RACE_HUD: ModeHud = ModeHud {
+    top_bar: race_bar,
+    columns: &COLUMNS,
+    rank: by_time,
+    wins: |_| "FIRST THROUGH THE FINISH".to_string(),
+    countdown: "RACE STARTS IN",
+};
+
+pub const TRIAL_HUD: ModeHud = ModeHud {
+    top_bar: trial_bar,
+    wins: |_| "BEST TIME".to_string(),
+    countdown: "MATCH STARTS IN",
+    ..RACE_HUD
+};
+
+/// Checkpoints and times instead of kills.
+const COLUMNS: [Column; 2] = [
+    Column::new("CP", |player| player.gates().to_string()),
+    Column::new("TIME", |player| player.time().map_or("-".to_string(), format_time)).wide().bright(),
+];
+
+/// The best time, then (those with none yet) the most checkpoints.
+fn by_time(a: &PlayerInfo, b: &PlayerInfo) -> std::cmp::Ordering {
+    match (a.time(), b.time()) {
+        (Some(a), Some(b)) => a.total_cmp(&b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.gates().cmp(&a.gates()),
+    }
+}
+
+fn best_time(session: &Session) -> Option<(f32, &PlayerInfo)> {
+    session.roster.iter().filter_map(|p| Some((p.time()?, p))).min_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+/// Our place, and how many are through the finish.
+fn race_bar(session: &Session) -> TopBar {
+    let mut order: Vec<_> = session.roster.iter().collect();
+    order.sort_by(|a, b| by_time(a, b));
+    let place = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
+    let finished = session.roster.iter().filter(|p| p.time().is_some()).count();
+    let info = match best_time(session) {
+        Some((time, p)) => format!("race   |   {} won in {}", p.name, format_time(time)),
+        None => "race   |   first through the finish wins".to_string(),
+    };
+    TopBar {
+        labels: ["PLACE".to_string(), "FINISHED".to_string()],
+        scores: [ordinal(place), format!("{finished}/{}", session.roster.len())],
+        colors: [ACCENT, TEXT],
+        info,
+    }
+}
+
+/// Our best time against the best there is.
+fn trial_bar(session: &Session) -> TopBar {
+    let me = session.roster.iter().find(|p| p.id == session.my_id);
+    let best = best_time(session);
+    let time = |time: Option<f32>| time.map_or("-".to_string(), format_time);
+    let info = match best {
+        Some((_, p)) => format!("time trial   |   {} has the best time", p.name),
+        None => "time trial   |   the best time wins".to_string(),
+    };
+    TopBar {
+        labels: ["YOUR BEST".to_string(), "BEST".to_string()],
+        scores: [time(me.and_then(|p| p.time())), time(best.map(|(time, _)| time))],
+        colors: [ACCENT, TEXT],
+        info,
     }
 }

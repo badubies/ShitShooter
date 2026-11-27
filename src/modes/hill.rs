@@ -97,3 +97,29 @@ fn fight_spots(map: &Map) -> Vec<Vec3> {
         .filter(|center| map.is_free(*center, map::PLAYER_HALF))
         .collect()
 }
+
+#[cfg(feature = "client")]
+pub use on_screen::HUD;
+
+#[cfg(feature = "client")]
+mod on_screen {
+    use super::{HILL_CONTESTED, HILL_EMPTY, HILL_HELD};
+    use crate::{
+        modes::hud::{ModeHud, TopBar, team_bar},
+        net::Session,
+    };
+
+    pub const HUD: ModeHud = ModeHud { top_bar, ..ModeHud::TEAMS };
+
+    /// The teams' seconds on the hill, and who has it now.
+    fn top_bar(session: &Session) -> TopBar {
+        let mine = session.team_of(session.my_id) as usize;
+        let hill = match session.hill() {
+            HILL_EMPTY => "empty",
+            HILL_CONTESTED => "CONTESTED",
+            held if (held - HILL_HELD) as usize == mine => "YOURS",
+            _ => "ENEMY",
+        };
+        team_bar(session, format!("first to {}   |   hill: {hill}", session.score_limit))
+    }
+}

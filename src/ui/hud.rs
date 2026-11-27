@@ -1145,90 +1145,6 @@ impl FpsCounter {
     }
 }
 
-/// What goes either side of the clock, and under it.
-pub(super) struct TopBar {
-    pub(super) labels: [String; 2],
-    pub(super) scores: [String; 2],
-    pub(super) colors: [Color; 2],
-    pub(super) info: String,
-}
-
-pub(super) fn top_bar(session: &Session) -> TopBar {
-    if is_course_mode(session.mode) {
-        let me = session.roster.iter().find(|p| p.id == session.my_id);
-        let best = session.roster.iter().filter_map(|p| Some((p.time()?, p))).min_by(|a, b| a.0.total_cmp(&b.0));
-        let time = |time: Option<f32>| time.map_or("-".to_string(), format_time);
-        if session.mode == MODE_RACE {
-            let mut order: Vec<_> = session.roster.iter().collect();
-            order.sort_by(|a, b| ranking(session.mode)(a, b));
-            let place = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
-            let finished = session.roster.iter().filter(|p| p.time().is_some()).count();
-            let info = match best {
-                Some((time, p)) => format!("race   |   {} won in {}", p.name, format_time(time)),
-                None => "race   |   first through the finish wins".to_string(),
-            };
-            return TopBar {
-                labels: ["PLACE".to_string(), "FINISHED".to_string()],
-                scores: [ordinal(place), format!("{finished}/{}", session.roster.len())],
-                colors: [ACCENT, TEXT],
-                info,
-            };
-        }
-        let info = match best {
-            Some((_, p)) => format!("time trial   |   {} has the best time", p.name),
-            None => "time trial   |   the best time wins".to_string(),
-        };
-        return TopBar {
-            labels: ["YOUR BEST".to_string(), "BEST".to_string()],
-            scores: [time(me.and_then(|p| p.time())), time(best.map(|(time, _)| time))],
-            colors: [ACCENT, TEXT],
-            info,
-        };
-    }
-    if !session.team_mode() {
-        let my_kills = session
-            .roster
-            .iter()
-            .find(|p| p.id == session.my_id)
-            .map_or(0, |p| p.kills);
-        let leader = session.roster.iter().max_by_key(|p| p.kills);
-        let lead = match leader {
-            Some(p) if p.kills > 0 => format!("{} leads", p.name),
-            _ => "no kills yet".to_string(),
-        };
-        return TopBar {
-            labels: ["YOU".to_string(), "BEST".to_string()],
-            scores: [my_kills.to_string(), leader.map_or(0, |p| p.kills).to_string()],
-            colors: [ACCENT, TEXT],
-            info: format!("first to {}   |   {lead}", session.score_limit),
-        };
-    }
-    let mine = session.team_of(session.my_id) as usize;
-    let mut info = format!("first to {}", session.score_limit);
-    if session.mode == MODE_CONQUEST {
-        let held = |team: usize| session.flags().iter().filter(|f| f.owner == Some(team as u8)).count();
-        info = match held(mine).cmp(&held(mine ^ 1)) {
-            std::cmp::Ordering::Less => "tickets   |   fewer flags: your team is bleeding".to_string(),
-            std::cmp::Ordering::Greater => "tickets   |   more flags: the enemy is bleeding".to_string(),
-            std::cmp::Ordering::Equal => "tickets   |   hold more flags to bleed the enemy".to_string(),
-        };
-    }
-    if session.mode == MODE_HILL {
-        info.push_str(match session.hill() {
-            HILL_EMPTY => "   |   hill: empty",
-            HILL_CONTESTED => "   |   hill: CONTESTED",
-            held if (held - HILL_HELD) as usize == mine => "   |   hill: YOURS",
-            _ => "   |   hill: ENEMY",
-        });
-    }
-    TopBar {
-        labels: ["YOUR TEAM".to_string(), "ENEMY".to_string()],
-        scores: [session.team_scores[mine].to_string(), session.team_scores[mine ^ 1].to_string()],
-        colors: [BLUE, RED],
-        info,
-    }
-}
-
 pub(super) fn update_hud(
     session: Res<Session>,
     map: Res<GameMap>,
@@ -1244,7 +1160,8 @@ pub(super) fn update_hud(
 ) {
     fps.tick(time.delta_secs());
     let ping = connection.as_ref().map_or(0.0, |c| c.ping_ms());
-    let top = top_bar(&session);
+    let mode_hud = &modes::info(session.mode).hud;
+    let top = (mode_hud.top_bar)(&session);
     let my_team = session.team_of(session.my_id);
     let map_name = crate::map::name(map.0.id);
     let mode_name = modes::name(session.mode);
@@ -1252,7 +1169,7 @@ pub(super) fn update_hud(
     // Where we stand: best score first, as on the scoreboard.
     let place = {
         let mut order: Vec<_> = session.roster.iter().collect();
-        order.sort_by(|a, b| ranking(session.mode)(a, b));
+        order.sort_by(|a, b| (mode_hud.rank)(a, b));
         let at = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
         format!("{} of {}", ordinal(at), order.len())
     };
@@ -1389,15 +1306,7 @@ pub(super) fn update_hud(
             Hud::PauseDeaths => (me.map_or(0, |p| p.deaths).to_string(), TEXT),
             Hud::PauseDamage => (me.map_or(0, |p| p.damage).to_string(), TEXT),
             Hud::ScoreCaption => {
-                let wins = if session.mode == MODE_CONQUEST {
-                    format!("{} TICKETS", session.score_limit)
-                } else if session.mode == MODE_RACE {
-                    "FIRST THROUGH THE FINISH".to_string()
-                } else if session.mode == MODE_TRIAL {
-                    "BEST TIME".to_string()
-                } else {
-                    format!("FIRST TO {}", session.score_limit)
-                };
+                let wins = (mode_hud.wins)(&session);
                 (format!("{}  ·  {wins}", map_name.to_uppercase()), DIM)
             }
             Hud::ScoreMode => (mode_name.to_uppercase(), TEXT),
@@ -1423,12 +1332,7 @@ pub(super) fn update_hud(
                 _ => (String::new(), ACCENT),
             },
             Hud::CountdownLabel => (
-                match (session.frozen(), session.mode) {
-                    (false, _) => "",
-                    (true, MODE_RACE) => "RACE STARTS IN",
-                    (true, _) => "MATCH STARTS IN",
-                }
-                .to_string(),
+                if session.frozen() { mode_hud.countdown } else { "" }.to_string(),
                 TEXT,
             ),
             Hud::RunClock => match (player.racing, player.run.finished, player.run.clock) {

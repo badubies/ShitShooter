@@ -717,8 +717,9 @@ pub(super) fn update_lobby(
             LobbyText::MatchHint if session.is_leader() => "MATCH  ·  CLICK TO CHANGE".to_string(),
             LobbyText::MatchHint => "MATCH  ·  CLICK TO SEE THE CHOICES".to_string(),
             LobbyText::Mode => modes::name(session.mode).to_uppercase(),
-            LobbyText::MatchLine if is_course_mode(session.mode) => {
-                format!("{map_name}  ·  air accel {}  ·  no guns, no bots", session.air_accel() as u16)
+            LobbyText::MatchLine if !modes::info(session.mode).bots => {
+                let without = if modes::info(session.mode).armed { "no bots" } else { "no guns, no bots" };
+                format!("{map_name}  ·  air accel {}  ·  {without}", session.air_accel() as u16)
             }
             LobbyText::MatchLine => {
                 let bots = if session.bots_hold_fire { "  ·  bots hold fire" } else { "" };

@@ -9,6 +9,7 @@ use crate::{
     AppState,
     audio::{Sound, SoundCue},
     combat::Notices,
+    modes::hud::{ModeHud, TopBar, team_bar},
     net::Session,
     ping::on_screen,
     player::{LocalPlayer, PlayerSystems},
@@ -477,4 +478,24 @@ fn announce(
         });
     }
     *last = owners;
+}
+
+// ---------------------------------------------------------------- what the interface shows
+
+pub const HUD: ModeHud = ModeHud {
+    top_bar,
+    wins: |session| format!("{} TICKETS", session.score_limit),
+    ..ModeHud::TEAMS
+};
+
+/// The teams' tickets, and which of them is bleeding.
+fn top_bar(session: &Session) -> TopBar {
+    let mine = session.team_of(session.my_id) as usize;
+    let held = |team: usize| session.flags().iter().filter(|f| f.owner == Some(team as u8)).count();
+    let info = match held(mine).cmp(&held(mine ^ 1)) {
+        std::cmp::Ordering::Less => "tickets   |   fewer flags: your team is bleeding",
+        std::cmp::Ordering::Greater => "tickets   |   more flags: the enemy is bleeding",
+        std::cmp::Ordering::Equal => "tickets   |   hold more flags to bleed the enemy",
+    };
+    team_bar(session, info.to_string())
 }
