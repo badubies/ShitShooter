@@ -3141,6 +3141,12 @@ fn on_resume(_: On<Activate>, mut controls: ResMut<Controls>) {
     controls.captured = true;
 }
 
+/// The match's clock as shown: the time left, or for a time trial, which
+/// has no time limit, none.
+fn match_clock(session: &Session) -> String {
+    if session.mode == MODE_TRIAL { "∞".to_string() } else { format_clock(session.time_left) }
+}
+
 fn format_clock(seconds: f32) -> String {
     let total = seconds.max(0.0).ceil() as u32;
     format!("{}:{:02}", total / 60, total % 60)
@@ -3300,7 +3306,7 @@ fn update_hud(
     for (hud, mut text, mut color) in &mut texts {
         let (value, wanted) = match *hud {
             Hud::Clock => (
-                format_clock(session.time_left),
+                match_clock(&session),
                 // The last half minute.
                 if session.time_left <= 30.0 { DANGER } else { TEXT },
             ),
@@ -3402,6 +3408,7 @@ fn update_hud(
                 TEXT,
             ),
             Hud::Tip => (TIPS[me.map_or(0, |p| p.deaths as usize) % TIPS.len()].to_string(), TEXT),
+            Hud::PauseClock if session.mode == MODE_TRIAL => ("No time limit".to_string(), DIM),
             Hud::PauseClock => (format!("{} left", format_clock(session.time_left)), DIM),
             Hud::PauseInfo => (format!("{map_name}  ·  {mode_name}  ·  the match keeps going"), DIM),
             Hud::PausePlace => (place.clone(), TEXT),
@@ -3422,7 +3429,7 @@ fn update_hud(
                 (format!("{}  ·  {wins}", map_name.to_uppercase()), DIM)
             }
             Hud::ScoreMode => (mode_name.to_uppercase(), TEXT),
-            Hud::ScoreClock => (format_clock(session.time_left), ACCENT),
+            Hud::ScoreClock => (match_clock(&session), ACCENT),
             Hud::Hand => match player.hand.filter(|_| player.alive) {
                 Some(hand) => {
                     let name = GRENADES[hand.kind as usize].name.to_uppercase();

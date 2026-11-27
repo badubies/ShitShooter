@@ -683,6 +683,10 @@ impl Server {
                         self.log(format_args!("{} left ({reason})", player.name));
                         self.roster_dirty = true;
                     }
+                    // Nobody left to end a time trial, which has no time limit.
+                    if self.settings.mode == MODE_TRIAL && self.phase == Phase::Playing && self.players.is_empty() {
+                        self.end_match(Winner::Nobody);
+                    }
                 }
             }
         }
@@ -1062,7 +1066,11 @@ impl Server {
                 self.broadcast(&ServerMsg::Paint { id, paint });
             }
             ClientMsg::StartMatch if is_leader && self.phase == Phase::Lobby => self.start_match(),
-            ClientMsg::EndMatch if is_leader && self.phase == Phase::Playing => self.end_match(Winner::Nobody),
+            ClientMsg::EndMatch if is_leader && self.phase == Phase::Playing => {
+                // A time trial only ends this way: the best time wins it.
+                let winner = if self.settings.mode == MODE_TRIAL { self.time_up_winner() } else { Winner::Nobody };
+                self.end_match(winner);
+            }
             ClientMsg::NextMode if is_leader && self.phase == Phase::Lobby => {
                 // The next mode the map is played in.
                 let modes = MODE_NAMES.len() as u8;
@@ -1639,7 +1647,8 @@ impl Server {
         self.log(format_args!("match started"));
         self.phase = Phase::Playing;
         self.countdown = COUNTDOWN;
-        self.time_left = self.settings.match_minutes * 60.0;
+        // A time trial has no time limit: it goes on until the leader ends it.
+        self.time_left = if self.settings.mode == MODE_TRIAL { f32::INFINITY } else { self.settings.match_minutes * 60.0 };
         self.elapsed = 0.0;
         self.grenades.clear();
         self.smokes.clear();
@@ -4251,8 +4260,12 @@ mod tests {
         run(&mut server, ids[1], RunEvent::Abandoned);
         run(&mut server, ids[1], RunEvent::Gate { gate: 1, time: 4.0 });
         assert_eq!((server.players[&ids[1]].run_passed, server.players[&ids[1]].run_time), (0, None));
-        // A finish does not run the clock down.
-        assert!(server.time_left > 60.0);
+        // A finish does not run the clock down: there is no clock.
+        assert_eq!(server.time_left, f32::INFINITY);
+        // The leader ends it, and the best time wins.
         assert_eq!(server.time_up_winner(), Winner::Player(ids[0]));
+        let leader = server.leader().unwrap();
+        server.handle_message(leader, ClientMsg::EndMatch);
+        assert!(server.phase == Phase::Lobby);
     }
 }
