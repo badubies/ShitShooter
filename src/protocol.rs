@@ -56,40 +56,22 @@ pub fn next_air_accel(current: u16) -> u16 {
     AIR_ACCEL_CHOICES[here.map_or(0, |i| (i + 1) % AIR_ACCEL_CHOICES.len())]
 }
 
-// The game modes are in `modes`: their ids and what each is like.
-pub use crate::modes::{MODE_CONQUEST, MODE_FFA, MODE_HILL, MODE_RACE, MODE_TEAMS, MODE_TRIAL, is_course_mode, is_team_mode, score_limit};
-/// A race goes on for at most this many seconds after the first finish.
-pub const RACE_FINISH_GRACE: f32 = 30.0;
-/// Once everybody is through the finish, the race ends this many seconds later.
-pub const RACE_END_DELAY: f32 = 4.0;
+// The game modes are in `modes`: their ids, what each is like, and each
+// one's own constants. They are passed on here so that `protocol::*` still
+// brings every number both sides must agree on.
+#[allow(unused_imports)]
+pub use crate::modes::{
+    MODE_CONQUEST, MODE_FFA, MODE_HILL, MODE_RACE, MODE_TEAMS, MODE_TRIAL,
+    conquest::{CAPTURE_CROWD, CAPTURE_TIME, CONQUEST_TICKETS, FLAG_HEIGHT, TICKET_BLEED},
+    course::{RACE_END_DELAY, RACE_FINISH_GRACE},
+    hill::{HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, HILL_SCORE_LIMIT},
+    is_course_mode, is_team_mode, score_limit,
+};
 /// How well the bots fight (see `ClientMsg::SetBotDifficulty`).
 pub const BOT_EASY: u8 = 0;
 pub const BOT_NORMAL: u8 = 1;
 pub const BOT_HARD: u8 = 2;
 pub const BOT_DIFFICULTY_NAMES: [&str; 3] = ["Easy", "Normal", "Hard"];
-/// The hill is everything within this distance of the map's hill point,
-/// measured along the ground (so any height counts).
-pub const HILL_RADIUS: f32 = 7.0;
-pub const HILL_SCORE_LIMIT: u32 = 100;
-/// Tickets each team starts a conquest match with.
-pub const CONQUEST_TICKETS: u32 = 200;
-/// Seconds for one player to take a neutral flag (or to neutralize an
-/// enemy one). More players take it faster, up to `CAPTURE_CROWD` times.
-pub const CAPTURE_TIME: f32 = 10.0;
-pub const CAPTURE_CROWD: i32 = 3;
-/// Tickets a second the team holding fewer flags loses, for each flag the
-/// other team holds more.
-pub const TICKET_BLEED: f32 = 0.25;
-/// A player counts as on a flag within its radius along the ground and this
-/// far above or below its foot.
-pub const FLAG_HEIGHT: f32 = 8.0;
-
-/// Values of `Snapshot::hill`.
-pub const HILL_EMPTY: u8 = 0;
-/// Held by team 0 or team 1: `HILL_HELD + team`.
-pub const HILL_HELD: u8 = 1;
-pub const HILL_CONTESTED: u8 = 3;
-
 /// The kinds of grenade, indexes into `GRENADES`.
 pub type GrenadeKind = u8;
 pub const FRAG: GrenadeKind = 0;

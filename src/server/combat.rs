@@ -187,30 +187,14 @@ impl Server {
             weapon: weapon_id,
         });
         self.roster_dirty = true;
-        // In conquest every death costs the team a ticket.
-        if mode == MODE_CONQUEST {
-            let tickets = &mut self.team_scores[victim_team as usize];
-            *tickets = tickets.saturating_sub(1);
-            if *tickets == 0 {
-                self.end_match(Winner::Team(victim_team ^ 1));
-            }
-            return;
-        }
-        let Some((kills, team)) = scorer else {
-            return;
+        // What a kill is worth, and whether it wins the match, is the mode's to say.
+        let kill = Kill {
+            killer: attacker_id,
+            victim_team,
+            scorer,
         };
-        let limit = score_limit(mode, self.settings.frag_limit);
-        match mode {
-            MODE_FFA if kills >= limit => self.end_match(Winner::Player(attacker_id)),
-            MODE_TEAMS => {
-                self.team_scores[team] += 1;
-                if self.team_scores[team] >= limit {
-                    self.end_match(Winner::Team(team as u8));
-                }
-            }
-            // On the hill, kills only clear the way.
-            _ => {}
-        }
+        let won = (self.rules().killed)(self, &kill);
+        self.conclude(won);
     }
 }
 

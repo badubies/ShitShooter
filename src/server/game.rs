@@ -13,6 +13,21 @@ impl Server {
         self.live() && modes::info(self.settings.mode).armed
     }
 
+    /// The rules of the mode being played.
+    pub(crate) fn rules(&self) -> &'static Rules {
+        &modes::info(self.settings.mode).rules
+    }
+
+    /// Ends the match if a rule just said somebody won it. The rules never
+    /// end it themselves: they say who won, and this is told.
+    pub(crate) fn conclude(&mut self, won: Option<Winner>) {
+        if let Some(winner) = won
+            && self.phase == Phase::Playing
+        {
+            self.end_match(winner);
+        }
+    }
+
     pub(crate) fn update_match(&mut self, dt: f32) {
         // Everybody is in place, frozen, while the countdown runs.
         if self.countdown > 0.0 {
@@ -63,11 +78,9 @@ impl Server {
         self.update_armor_pickups(dt);
         self.update_cooking(dt);
         self.update_grenades(dt);
-        if self.settings.mode == MODE_HILL && self.phase == Phase::Playing {
-            self.update_hill(dt);
-        }
-        if self.settings.mode == MODE_CONQUEST && self.phase == Phase::Playing {
-            self.update_conquest(dt);
+        if self.phase == Phase::Playing {
+            let won = (self.rules().tick)(self, dt);
+            self.conclude(won);
         }
         if self.phase != Phase::Playing {
             // The last explosion (or second on the hill) won the match.
@@ -77,25 +90,23 @@ impl Server {
         self.send_snapshot(dt);
 
         if self.time_left <= 0.0 {
-            let winner = self.time_up_winner();
+            let winner = (self.rules().time_up)(self);
             self.end_match(winner);
         }
     }
 
-    /// Who wins when time is up: the best score, a tie has no winner. On a
-    /// course, the best time.
-    pub(crate) fn time_up_winner(&self) -> Winner {
-        if is_course_mode(self.settings.mode) {
-            let best = self.players.iter().filter_map(|(id, p)| Some((*id, p.run_time?))).min_by(|a, b| a.1.total_cmp(&b.1));
-            return best.map_or(Winner::Nobody, |(id, _)| Winner::Player(id));
+    /// The team with the better score, a tie has no winner: who wins a team
+    /// mode when time is up.
+    pub(crate) fn leading_team(&self) -> Winner {
+        match self.team_scores[0].cmp(&self.team_scores[1]) {
+            std::cmp::Ordering::Greater => Winner::Team(0),
+            std::cmp::Ordering::Less => Winner::Team(1),
+            std::cmp::Ordering::Equal => Winner::Nobody,
         }
-        if is_team_mode(self.settings.mode) {
-            return match self.team_scores[0].cmp(&self.team_scores[1]) {
-                std::cmp::Ordering::Greater => Winner::Team(0),
-                std::cmp::Ordering::Less => Winner::Team(1),
-                std::cmp::Ordering::Equal => Winner::Nobody,
-            };
-        }
+    }
+
+    /// Whoever has the most kills, a tie has no winner.
+    pub(crate) fn most_kills(&self) -> Winner {
         let best = self.players.values().map(|p| p.kills).max().unwrap_or(0);
         let mut leaders = self.players.iter().filter(|(_, p)| p.kills == best);
         match (leaders.next(), leaders.next()) {
@@ -109,18 +120,16 @@ impl Server {
         self.snapshot_timer += dt;
         if self.snapshot_timer >= 1.0 / SNAPSHOT_RATE {
             self.snapshot_timer = 0.0;
+            let (flags, hill) = match (self.rules().snap)(self) {
+                ModeSnap::None => (Vec::new(), HILL_EMPTY),
+                ModeSnap::Hill(hill) => (Vec::new(), hill),
+                ModeSnap::Conquest(flags) => (flags, HILL_EMPTY),
+            };
             let snapshot = Snapshot {
                 time_left: self.time_left.max(0.0),
                 team_scores: self.team_scores,
-                flags: self
-                    .flags
-                    .iter()
-                    .map(|flag| FlagSnap {
-                        owner: flag.owner,
-                        control: (flag.control * 100.0).round() as i8,
-                    })
-                    .collect(),
-                hill: self.hill,
+                flags,
+                hill,
                 armor_taken: self
                     .armor_respawn
                     .iter()
@@ -175,153 +184,6 @@ impl Server {
         }
     }
 
-    /// King of the hill: a team alone on the hill scores a point every second.
-    pub(crate) fn update_hill(&mut self, dt: f32) {
-        let mut present = [false; 2];
-        for player in self.players.values() {
-            let from_hill = (player.pos - self.map.hill).with_y(0.0).length();
-            if player.alive && from_hill < HILL_RADIUS {
-                present[player.team as usize & 1] = true;
-            }
-        }
-        let holder = match present {
-            [true, true] => None,
-            [true, false] => Some(0),
-            [false, true] => Some(1),
-            [false, false] => None,
-        };
-        self.hill = match (holder, present[0]) {
-            (Some(team), _) => HILL_HELD + team as u8,
-            (None, true) => HILL_CONTESTED,
-            (None, false) => HILL_EMPTY,
-        };
-        let Some(team) = holder else {
-            return;
-        };
-        self.hill_clock += dt;
-        while self.hill_clock >= 1.0 {
-            self.hill_clock -= 1.0;
-            self.team_scores[team] += 1;
-        }
-        if self.team_scores[team] >= HILL_SCORE_LIMIT {
-            self.end_match(Winner::Team(team as u8));
-        }
-    }
-
-    /// Conquest: whoever outnumbers the other team on a flag pushes it their
-    /// way: first back to neutral, then on until it is theirs. A flag left
-    /// alone drifts back to whoever held it. The team holding fewer flags
-    /// bleeds tickets.
-    pub(crate) fn update_conquest(&mut self, dt: f32) {
-        let mut held = [0_i32; 2];
-        let mut changes = Vec::new();
-        for (index, point) in self.map.flags.iter().enumerate() {
-            let mut present = [0_i32; 2];
-            for player in self.players.values().filter(|p| p.alive && point.holds(p.pos)) {
-                present[player.team as usize & 1] += 1;
-            }
-            let flag = &mut self.flags[index];
-            let rate = dt / CAPTURE_TIME;
-            if present == [0, 0] {
-                let rest = match flag.owner {
-                    Some(0) => -1.0,
-                    Some(_) => 1.0,
-                    None => 0.0,
-                };
-                flag.control += (rest - flag.control).clamp(-rate * 0.5, rate * 0.5);
-            } else {
-                let push = (present[1] - present[0]).clamp(-CAPTURE_CROWD, CAPTURE_CROWD) as f32;
-                flag.control = (flag.control + push * rate).clamp(-1.0, 1.0);
-            }
-            let owner = match flag.owner {
-                Some(0) if flag.control >= 0.0 => None,
-                Some(1) if flag.control <= 0.0 => None,
-                None if flag.control <= -1.0 => Some(0),
-                None if flag.control >= 1.0 => Some(1),
-                owner => owner,
-            };
-            if owner != flag.owner {
-                flag.owner = owner;
-                changes.push(index);
-            }
-            if let Some(team) = flag.owner {
-                held[team as usize & 1] += 1;
-            }
-        }
-        if !changes.is_empty() {
-            // Bots going for a flag that changed hands think again.
-            for bot in self.players.values_mut().filter_map(|p| p.bot.as_mut()) {
-                if bot.objective.is_some_and(|i| changes.contains(&i)) {
-                    bot.rethink_in = 0.0;
-                }
-            }
-        }
-        for team in 0..2 {
-            let behind = held[team ^ 1] - held[team];
-            if behind <= 0 {
-                continue;
-            }
-            self.bleed[team] += behind as f32 * TICKET_BLEED * dt;
-            let whole = self.bleed[team].floor();
-            self.bleed[team] -= whole;
-            self.team_scores[team] = self.team_scores[team].saturating_sub(whole as u32);
-            if self.team_scores[team] == 0 {
-                self.end_match(Winner::Team(team as u8 ^ 1));
-                return;
-            }
-        }
-    }
-
-    /// The racing modes: a player's run, as their game timed it. Taken if
-    /// it follows on from what they told us before (checkpoints in order,
-    /// the finish after the last) and is no longer than the match has been
-    /// on; then passed on to everybody. A race's first finish leaves the
-    /// rest `RACE_FINISH_GRACE` to follow, and once everybody is through it
-    /// ends.
-    pub(crate) fn handle_run(&mut self, id: PlayerId, event: RunEvent) {
-        let mode = self.settings.mode;
-        if !self.live() || !is_course_mode(mode) {
-            return;
-        }
-        let Some(course) = &self.map.course else { return };
-        let gates = course.gates.len();
-        let elapsed = self.elapsed;
-        let plausible = |time: f32| time.is_finite() && time > 0.0 && time <= elapsed + 0.5;
-        let Some(player) = self.players.get_mut(&id).filter(|p| p.alive) else { return };
-        let trial = mode == MODE_TRIAL;
-        let on = !trial || player.run_on;
-        let finished = !trial && player.run_time.is_some();
-        match event {
-            RunEvent::Started if trial => {
-                player.run_on = true;
-                player.run_passed = 0;
-            }
-            RunEvent::Abandoned if trial => {
-                player.run_on = false;
-                player.run_passed = 0;
-            }
-            RunEvent::Gate { gate, time } if on && !finished && gate as usize == player.run_passed && plausible(time) => {
-                player.run_passed += 1;
-            }
-            RunEvent::Finished { time } if on && !finished && player.run_passed == gates && plausible(time) => {
-                if trial {
-                    player.run_on = false;
-                    player.run_passed = 0;
-                }
-                player.run_time = Some(player.run_time.map_or(time, |best| best.min(time)));
-            }
-            _ => return,
-        }
-        self.roster_dirty = true;
-        self.broadcast(&ServerMsg::Run { id, event });
-        if mode != MODE_RACE || !matches!(event, RunEvent::Finished { .. }) {
-            return;
-        }
-        let everybody = self.players.values().filter(|p| p.bot.is_none()).all(|p| p.run_time.is_some());
-        let wait = if everybody { RACE_END_DELAY } else { RACE_FINISH_GRACE };
-        self.time_left = self.time_left.min(wait);
-    }
-
     pub(crate) fn start_match(&mut self) {
         self.reload_map_file();
         self.log(format_args!("match started"));
@@ -335,16 +197,10 @@ impl Server {
         self.bullets.clear();
         self.noises.clear();
         self.team_scores = [0, 0];
-        self.hill = HILL_EMPTY;
-        self.hill_clock = 0.0;
         self.armor_respawn = vec![0.0; self.map.armor_spots.len()];
-        self.flags = Vec::new();
-        self.bleed = [0.0; 2];
         self.bot_range = typical_range(&self.map, self.settings.mode);
-        if self.settings.mode == MODE_CONQUEST {
-            self.team_scores = [CONQUEST_TICKETS; 2];
-            self.flags = vec![FlagState::default(); self.map.flags.len()];
-        }
+        self.state = Box::new(());
+        (self.rules().start)(self);
         for player in self.players.values_mut() {
             player.kills = 0;
             player.deaths = 0;
@@ -399,59 +255,6 @@ mod tests {
     use crate::server::testing::*;
 
     #[test]
-    fn a_flag_is_taken_by_standing_on_it_and_lost_the_same_way() {
-        let mut server = conquest_with(0, &[0, 1]);
-        server.players.get_mut(&1001).unwrap().pos = Vec3::new(0.0, 100.0, 0.0);
-        stand_on_flag(&mut server, 1000, 0);
-        let tick = 1.0 / 60.0;
-        for _ in 0..(CAPTURE_TIME * 0.9 / tick) as usize {
-            server.update_conquest(tick);
-        }
-        assert_eq!(server.flags[0].owner, None, "taken too soon");
-        for _ in 0..(CAPTURE_TIME * 0.2 / tick) as usize {
-            server.update_conquest(tick);
-        }
-        assert_eq!(server.flags[0].owner, Some(0));
-        // Both on it: contested, nothing moves.
-        stand_on_flag(&mut server, 1001, 0);
-        let before = server.flags[0].control;
-        for _ in 0..120 {
-            server.update_conquest(tick);
-        }
-        assert_eq!(server.flags[0].control, before);
-        // The enemy alone neutralizes it.
-        server.players.get_mut(&1000).unwrap().pos = Vec3::new(0.0, 100.0, 0.0);
-        for _ in 0..(CAPTURE_TIME * 1.05 / tick) as usize {
-            server.update_conquest(tick);
-        }
-        assert_eq!(server.flags[0].owner, None);
-    }
-
-    #[test]
-    fn deaths_and_holding_fewer_flags_cost_tickets() {
-        let mut server = conquest_with(0, &[0, 1]);
-        assert_eq!(server.team_scores, [CONQUEST_TICKETS; 2]);
-        server.damage(1000, 1001, 500, 0);
-        assert_eq!(server.team_scores, [CONQUEST_TICKETS - 1, CONQUEST_TICKETS]);
-        // Team 1 holds two flags to none: team 0 bleeds half a ticket a second.
-        for flag in &mut server.flags[..2] {
-            *flag = FlagState { owner: Some(1), control: 1.0 };
-        }
-        for player in server.players.values_mut() {
-            player.pos = Vec3::new(0.0, 100.0, 0.0);
-        }
-        for _ in 0..60 * 4 + 6 {
-            server.update_conquest(1.0 / 60.0);
-        }
-        assert_eq!(server.team_scores, [CONQUEST_TICKETS - 3, CONQUEST_TICKETS]);
-        // Out of tickets: the match is over.
-        server.team_scores[0] = 1;
-        server.spawn_player(1000);
-        server.damage(1000, 1001, 500, 0);
-        assert!(server.phase == Phase::Lobby);
-    }
-
-    #[test]
     fn the_dead_respawn_after_the_delay_or_sooner_when_they_ask() {
         let (mut server, id) = match_with_one_person();
         let tick = |server: &mut Server, seconds: f32| {
@@ -479,24 +282,6 @@ mod tests {
     }
 
     #[test]
-    fn in_conquest_the_dead_wait_the_whole_delay() {
-        let mut server = conquest_with(0, &[0]);
-        server.damage(1000, 1000, 1000, KNIFE);
-        for _ in 0..60 * 2 {
-            server.update_match(1.0 / 60.0);
-        }
-        server.handle_message(1000, ClientMsg::Respawn);
-        for _ in 0..6 {
-            server.update_match(1.0 / 60.0);
-        }
-        assert!(!server.players[&1000].alive, "asking to respawn skipped the wait");
-        for _ in 0..(RESPAWN_DELAY * 60.0) as usize {
-            server.update_match(1.0 / 60.0);
-        }
-        assert!(server.players[&1000].alive, "not respawned after the delay");
-    }
-
-    #[test]
     fn nothing_happens_until_the_countdown_is_over() {
         let (mut server, id) = match_with_one_person();
         server.countdown = COUNTDOWN;
@@ -513,134 +298,5 @@ mod tests {
         assert!(server.countdown <= 0.0 && server.time_left < time_left);
         server.handle_cook(id);
         assert!(server.players[&id].cooking.is_some());
-    }
-
-    /// A match on the course, in `mode`, with `people` in it and the
-    /// countdown over.
-    fn course_match(mode: u8, people: usize) -> (Server, Vec<PlayerId>) {
-        let mut server = Server::bind(ServerSettings {
-            port: 0,
-            mode,
-            map: map::GAUNTLET,
-            bots: 3,
-            ..ServerSettings::default()
-        })
-        .unwrap();
-        let ids = (0..people as PlayerId)
-            .map(|i| {
-                server.join_counter += 1;
-                let person = server.new_player(format!("Racer {i}"), None);
-                server.players.insert(1000 + i, person);
-                1000 + i
-            })
-            .collect();
-        server.start_match();
-        server.countdown = 0.0;
-        (server, ids)
-    }
-
-    fn gates(server: &Server) -> u8 {
-        server.map.course.as_ref().unwrap().gates.len() as u8
-    }
-
-    /// Through every checkpoint, the first at `from` seconds, one a second.
-    fn through_the_gates(server: &mut Server, id: PlayerId, from: f32) {
-        for gate in 0..gates(server) {
-            server.handle_message(id, ClientMsg::Run(RunEvent::Gate { gate, time: from + gate as f32 }));
-        }
-    }
-
-    fn run(server: &mut Server, id: PlayerId, event: RunEvent) {
-        server.handle_message(id, ClientMsg::Run(event));
-    }
-
-    #[test]
-    fn nobody_races_bots_or_carries_a_gun() {
-        let (mut server, ids) = course_match(MODE_RACE, 2);
-        assert_eq!(server.players.len(), 2, "the bots asked for came in");
-        server.handle_message(ids[0], ClientMsg::AddBot);
-        assert_eq!(server.players.len(), 2);
-        let eye = server.players[&ids[0]].pos;
-        server.handle_message(ids[0], ClientMsg::Fire { weapon: 0, origin: eye.to_array(), dirs: vec![[0.0, 0.0, -1.0]] });
-        server.handle_message(ids[0], ClientMsg::Hit { victim: ids[1], weapon: 0, headshot: true });
-        assert_eq!(server.players[&ids[1]].health, MAX_HEALTH);
-    }
-
-    #[test]
-    fn picking_a_racing_mode_sends_the_bots_home_and_goes_to_the_course() {
-        let mut server = Server::bind(ServerSettings { port: 0, bots: 3, ..ServerSettings::default() }).unwrap();
-        server.join_counter += 1;
-        let person = server.new_player("Leader".into(), None);
-        server.players.insert(1000, person);
-        server.handle_message(1000, ClientMsg::SetMode(MODE_TRIAL));
-        assert_eq!(server.settings.map, map::GAUNTLET);
-        assert!(server.map.course.is_some());
-        assert_eq!(server.players.len(), 1);
-        // And back: to a map with a fight on it.
-        server.handle_message(1000, ClientMsg::SetMode(MODE_FFA));
-        assert_ne!(server.settings.map, map::GAUNTLET);
-        server.handle_message(1000, ClientMsg::SetMap(map::GAUNTLET));
-        assert_ne!(server.settings.map, map::GAUNTLET);
-    }
-
-    #[test]
-    fn a_race_takes_checkpoints_in_order_and_the_first_through_wins() {
-        let (mut server, ids) = course_match(MODE_RACE, 3);
-        server.elapsed = 40.0;
-        // Out of order, or the finish before the checkpoints: not taken.
-        run(&mut server, ids[0], RunEvent::Gate { gate: 1, time: 5.0 });
-        run(&mut server, ids[0], RunEvent::Finished { time: 9.0 });
-        assert_eq!((server.players[&ids[0]].run_passed, server.players[&ids[0]].run_time), (0, None));
-        through_the_gates(&mut server, ids[0], 5.0);
-        assert_eq!(server.players[&ids[0]].run_passed, gates(&server) as usize);
-        // Longer than the race has been on: not taken.
-        run(&mut server, ids[0], RunEvent::Finished { time: 99.0 });
-        assert_eq!(server.players[&ids[0]].run_time, None);
-        run(&mut server, ids[0], RunEvent::Finished { time: 30.0 });
-        assert_eq!(server.players[&ids[0]].run_time, Some(30.0));
-        assert!(server.time_left <= RACE_FINISH_GRACE);
-        // Only one finish each.
-        run(&mut server, ids[0], RunEvent::Finished { time: 20.0 });
-        assert_eq!(server.players[&ids[0]].run_time, Some(30.0));
-        // A slower one; the race goes on for the last.
-        through_the_gates(&mut server, ids[1], 6.0);
-        run(&mut server, ids[1], RunEvent::Finished { time: 33.0 });
-        assert!(server.time_left > RACE_END_DELAY);
-        assert_eq!(server.time_up_winner(), Winner::Player(ids[0]));
-        // Everybody through: it ends soon after.
-        through_the_gates(&mut server, ids[2], 7.0);
-        run(&mut server, ids[2], RunEvent::Finished { time: 35.0 });
-        assert!(server.time_left <= RACE_END_DELAY);
-        server.update_match(RACE_END_DELAY + 0.1);
-        assert!(server.phase == Phase::Lobby);
-    }
-
-    #[test]
-    fn a_time_trial_keeps_everybodys_best_run() {
-        let (mut server, ids) = course_match(MODE_TRIAL, 2);
-        server.elapsed = 300.0;
-        // Not on a run: nothing counts.
-        run(&mut server, ids[0], RunEvent::Gate { gate: 0, time: 3.0 });
-        assert_eq!(server.players[&ids[0]].run_passed, 0);
-        for (time, best) in [(40.0, 40.0), (45.0, 40.0), (38.0, 38.0)] {
-            run(&mut server, ids[0], RunEvent::Started);
-            through_the_gates(&mut server, ids[0], 5.0);
-            run(&mut server, ids[0], RunEvent::Finished { time });
-            let player = &server.players[&ids[0]];
-            assert_eq!((player.run_time, player.run_on, player.run_passed), (Some(best), false, 0));
-        }
-        // A run given up counts for nothing.
-        run(&mut server, ids[1], RunEvent::Started);
-        run(&mut server, ids[1], RunEvent::Gate { gate: 0, time: 3.0 });
-        run(&mut server, ids[1], RunEvent::Abandoned);
-        run(&mut server, ids[1], RunEvent::Gate { gate: 1, time: 4.0 });
-        assert_eq!((server.players[&ids[1]].run_passed, server.players[&ids[1]].run_time), (0, None));
-        // A finish does not run the clock down: there is no clock.
-        assert_eq!(server.time_left, f32::INFINITY);
-        // The leader ends it, and the best time wins.
-        assert_eq!(server.time_up_winner(), Winner::Player(ids[0]));
-        let leader = server.leader().unwrap();
-        server.handle_message(leader, ClientMsg::EndMatch);
-        assert!(server.phase == Phase::Lobby);
     }
 }

@@ -393,7 +393,7 @@ fn update_session(
                 session.bot_difficulty = *bot_difficulty;
                 // The host picked another map, or went into or out of conquest
                 // (the flagpoles): swap the scenery and the collision.
-                if game_map.0.id != *map || game_map.0.has_flagpoles() != (*mode == MODE_CONQUEST) {
+                if game_map.0.id != *map || game_map.0.has_flagpoles() != (crate::modes::info(*mode).needs == crate::modes::Needs::Flags) {
                     game_map.0 = Map::for_game(*map, *mode);
                 }
             }

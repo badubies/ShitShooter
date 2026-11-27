@@ -2,6 +2,7 @@
 //! inside the host's game process, or on the main thread with `--server`.
 
 use std::{
+    any::Any,
     collections::HashMap,
     io,
     net::{Ipv4Addr, SocketAddr, UdpSocket},
@@ -19,7 +20,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
 use crate::{
     map::{self, Map},
-    modes,
+    modes::{self, BotBrief, Kill, ModeSnap, Needs, Rules, conquest::rules::FlagState},
     nav::NavGrid,
     canvas::Canvas,
     protocol::*,
@@ -32,7 +33,7 @@ mod game;
 mod grenades;
 mod spawn;
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 
 use bots::*;
 use combat::*;
@@ -197,18 +198,16 @@ pub struct Server {
     pub(crate) next_grenade_id: u32,
     /// Time not yet consumed by whole grenade steps.
     pub(crate) grenade_clock: f32,
-    /// Team modes: kills (team deathmatch) or seconds on the hill.
+    /// Team modes: kills (team deathmatch), seconds on the hill, or tickets
+    /// left (conquest).
     pub(crate) team_scores: [u32; 2],
-    /// Who holds the hill right now (`HILL_*`).
-    pub(crate) hill: u8,
-    /// Time held that has not become a whole point yet.
-    pub(crate) hill_clock: f32,
+    /// What the mode being played keeps of the match (who holds the hill,
+    /// the flags): its `Rules::start` puts it here, and its other rules read
+    /// it back as the type they know it to be. `()` for a mode that keeps
+    /// nothing.
+    pub(crate) state: Box<dyn Any + Send>,
     /// Seconds until each of the map's armor pickups is back; 0 = it is there.
     pub(crate) armor_respawn: Vec<f32>,
-    /// Conquest: who holds each of the map's flags, and the tickets each
-    /// team has bled that are not whole yet.
-    pub(crate) flags: Vec<FlagState>,
-    pub(crate) bleed: [f32; 2],
     /// Where bots can walk, on this map.
     pub(crate) nav: NavGrid,
     /// How far apart fights on this map in this mode tend to be (metres):
@@ -216,21 +215,6 @@ pub struct Server {
     pub(crate) bot_range: f32,
     /// Where to report how the lobby is doing, when run by a lobby server.
     pub(crate) status: Option<Arc<Mutex<LobbyStatus>>>,
-}
-
-/// A conquest flag, as the server keeps it.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct FlagState {
-    pub(crate) owner: Option<u8>,
-    /// -1 (all team 0's) to 1 (all team 1's).
-    pub(crate) control: f32,
-}
-
-impl FlagState {
-    /// Fully held by `team`, with nothing to win back.
-    pub(crate) fn secure(&self, team: u8) -> bool {
-        self.owner == Some(team) && self.control * if team == 0 { -1.0 } else { 1.0 } >= 0.999
-    }
 }
 
 impl Server {
@@ -267,8 +251,7 @@ impl Server {
             nav: nav_for(&map, settings.mode),
             bot_range: typical_range(&map, settings.mode),
             map,
-            flags: Vec::new(),
-            bleed: [0.0; 2],
+            state: Box::new(()),
             grenades: Vec::new(),
             smokes: Vec::new(),
             bullets: Vec::new(),
@@ -277,8 +260,6 @@ impl Server {
             next_grenade_id: 0,
             grenade_clock: 0.0,
             team_scores: [0, 0],
-            hill: HILL_EMPTY,
-            hill_clock: 0.0,
             armor_respawn: Vec::new(),
             players: HashMap::new(),
             phase: Phase::Lobby,
@@ -372,7 +353,7 @@ impl Server {
                         self.roster_dirty = true;
                     }
                     // Nobody left to end a time trial, which has no time limit.
-                    if self.settings.mode == MODE_TRIAL && self.phase == Phase::Playing && self.players.is_empty() {
+                    if !modes::info(self.settings.mode).timed && self.phase == Phase::Playing && self.players.is_empty() {
                         self.end_match(Winner::Nobody);
                     }
                 }
@@ -486,8 +467,8 @@ impl Server {
             }
             ClientMsg::StartMatch if is_leader && self.phase == Phase::Lobby => self.start_match(),
             ClientMsg::EndMatch if is_leader && self.phase == Phase::Playing => {
-                // A time trial only ends this way: the best time wins it.
-                let winner = if self.settings.mode == MODE_TRIAL { self.time_up_winner() } else { Winner::Nobody };
+                // A match with no time limit only ends this way: whoever leads wins it.
+                let winner = if modes::info(self.settings.mode).timed { Winner::Nobody } else { (self.rules().time_up)(self) };
                 self.end_match(winner);
             }
             ClientMsg::NextMode if is_leader && self.phase == Phase::Lobby => {
@@ -566,7 +547,7 @@ impl Server {
                     player.spawn_at = point;
                 }
             }
-            ClientMsg::Run(event) => self.handle_run(id, event),
+            ClientMsg::Run(event) if self.live() => (self.rules().run)(self, id, event),
             ClientMsg::Respawn if self.phase == Phase::Playing && modes::info(self.settings.mode).early_respawn => {
                 if let Some(player) = self.players.get_mut(&id)
                     && !player.alive
@@ -635,7 +616,7 @@ impl Server {
                 self.settings.map = id;
             }
             self.rebuild_map();
-        } else if self.map.has_flagpoles() != (mode == MODE_CONQUEST) {
+        } else if self.map.has_flagpoles() != (modes::info(mode).needs == Needs::Flags) {
             // Into or out of conquest: the flagpoles go up or come down.
             self.rebuild_map();
         }

@@ -6,8 +6,8 @@ use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
     course::Course,
-    modes::{self, Offers},
-    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE},
+    modes::{self, Needs, Offers},
+    protocol::{FLASH_BLIND, FLASH_RANGE, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE},
     props::{FLAGPOLE, PROPS},
     ramp::{Ramp, WALKABLE},
     terrain::Terrain,
@@ -556,7 +556,7 @@ impl Map {
     /// (nor anything left of them to bump into).
     pub fn for_game(id: u8, mode: u8) -> Map {
         let mut map = Map::by_id(id);
-        if mode != MODE_CONQUEST {
+        if modes::info(mode).needs != Needs::Flags {
             let boxes: Vec<(Vec3, Vec3)> =
                 map.props.iter().filter(|prop| prop.model == FLAGPOLE).flat_map(Prop::boxes).collect();
             map.props.retain(|prop| prop.model != FLAGPOLE);
@@ -1271,7 +1271,7 @@ pub fn look_dir(yaw: f32, pitch: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::MAX_PLAYERS;
+    use crate::protocol::{MAX_PLAYERS, MODE_CONQUEST};
 
     #[test]
     fn the_head_is_at_eye_height() {

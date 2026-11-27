@@ -420,17 +420,7 @@ pub(crate) fn bot_wants_spare(bot: &Bot, distance: Option<f32>) -> bool {
 /// modes), the longer half of the sight lines counting.
 pub(crate) fn typical_range(map: &Map, mode: u8) -> f32 {
     let lift = Vec3::Y * (map::STAND_EYE - map::PLAYER_HALF.y);
-    let centers: Vec<Vec3> = match mode {
-        MODE_CONQUEST if !map.flags.is_empty() => map.flags.iter().flat_map(|flag| flag.spawns.iter().map(|s| s.pos)).collect(),
-        MODE_HILL => (0..8)
-            .map(|k| {
-                let around = k as f32 * std::f32::consts::TAU / 8.0;
-                map.hill + Vec3::new(around.cos() * 4.0, map::PLAYER_HALF.y, around.sin() * 4.0)
-            })
-            .filter(|center| map.is_free(*center, map::PLAYER_HALF))
-            .collect(),
-        _ => map.spawns.iter().map(|s| s.pos).collect(),
-    };
+    let centers: Vec<Vec3> = (modes::info(mode).rules.fight_spots)(map);
     let mut sights: Vec<f32> = centers
         .iter()
         .flat_map(|center| {
@@ -939,8 +929,9 @@ impl Server {
     /// collision code as real players, and shoot at the enemies they see.
     pub(crate) fn update_bots(&mut self, dt: f32) {
         let team_mode = is_team_mode(self.settings.mode);
-        let conquest = self.settings.mode == MODE_CONQUEST;
-        let hill = (self.settings.mode == MODE_HILL).then_some(self.map.hill);
+        let brief: BotBrief = (self.rules().bot_brief)(self);
+        // With flags to take, bots mind those before any noise far off.
+        let conquest = !brief.flags.is_empty();
         let bodies: Vec<Body> = self
             .players
             .iter()
@@ -964,10 +955,10 @@ impl Server {
             let enemy = bot_pick_enemy(&self.map, &self.smokes, *id, player, &mut bot, &bodies, team_mode, skill, &mut rng, dt);
             bot_listen(*id, player, &mut bot, &self.noises, team_mode, conquest, &mut rng);
             let target = if conquest {
-                bot_objective(&self.map, &self.flags, player, &mut bot, &mut rng, dt)
+                bot_objective(&self.map, &brief.flags, player, &mut bot, &mut rng, dt)
                     .map(|flag| (self.map.flags[flag].pos, self.map.flags[flag].radius * 0.7, true))
             } else {
-                hill.map(|hill| (hill, 5.5, false))
+                brief.hold.map(|(at, within)| (at, within, false))
             };
             bot_move(&self.map, &self.nav, player, &mut bot, target, enemy, &mut rng, dt);
             let trigger = !self.settings.bots_hold_fire;
@@ -1198,7 +1189,7 @@ mod tests {
                 break;
             }
         }
-        let taken: Vec<Option<u8>> = server.flags.iter().map(|f| f.owner).collect();
+        let taken: Vec<Option<u8>> = modes::conquest::rules::flags(&server).iter().map(|f| f.owner).collect();
         println!("flags after two minutes: {taken:?}, tickets {:?}", server.team_scores);
         assert!(taken.iter().filter(|owner| owner.is_some()).count() >= 2, "{taken:?}");
     }

@@ -2,10 +2,26 @@
 //! mode without knowing which one it is sits in one row of `MODES`: add a
 //! mode by adding a row (and, for its rules, a file beside this one).
 
+use bevy::math::Vec3;
+
+use crate::{
+    map::Map,
+    protocol::{FlagSnap, PlayerId, RunEvent, Winner},
+    server::Server,
+};
+
+pub mod conquest;
+pub mod course;
+pub mod ffa;
+pub mod hill;
+pub mod teams;
+
 // In the team modes players are split into two teams that cannot hurt each
 // other.
 pub const MODE_FFA: u8 = 0;
-/// Team deathmatch: every kill is a point for the team.
+/// Team deathmatch: every kill is a point for the team. (Nothing but the
+/// tests asks for it by id: it is the plainest of the team modes.)
+#[allow(dead_code)]
 pub const MODE_TEAMS: u8 = 1;
 /// King of the hill: a team scores a point for every second it alone holds
 /// the zone in the middle of the map.
@@ -81,9 +97,81 @@ pub struct ModeInfo {
     /// one player, kills for a team, seconds on the hill, tickets. 0 where
     /// it is won on time, not on a score.
     pub score_limit: fn(u32) -> u32,
+    pub rules: Rules,
 }
 
-pub const MODES: [ModeInfo; 6] = [
+/// A mode's rules: what the server asks it as a match goes on. Each is a plain
+/// function given the server. What a mode keeps between calls (who holds the
+/// hill, the flags) is in `Server::state`, which `start` sets.
+///
+/// A mode fills in the ones it has something to say to and leaves the rest
+/// as they are in `Rules::NONE`.
+pub struct Rules {
+    /// The match is starting: scores are at zero and nobody is in yet.
+    pub start: fn(&mut Server),
+    /// Every tick of a live match. Returns who just won it, if anybody.
+    pub tick: fn(&mut Server, f32) -> Option<Winner>,
+    /// Somebody was killed. Returns who just won the match, if anybody.
+    pub killed: fn(&mut Server, &Kill) -> Option<Winner>,
+    /// A player's game says what happened on their run of the course.
+    pub run: fn(&mut Server, PlayerId, RunEvent),
+    /// Who wins when the clock runs out, or the leader ends a match that has none.
+    pub time_up: fn(&Server) -> Winner,
+    /// Where this player may come in (place and facing), given where the
+    /// people they should keep away from stand. `None`: any of the map's spawns.
+    pub spawns: fn(&mut Server, PlayerId, &[Vec3]) -> Option<Vec<(Vec3, f32)>>,
+    /// What of the mode's own state goes out with every snapshot.
+    pub snap: fn(&Server) -> ModeSnap,
+    /// What the bots are to do besides fight.
+    pub bot_brief: fn(&Server) -> BotBrief,
+    /// Where fights on a map centre in this mode: bots pick their guns for
+    /// how far one sees from there.
+    pub fight_spots: fn(&Map) -> Vec<Vec3>,
+}
+
+impl Rules {
+    /// A mode with no rules of its own: nobody ever wins.
+    pub const NONE: Rules = Rules {
+        start: |_| {},
+        tick: |_, _| None,
+        killed: |_, _| None,
+        run: |_, _, _| {},
+        time_up: |_| Winner::Nobody,
+        spawns: |_, _, _| None,
+        snap: |_| ModeSnap::None,
+        bot_brief: |_| BotBrief::default(),
+        fight_spots: |map| map.spawns.iter().map(|spawn| spawn.pos).collect(),
+    };
+}
+
+/// A kill, as the rules are told of it.
+pub struct Kill {
+    pub killer: PlayerId,
+    /// The victim's team (0 or 1).
+    pub victim_team: u8,
+    /// Killing yourself does not score. Whoever killed somebody else: how
+    /// many kills they have now, and their team (0 or 1).
+    pub scorer: Option<(u32, usize)>,
+}
+
+/// A mode's own part of a snapshot.
+pub enum ModeSnap {
+    None,
+    /// Who holds the hill (`HILL_*`).
+    Hill(u8),
+    Conquest(Vec<FlagSnap>),
+}
+
+/// What the bots are to do besides fight, this tick.
+#[derive(Default)]
+pub struct BotBrief {
+    /// Flags to take and hold, as they stand.
+    pub flags: Vec<conquest::rules::FlagState>,
+    /// A place for everybody to go to and stay within this far of.
+    pub hold: Option<(Vec3, f32)>,
+}
+
+pub static MODES: [ModeInfo; 6] = [
     ModeInfo {
         name: "Free for all",
         key: "ffa",
@@ -94,6 +182,7 @@ pub const MODES: [ModeInfo; 6] = [
         early_respawn: true,
         timed: true,
         score_limit: |frags| frags,
+        rules: ffa::RULES,
     },
     ModeInfo {
         name: "Team deathmatch",
@@ -105,6 +194,7 @@ pub const MODES: [ModeInfo; 6] = [
         early_respawn: true,
         timed: true,
         score_limit: |frags| frags * 2,
+        rules: teams::RULES,
     },
     ModeInfo {
         name: "King of the hill",
@@ -115,7 +205,8 @@ pub const MODES: [ModeInfo; 6] = [
         bots: true,
         early_respawn: true,
         timed: true,
-        score_limit: |_| crate::protocol::HILL_SCORE_LIMIT,
+        score_limit: |_| hill::HILL_SCORE_LIMIT,
+        rules: hill::RULES,
     },
     ModeInfo {
         name: "Conquest",
@@ -127,7 +218,8 @@ pub const MODES: [ModeInfo; 6] = [
         // Every death costs the team the whole wait.
         early_respawn: false,
         timed: true,
-        score_limit: |_| crate::protocol::CONQUEST_TICKETS,
+        score_limit: |_| conquest::CONQUEST_TICKETS,
+        rules: conquest::rules::RULES,
     },
     ModeInfo {
         name: "Race",
@@ -139,6 +231,7 @@ pub const MODES: [ModeInfo; 6] = [
         early_respawn: true,
         timed: true,
         score_limit: |_| 0,
+        rules: course::rules::RACE,
     },
     ModeInfo {
         name: "Time trial",
@@ -151,11 +244,12 @@ pub const MODES: [ModeInfo; 6] = [
         // It goes on until the leader ends it.
         timed: false,
         score_limit: |_| 0,
+        rules: course::rules::TRIAL,
     },
 ];
 
 /// How many modes there are: their ids are `0..count()`.
-pub const fn count() -> u8 {
+pub fn count() -> u8 {
     MODES.len() as u8
 }
 
@@ -215,8 +309,8 @@ mod tests {
     fn the_score_that_wins_depends_on_the_mode() {
         assert_eq!(score_limit(MODE_FFA, 20), 20);
         assert_eq!(score_limit(MODE_TEAMS, 20), 40);
-        assert_eq!(score_limit(MODE_HILL, 20), crate::protocol::HILL_SCORE_LIMIT);
-        assert_eq!(score_limit(MODE_CONQUEST, 20), crate::protocol::CONQUEST_TICKETS);
+        assert_eq!(score_limit(MODE_HILL, 20), hill::HILL_SCORE_LIMIT);
+        assert_eq!(score_limit(MODE_CONQUEST, 20), conquest::CONQUEST_TICKETS);
         assert_eq!(score_limit(MODE_RACE, 20), 0);
     }
 }
