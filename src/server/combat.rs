@@ -20,7 +20,7 @@ impl Server {
     pub(crate) fn handle_fire(&mut self, shooter_id: PlayerId, weapon_id: WeaponId, origin: [f32; 3], dirs: Vec<[f32; 3]>) {
         let stats = weapon(weapon_id);
         let origin_v = Vec3::from(origin);
-        if !self.armed()
+        if !self.live()
             || weapon_id as usize >= WEAPONS.len()
             || dirs.len() != stats.pellets
             || !origin_v.is_finite()
@@ -32,7 +32,7 @@ impl Server {
             return;
         };
         let cost = stats.interval * 0.8;
-        if !shooter.alive || shooter.fire_credit < cost || origin_v.distance(shooter.pos) > 6.0 {
+        if !shooter.alive || !shooter.kit.allows(weapon_id) || shooter.fire_credit < cost || origin_v.distance(shooter.pos) > 6.0 {
             return;
         }
         shooter.fire_credit -= cost;
@@ -58,13 +58,14 @@ impl Server {
     /// `victim_id`. Accepted if the shooter really had a bullet in the air (or
     /// a knife swing going and the victim within reach).
     pub(crate) fn handle_hit(&mut self, shooter_id: PlayerId, victim_id: PlayerId, weapon_id: WeaponId, headshot: bool) {
-        if !self.armed() || shooter_id == victim_id || weapon_id as usize >= WEAPONS.len() {
+        if !self.live() || shooter_id == victim_id || weapon_id as usize >= WEAPONS.len() {
             return;
         }
         let Some(victim_pos) = self.players.get(&victim_id).filter(|v| v.alive).map(|v| v.pos) else {
             return;
         };
-        let Some(shooter) = self.players.get_mut(&shooter_id) else {
+        // Only with what their kit has: nobody hits with a gun they were not given.
+        let Some(shooter) = self.players.get_mut(&shooter_id).filter(|shooter| shooter.kit.allows(weapon_id)) else {
             return;
         };
         let allowed = if weapon_id == KNIFE {

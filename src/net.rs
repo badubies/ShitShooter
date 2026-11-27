@@ -75,10 +75,8 @@ pub struct Session {
     /// The score that wins: kills, team kills or seconds on the hill.
     pub score_limit: u32,
     pub team_scores: [u32; 2],
-    /// Who holds the hill (`HILL_*`).
-    pub hill: u8,
-    /// Conquest: each of the map's flags.
-    pub flags: Vec<FlagSnap>,
+    /// What only the mode being played has to tell, as of the last snapshot.
+    pub snap: ModeSnap,
     /// Bit `i` is set while the armor at `map.armor_spots[i]` is taken.
     pub armor_taken: u32,
     pub time_left: f32,
@@ -124,6 +122,22 @@ impl Session {
             .iter()
             .find(|p| p.id == id)
             .map_or("???", |p| p.name.as_str())
+    }
+
+    /// King of the hill: who holds the hill (`HILL_*`).
+    pub fn hill(&self) -> u8 {
+        match self.snap {
+            ModeSnap::Hill(held) => held,
+            _ => HILL_EMPTY,
+        }
+    }
+
+    /// Conquest: each of the map's flags.
+    pub fn flags(&self) -> &[FlagSnap] {
+        match &self.snap {
+            ModeSnap::Conquest(flags) => flags,
+            _ => &[],
+        }
     }
 
     pub fn team_mode(&self) -> bool {
@@ -414,8 +428,7 @@ fn update_session(
                 }
                 session.score_limit = *score_limit;
                 session.team_scores = [0, 0];
-                session.hill = HILL_EMPTY;
-                session.flags.clear();
+                session.snap = ModeSnap::None;
                 session.armor_taken = 0;
                 session.time_left = *time_left;
                 next_state.set(AppState::Playing);
@@ -458,8 +471,7 @@ fn update_session(
     for SnapshotMsg(snapshot) in snapshots.read() {
         session.time_left = snapshot.time_left;
         session.team_scores = snapshot.team_scores;
-        session.hill = snapshot.hill;
-        session.flags.clone_from(&snapshot.flags);
+        session.snap.clone_from(&snapshot.mode);
         session.armor_taken = snapshot.armor_taken;
     }
 }

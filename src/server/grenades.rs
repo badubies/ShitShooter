@@ -20,10 +20,10 @@ pub(crate) struct Smoke {
 impl Server {
     /// A frag's pin is pulled: the fuse burns from now, thrown or not.
     pub(crate) fn handle_cook(&mut self, id: PlayerId) {
-        if !self.armed() {
+        if !self.live() {
             return;
         }
-        let Some(player) = self.players.get_mut(&id) else {
+        let Some(player) = self.players.get_mut(&id).filter(|player| player.kit.grenades) else {
             return;
         };
         // A little slack on the recharge for network jitter.
@@ -38,10 +38,10 @@ impl Server {
     /// what the thrower carries. Only the kind in their loadout can be thrown.
     pub(crate) fn handle_grenade(&mut self, thrower_id: PlayerId, kind: GrenadeKind, origin: [f32; 3], vel: [f32; 3]) {
         let (pos, vel) = (Vec3::from(origin), Vec3::from(vel));
-        if !self.armed() || !pos.is_finite() || !vel.is_finite() {
+        if !self.live() || !pos.is_finite() || !vel.is_finite() {
             return;
         }
-        let Some(thrower) = self.players.get_mut(&thrower_id) else {
+        let Some(thrower) = self.players.get_mut(&thrower_id).filter(|thrower| thrower.kit.grenades) else {
             return;
         };
         if !thrower.alive || kind != thrower.grenade || pos.distance(thrower.pos) > 6.0 {

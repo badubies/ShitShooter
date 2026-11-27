@@ -73,12 +73,14 @@ impl Server {
         let (primary, secondary) = bot_loadout(self.bot_range, &teammates, &mut rng);
         self.rng = rng;
 
+        let kit = (self.rules().kit)(self, id);
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
         player.alive = true;
-        player.health = MAX_HEALTH;
-        player.armor = START_ARMOR;
+        player.health = kit.health;
+        player.armor = kit.armor;
+        player.kit = kit.clone();
         player.pos = pos;
         player.yaw = yaw;
         player.pitch = 0.0;
@@ -110,6 +112,7 @@ impl Server {
             yaw,
             spawn_seq,
             grenade: carried,
+            kit,
         });
     }
 }

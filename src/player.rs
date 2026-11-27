@@ -21,6 +21,7 @@ use crate::{
     map::{self, CROUCH_EYE, Map, PLAYER_HALF, STAND_EYE},
     net::{Connection, NetMsg, Session},
     protocol::*,
+    movement::{self, MoveTuning, STANDARD},
     remote::RemotePlayer,
     settings::{Action, ActionInput, Settings, SettingsMenu},
     weapons::{
@@ -29,49 +30,14 @@ use crate::{
     world::{GameMap, MainCamera, ViewModel, ViewModelPart},
 };
 
-// --- Movement tuning (metres, seconds). Tweak these to change the feel. ---
-const RUN_SPEED: f32 = 9.5;
-const GROUND_ACCEL: f32 = 10.0;
-const FRICTION: f32 = 6.0;
-const STOP_SPEED: f32 = 3.0;
-/// Quake-style air strafing: in the air you can only add up to this much speed
-/// in the wished direction per step (see `TICK`), which is what makes strafe-jumping gain
-/// speed. How fast it is added is the host's air acceleration
-/// (`Session::air_accel`), times running speed.
-const AIR_WISH_SPEED: f32 = 1.0;
-/// Extra air control (m/s²) that only applies below running speed.
-const AIR_CONTROL_ACCEL: f32 = 25.0;
-pub const GRAVITY: f32 = 22.0;
+// The movement tuning is in `movement.rs`: each life moves by the preset its
+// kit names (`LocalPlayer::moves`).
+
+/// How fast what is not a player falls: dropped magazines, bodies.
+pub const GRAVITY: f32 = STANDARD.gravity;
 /// Seconds in the air after which coming down counts as a landing (and is
 /// heard), rather than stepping off a kerb.
 pub const LANDING_AIR_TIME: f32 = 0.25;
-const JUMP_SPEED: f32 = 8.0;
-const AIR_JUMPS: u32 = 1;
-/// Bunny hopping takes a jump pressed close to landing, not jump held down.
-/// Pressed up to this long before touching down (with no air jump left, or
-/// the ground right below), the jump goes off on landing.
-const BHOP_EARLY: f32 = 0.1;
-/// For this long after a landing, speed above running speed is kept rather
-/// than lost to friction, so a jump pressed just after landing still carries it.
-const BHOP_LATE: f32 = 0.1;
-/// A dash brings your speed up to this (it never slows you).
-const DASH_SPEED: f32 = 13.0;
-/// A dash from the ground hops you up: half the jump's speed, a quarter of its height.
-const DASH_LIFT: f32 = JUMP_SPEED * 0.5;
-pub const DASH_COOLDOWN: f32 = 1.5;
-const MAX_SPEED: f32 = 45.0;
-const CROUCH_SPEED: f32 = 4.5;
-/// Walking speed while aiming down sights.
-const AIM_SPEED: f32 = 6.0;
-/// Crouching on the ground at this speed or more starts a slide.
-const SLIDE_MIN_SPEED: f32 = 7.0;
-/// A slide tops your speed up to this, if `SLIDE_BOOST_COOLDOWN` has passed.
-const SLIDE_BOOST_SPEED: f32 = 15.0;
-const SLIDE_BOOST_COOLDOWN: f32 = 2.0;
-/// Speed lost per second while sliding (m/s²). Running friction is far higher.
-const SLIDE_DECEL: f32 = 6.0;
-/// Below this speed a slide turns into an ordinary crouch.
-const SLIDE_END_SPEED: f32 = 5.0;
 
 /// Looking straight up or down stops just short of vertical.
 const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
@@ -330,9 +296,9 @@ pub struct LocalPlayer {
     /// Jump or dash pressed since the last movement step.
     jump_queued: bool,
     dash_queued: bool,
-    /// Seconds a jump pressed in the air waits for the ground (`BHOP_EARLY`).
+    /// Seconds a jump pressed in the air waits for the ground (`MoveTuning::bhop_early`).
     jump_buffer: f32,
-    /// Seconds left of the landing's grace from friction (`BHOP_LATE`).
+    /// Seconds left of the landing's grace from friction (`MoveTuning::bhop_late`).
     bhop_grace: f32,
     /// The yaw at the end of the last frame's movement.
     frame_yaw: f32,
@@ -366,9 +332,17 @@ pub struct LocalPlayer {
     pub hold: f32,
     /// Seconds of flashbang blindness left.
     pub blind: f32,
-    /// No weapons this match (the racing modes): nothing in hand, nothing
+    /// No weapons this life (the racing modes): nothing in hand, nothing
     /// to aim or fire.
     pub unarmed: bool,
+    /// A knife besides the guns, this life.
+    pub knife: bool,
+    /// Only the first gun slot is carried, this life.
+    pub one_gun: bool,
+    /// Grenades to throw, this life.
+    pub can_throw: bool,
+    /// How we move this life (see `movement.rs`): the preset our kit names.
+    pub moves: &'static MoveTuning,
     /// Which racing mode this is, if any.
     pub racing: Racing,
     /// The racing modes: our run along the course, timed step by step.
@@ -410,7 +384,7 @@ impl Default for LocalPlayer {
             grounded: false,
             air_time: 0.0,
             landings: 0,
-            air_jumps: AIR_JUMPS,
+            air_jumps: STANDARD.air_jumps,
             dash_cooldown: 0.0,
             alive: false,
             health: 0,
@@ -460,6 +434,10 @@ impl Default for LocalPlayer {
             hold: 0.0,
             blind: 0.0,
             unarmed: false,
+            knife: true,
+            one_gun: false,
+            can_throw: true,
+            moves: &STANDARD,
             racing: Racing::No,
             run: Run::default(),
             run_events: Vec::new(),
@@ -670,24 +648,34 @@ fn handle_net(
                 yaw,
                 spawn_seq,
                 grenade: kind,
+                kit,
             } if *id == session.my_id => {
                 let racing = Racing::of(session.mode);
                 *player = LocalPlayer {
                     yaw: *yaw,
                     frame_yaw: *yaw,
                     alive: true,
-                    unarmed: !crate::modes::info(session.mode).armed,
+                    unarmed: kit.guns == Guns::None,
+                    knife: kit.knife,
+                    one_gun: matches!(&kit.guns, Guns::Only(guns) if guns.len() < 2),
+                    can_throw: kit.grenades,
+                    moves: movement::preset(kit.moves),
                     racing,
                     // Coming into a race already under way: on its clock.
                     run: Run {
                         clock: (racing == Racing::Race && !session.frozen()).then_some(session.elapsed),
                         ..default()
                     },
-                    health: MAX_HEALTH,
-                    armor: START_ARMOR,
+                    health: kit.health,
+                    armor: kit.armor,
                     spawn_seq: *spawn_seq,
-                    // Every life starts with the loadout picked in the menus.
-                    guns: [settings.primary, settings.secondary].map(|gun| GunSlot::full(gun, settings.sight_for(gun))),
+                    // Every life starts with the loadout picked in the menus,
+                    // unless the mode hands out the guns.
+                    guns: match &kit.guns {
+                        Guns::Only(guns) if !guns.is_empty() => [guns[0], *guns.last().unwrap()],
+                        _ => [settings.primary, settings.secondary],
+                    }
+                    .map(|gun| GunSlot::full(gun, settings.sight_for(gun))),
                     // The server says which grenade: the one in the loadout when it spawned us.
                     grenade: *kind,
                     grenades: grenade(*kind).max,
@@ -1000,6 +988,8 @@ fn advance(p: &mut LocalPlayer, frame: f32, held: &Held, map: &Map, air_accel: f
 /// One movement step of `TICK` seconds.
 fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, air_accel: f32, frozen: bool) {
     let dt = TICK;
+    let t = p.moves;
+    let air_accel = t.air_accel.unwrap_or(air_accel);
     p.dash_cooldown = (p.dash_cooldown - dt).max(0.0);
     p.slide_boost_cooldown = (p.slide_boost_cooldown - dt).max(0.0);
     p.jump_buffer = (p.jump_buffer - dt).max(0.0);
@@ -1032,31 +1022,31 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
     p.aim += (aiming as u8 as f32 - p.aim) * (dt * 14.0).min(1.0);
 
     let top_speed = if p.crouching {
-        CROUCH_SPEED
+        t.crouch_speed
     } else if aiming {
-        AIM_SPEED
+        t.aim_speed
     } else if p.unarmed {
-        RUN_SPEED
+        t.run_speed
     } else {
-        RUN_SPEED * p.weapon().mobility
+        t.run_speed * p.weapon().mobility
     };
     if p.grounded {
-        p.air_jumps = AIR_JUMPS;
+        p.air_jumps = t.air_jumps;
         // A jump pressed just before landing (buffered) or just after it hops
         // again before friction takes the speed: that is what lets you keep
         // (and build) speed by bunny hopping. Holding jump does not.
-        if p.jump_queued || p.jump_buffer > 0.0 {
+        if (p.jump_queued || p.jump_buffer > 0.0) && t.jump_speed > 0.0 {
             p.jump_buffer = 0.0;
             p.bhop_grace = 0.0;
-            p.vel.y = JUMP_SPEED;
+            p.vel.y = t.jump_speed;
             p.grounded = false;
             p.sliding = false;
-            air_accelerate(&mut p.vel, wish, air_accel, dt);
+            air_accelerate(&mut p.vel, wish, t, air_accel, dt);
         } else if p.sliding {
             // A slide keeps its direction and bleeds speed slowly.
             let speed = p.horizontal_speed();
-            let slowed = (speed - SLIDE_DECEL * dt).max(0.0);
-            if slowed < SLIDE_END_SPEED {
+            let slowed = (speed - t.slide_decel * dt).max(0.0);
+            if slowed < t.slide_end_speed {
                 p.sliding = false;
             } else {
                 p.vel.x *= slowed / speed;
@@ -1066,31 +1056,31 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
             // Just landed with speed to keep: coast, waiting for the jump.
         } else {
             p.bhop_grace = 0.0;
-            apply_friction(&mut p.vel, dt);
-            accelerate(&mut p.vel, wish, top_speed, GROUND_ACCEL * top_speed, dt);
+            apply_friction(&mut p.vel, t, dt);
+            accelerate(&mut p.vel, wish, top_speed, t.ground_accel * top_speed, dt);
         }
     } else {
-        if p.jump_queued {
+        if p.jump_queued && t.jump_speed > 0.0 {
             // About to touch down: this press is a bunny hop, not the air jump.
-            let fall = (-p.vel.y * BHOP_EARLY + 0.5 * GRAVITY * BHOP_EARLY * BHOP_EARLY).max(0.0);
+            let fall = (-p.vel.y * t.bhop_early + 0.5 * t.gravity * t.bhop_early * t.bhop_early).max(0.0);
             let landing = p.vel.y < 0.0 && !map.is_free(p.pos - Vec3::Y * fall, p.half());
             if p.air_jumps > 0 && !landing {
                 p.air_jumps -= 1;
-                p.vel.y = JUMP_SPEED;
+                p.vel.y = t.jump_speed;
             } else {
-                p.jump_buffer = BHOP_EARLY;
+                p.jump_buffer = t.bhop_early;
             }
         }
-        air_accelerate(&mut p.vel, wish, air_accel, dt);
+        air_accelerate(&mut p.vel, wish, t, air_accel, dt);
     }
 
     // Dash: redirect all momentum where you are steering, with a minimum
     // speed, and off the ground a little hop.
-    if p.dash_queued && p.dash_cooldown <= 0.0 {
-        p.dash_cooldown = DASH_COOLDOWN;
+    if p.dash_queued && p.dash_cooldown <= 0.0 && t.dash_speed > 0.0 {
+        p.dash_cooldown = t.dash_cooldown;
         let dir = if wish == Vec3::ZERO { forward } else { wish };
-        let speed = p.vel.with_y(0.0).length().max(DASH_SPEED);
-        let lift = if p.grounded { DASH_LIFT } else { 0.0 };
+        let speed = p.vel.with_y(0.0).length().max(t.dash_speed);
+        let lift = if p.grounded { t.dash_lift } else { 0.0 };
         p.vel = Vec3::new(dir.x * speed, p.vel.y.max(lift), dir.z * speed);
         if p.grounded {
             p.grounded = false;
@@ -1098,8 +1088,8 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
         }
     }
 
-    p.vel.y -= GRAVITY * dt;
-    let horizontal = p.vel.with_y(0.0).clamp_length_max(MAX_SPEED);
+    p.vel.y -= t.gravity * dt;
+    let horizontal = p.vel.with_y(0.0).clamp_length_max(t.max_speed);
     p.vel = Vec3::new(horizontal.x, p.vel.y.max(-60.0), horizontal.z);
 
     let was_grounded = p.grounded;
@@ -1120,7 +1110,7 @@ fn step(p: &mut LocalPlayer, held: &Held, wish: Vec3, forward: Vec3, map: &Map, 
     if p.grounded {
         if !was_grounded && p.air_time > LANDING_AIR_TIME {
             p.landings = p.landings.wrapping_add(1);
-            p.bhop_grace = BHOP_LATE;
+            p.bhop_grace = t.bhop_late;
         }
         p.air_time = 0.0;
     } else {
@@ -1194,15 +1184,16 @@ impl LocalPlayer {
 
 /// Called when a crouching player touches the ground: fast enough, and it is a slide.
 fn start_slide(p: &mut LocalPlayer) {
+    let t = p.moves;
     let speed = p.horizontal_speed();
-    if p.sliding || speed < SLIDE_MIN_SPEED {
+    if p.sliding || speed < t.slide_min_speed {
         return;
     }
     p.sliding = true;
-    if p.slide_boost_cooldown <= 0.0 && speed < SLIDE_BOOST_SPEED {
-        p.slide_boost_cooldown = SLIDE_BOOST_COOLDOWN;
-        p.vel.x *= SLIDE_BOOST_SPEED / speed;
-        p.vel.z *= SLIDE_BOOST_SPEED / speed;
+    if p.slide_boost_cooldown <= 0.0 && speed < t.slide_boost_speed {
+        p.slide_boost_cooldown = t.slide_boost_cooldown;
+        p.vel.x *= t.slide_boost_speed / speed;
+        p.vel.z *= t.slide_boost_speed / speed;
     }
 }
 
@@ -1215,23 +1206,23 @@ fn accelerate(vel: &mut Vec3, wish_dir: Vec3, wish_speed: f32, accel: f32, dt: f
     }
 }
 
-fn air_accelerate(vel: &mut Vec3, wish_dir: Vec3, air_accel: f32, dt: f32) {
+fn air_accelerate(vel: &mut Vec3, wish_dir: Vec3, t: &MoveTuning, air_accel: f32, dt: f32) {
     // Below running speed you get plain air control, so hopping from a standstill
     // is not a crawl. Above it, only strafing adds speed.
-    if vel.with_y(0.0).length() < RUN_SPEED {
-        accelerate(vel, wish_dir, RUN_SPEED, AIR_CONTROL_ACCEL, dt);
+    if vel.with_y(0.0).length() < t.run_speed {
+        accelerate(vel, wish_dir, t.run_speed, t.air_control_accel, dt);
     }
-    accelerate(vel, wish_dir, AIR_WISH_SPEED, air_accel * RUN_SPEED, dt);
+    accelerate(vel, wish_dir, t.air_wish_speed, air_accel * t.run_speed, dt);
 }
 
-fn apply_friction(vel: &mut Vec3, dt: f32) {
+fn apply_friction(vel: &mut Vec3, t: &MoveTuning, dt: f32) {
     let speed = vel.with_y(0.0).length();
     if speed < 0.01 {
         vel.x = 0.0;
         vel.z = 0.0;
         return;
     }
-    let drop = speed.max(STOP_SPEED) * FRICTION * dt;
+    let drop = speed.max(t.stop_speed) * t.friction * dt;
     let scale = (speed - drop).max(0.0) / speed;
     vel.x *= scale;
     vel.z *= scale;
@@ -1300,7 +1291,7 @@ fn follow_camera(
 
     // Widen the field of view a little at speed; narrow it when aiming.
     if let Projection::Perspective(perspective) = &mut *projection {
-        let boost = ((player.horizontal_speed() - RUN_SPEED) / 25.0).clamp(0.0, 1.0) * 0.22;
+        let boost = ((player.horizontal_speed() - STANDARD.run_speed) / 25.0).clamp(0.0, 1.0) * 0.22;
         let hip = settings.fov.to_radians() + boost;
         let target = hip * (1.0 + (player.zoom() - 1.0) * player.aim);
         perspective.fov += (target - perspective.fov) * (dt * 14.0).min(1.0);
@@ -1682,6 +1673,9 @@ fn send_state(player: Res<LocalPlayer>, mut connection: ResMut<Connection>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const JUMP_SPEED: f32 = STANDARD.jump_speed;
+    const DASH_COOLDOWN: f32 = STANDARD.dash_cooldown;
     use crate::map::Block;
 
     /// A bolt action's (lift, drawn back), to within rounding.

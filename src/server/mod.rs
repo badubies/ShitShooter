@@ -20,7 +20,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
 use crate::{
     map::{self, Map},
-    modes::{self, BotBrief, Kill, ModeSnap, Needs, Rules, conquest::rules::FlagState},
+    modes::{self, BotBrief, Kill, Needs, Rules, conquest::rules::FlagState},
     nav::NavGrid,
     canvas::Canvas,
     protocol::*,
@@ -153,12 +153,10 @@ pub(crate) struct Player {
     pub(crate) step_from: Vec3,
     pub(crate) step_clock: f32,
     pub(crate) stride: f32,
-    /// The racing modes: how many checkpoints they are through on the run
-    /// they are on, and (a time trial) whether they are on one.
-    pub(crate) run_passed: usize,
-    pub(crate) run_on: bool,
-    /// A race's finishing time, or a time trial's best.
-    pub(crate) run_time: Option<f32>,
+    /// What they are in a mode where players are not all alike (see `PlayerInfo::role`).
+    pub(crate) role: u8,
+    /// What they were given this life: the rules decide it at each spawn.
+    pub(crate) kit: Kit,
     pub(crate) bot: Option<Bot>,
 }
 
@@ -709,9 +707,8 @@ impl Server {
             step_from: Vec3::ZERO,
             step_clock: 0.0,
             stride: 0.0,
-            run_passed: 0,
-            run_on: false,
-            run_time: None,
+            role: 0,
+            kit: Kit::standard(),
             bot,
         }
     }
@@ -741,8 +738,8 @@ impl Server {
                     assists: p.assists,
                     damage: p.damage,
                     is_bot: p.bot.is_some(),
-                    time: p.run_time,
-                    gates: p.run_passed.min(u8::MAX as usize) as u8,
+                    role: p.role,
+                    stats: (self.rules().stats)(self, *id),
                 })
                 .collect(),
             leader: self.leader().unwrap_or(0),

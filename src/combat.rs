@@ -222,7 +222,7 @@ fn fire(
 
     // The grenade key takes out the grenade in the loadout, or puts it away
     // again (not a frag with its pin pulled: that one has to go).
-    if input.just_pressed(Action::Grenade) {
+    if input.just_pressed(Action::Grenade) && player.can_throw {
         match player.hand {
             Some(InHand { fuse: None, .. }) => player.hand = None,
             None if player.grenades >= 1.0 => {
@@ -250,8 +250,14 @@ fn fire(
             gun => 1 - gun,
         });
     }
+    // Only to what this life's kit has.
+    let carried_slot = |slot: usize| match slot {
+        KNIFE_SLOT => player.knife,
+        gun => gun == 0 || !player.one_gun,
+    };
     if let Some(slot) = wanted
         && !cooking
+        && carried_slot(slot)
     {
         if player.hand.take().is_some() || player.slot != slot {
             if player.slot != KNIFE_SLOT {

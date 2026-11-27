@@ -8,11 +8,6 @@ impl Server {
         self.phase == Phase::Playing && self.countdown <= 0.0
     }
 
-    /// The match is live and there is fighting in it: not on a course.
-    pub(crate) fn armed(&self) -> bool {
-        self.live() && modes::info(self.settings.mode).armed
-    }
-
     /// The rules of the mode being played.
     pub(crate) fn rules(&self) -> &'static Rules {
         &modes::info(self.settings.mode).rules
@@ -51,11 +46,11 @@ impl Server {
             });
             // Health comes back after a while out of trouble.
             player.since_damage += dt;
-            if player.alive && player.health < MAX_HEALTH && player.since_damage >= REGEN_DELAY {
+            if player.alive && player.health < player.kit.health && player.since_damage >= REGEN_DELAY {
                 player.regen += REGEN_RATE * dt;
                 let whole = player.regen.floor();
                 player.regen -= whole;
-                player.health = (player.health + whole as i32).min(MAX_HEALTH);
+                player.health = (player.health + whole as i32).min(player.kit.health);
             }
             if !player.alive {
                 player.respawn_in -= dt;
@@ -120,16 +115,10 @@ impl Server {
         self.snapshot_timer += dt;
         if self.snapshot_timer >= 1.0 / SNAPSHOT_RATE {
             self.snapshot_timer = 0.0;
-            let (flags, hill) = match (self.rules().snap)(self) {
-                ModeSnap::None => (Vec::new(), HILL_EMPTY),
-                ModeSnap::Hill(hill) => (Vec::new(), hill),
-                ModeSnap::Conquest(flags) => (flags, HILL_EMPTY),
-            };
             let snapshot = Snapshot {
                 time_left: self.time_left.max(0.0),
                 team_scores: self.team_scores,
-                flags,
-                hill,
+                mode: (self.rules().snap)(self),
                 armor_taken: self
                     .armor_respawn
                     .iter()
@@ -208,9 +197,7 @@ impl Server {
             player.damage = 0;
             player.hurt_by.clear();
             player.alive = false;
-            player.run_passed = 0;
-            player.run_on = false;
-            player.run_time = None;
+            player.role = 0;
         }
         if is_team_mode(self.settings.mode) {
             self.balance_bots();

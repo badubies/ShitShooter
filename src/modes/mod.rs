@@ -3,11 +3,14 @@
 //! mode by adding a row (and, for its rules, a file beside this one).
 
 use bevy::math::Vec3;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     map::Map,
-    protocol::{FlagSnap, PlayerId, RunEvent, Winner},
+    movement::MOVES_STANDARD,
+    protocol::{FlagSnap, MAX_HEALTH, PlayerId, RunEvent, START_ARMOR, Winner},
     server::Server,
+    weapons::{GUN_COUNT, KNIFE, WeaponId},
 };
 
 pub mod conquest;
@@ -120,8 +123,12 @@ pub struct Rules {
     /// Where this player may come in (place and facing), given where the
     /// people they should keep away from stand. `None`: any of the map's spawns.
     pub spawns: fn(&mut Server, PlayerId, &[Vec3]) -> Option<Vec<(Vec3, f32)>>,
+    /// What this player is given on coming in.
+    pub kit: fn(&Server, PlayerId) -> Kit,
     /// What of the mode's own state goes out with every snapshot.
     pub snap: fn(&Server) -> ModeSnap,
+    /// What the scoreboard shows of this player that only this mode keeps.
+    pub stats: fn(&Server, PlayerId) -> ModeStats,
     /// What the bots are to do besides fight.
     pub bot_brief: fn(&Server) -> BotBrief,
     /// Where fights on a map centre in this mode: bots pick their guns for
@@ -138,7 +145,9 @@ impl Rules {
         run: |_, _, _| {},
         time_up: |_| Winner::Nobody,
         spawns: |_, _, _| None,
+        kit: |_, _| Kit::standard(),
         snap: |_| ModeSnap::None,
+        stats: |_, _| ModeStats::None,
         bot_brief: |_| BotBrief::default(),
         fight_spots: |map| map.spawns.iter().map(|spawn| spawn.pos).collect(),
     };
@@ -155,11 +164,89 @@ pub struct Kill {
 }
 
 /// A mode's own part of a snapshot.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub enum ModeSnap {
+    #[default]
     None,
     /// Who holds the hill (`HILL_*`).
     Hill(u8),
+    /// The map's flags, in order.
     Conquest(Vec<FlagSnap>),
+}
+
+/// A mode's own part of a player's line on the scoreboard.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub enum ModeStats {
+    #[default]
+    None,
+    Course {
+        /// A race's finishing time, or the best time of a time trial, once
+        /// there is one.
+        time: Option<f32>,
+        /// How many checkpoints they are through (in a time trial, on the
+        /// run they are on).
+        gates: u8,
+    },
+}
+
+/// The guns of a `Kit`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum Guns {
+    /// The two picked in the player's own loadout.
+    Own,
+    /// These and no others: one or two.
+    Only(Vec<WeaponId>),
+    /// Nothing in hand at all, not even the knife.
+    None,
+}
+
+/// What a player has for one life. The server decides it (`Rules::kit`),
+/// tells the player's game with the spawn, and holds them to it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Kit {
+    pub guns: Guns,
+    /// A knife besides the guns.
+    pub knife: bool,
+    pub grenades: bool,
+    /// Health to start with, and to heal back up to.
+    pub health: i32,
+    pub armor: i32,
+    /// How they move: one of `movement::PRESETS`.
+    pub moves: u8,
+}
+
+impl Kit {
+    /// Their own guns, a knife and grenades.
+    pub fn standard() -> Kit {
+        Kit {
+            guns: Guns::Own,
+            knife: true,
+            grenades: true,
+            health: MAX_HEALTH,
+            armor: START_ARMOR,
+            moves: MOVES_STANDARD,
+        }
+    }
+
+    /// Nothing to fight with.
+    pub fn unarmed() -> Kit {
+        Kit {
+            guns: Guns::None,
+            knife: false,
+            grenades: false,
+            ..Kit::standard()
+        }
+    }
+
+    /// True if somebody with this kit may fire (or stab with) `weapon`.
+    pub fn allows(&self, weapon: WeaponId) -> bool {
+        match &self.guns {
+            Guns::None => false,
+            _ if weapon == KNIFE => self.knife,
+            Guns::Own => weapon < GUN_COUNT,
+            Guns::Only(guns) => guns.contains(&weapon),
+        }
+    }
 }
 
 /// What the bots are to do besides fight, this tick.
@@ -303,6 +390,18 @@ mod tests {
         }
         assert_eq!(by_key("nothing"), None);
         assert_eq!(name(200), "?");
+    }
+
+    #[test]
+    fn a_kit_allows_only_what_is_in_it() {
+        use crate::weapons::{RIFLE, SNIPER};
+        let standard = Kit::standard();
+        assert!(standard.allows(RIFLE) && standard.allows(SNIPER) && standard.allows(KNIFE));
+        assert!(!standard.allows(crate::weapons::GRENADE), "a grenade is thrown, not fired");
+        let unarmed = Kit::unarmed();
+        assert!(!unarmed.allows(RIFLE) && !unarmed.allows(KNIFE) && !unarmed.grenades);
+        let sniper = Kit { guns: Guns::Only(vec![SNIPER]), knife: false, ..Kit::standard() };
+        assert!(sniper.allows(SNIPER) && !sniper.allows(RIFLE) && !sniper.allows(KNIFE));
     }
 
     #[test]

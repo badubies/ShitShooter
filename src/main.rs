@@ -21,6 +21,7 @@ mod hamlet;
 mod hub;
 mod map;
 mod modes;
+mod movement;
 mod nav;
 mod props;
 mod protocol;

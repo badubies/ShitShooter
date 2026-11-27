@@ -912,7 +912,7 @@ fn selftest_play(
         player.pitch = to.y.atan2(to.with_y(0.0).length());
     }
     if test.reached(14, if conquest { 17.0 } else { 11.0 }) && conquest {
-        println!("[selftest] flags {:?}", session.flags);
+        println!("[selftest] flags {:?}", session.flags());
         test.capture("flag.png");
     }
     // The death screen with its map to pick where to come back in (only on
@@ -1024,7 +1024,7 @@ fn selftest_course(
             "[selftest] run {:?} through {}, the server has us through {:?}",
             player.run.clock,
             player.run.passed,
-            me.map(|p| p.gates)
+            me.map(|p| p.gates())
         );
     }
     // The view down the course from each checkpoint.

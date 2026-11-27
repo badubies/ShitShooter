@@ -1,28 +1,69 @@
 //! The racing modes on the server: taking the runs players' games time, and
 //! ending a race once everybody is through.
 
+use std::collections::HashMap;
+
 use super::{RACE_END_DELAY, RACE_FINISH_GRACE};
 use crate::{
-    modes::Rules,
+    modes::{Kit, ModeStats, Rules},
     protocol::{PlayerId, RunEvent, ServerMsg, Winner},
     server::Server,
 };
 
 pub const RACE: Rules = Rules {
     run: |server, id, event| run(server, id, event, false),
-    time_up: best_time,
-    ..Rules::NONE
+    ..SHARED
 };
 
 pub const TRIAL: Rules = Rules {
     run: |server, id, event| run(server, id, event, true),
+    ..SHARED
+};
+
+/// What a race and a time trial have alike: no guns, and the best time wins.
+const SHARED: Rules = Rules {
+    start,
     time_up: best_time,
+    kit: |_, _| Kit::unarmed(),
+    stats,
     ..Rules::NONE
 };
 
+/// Where a player's run stands, as the server has taken it.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct Run {
+    /// How many checkpoints they are through: the next one to take.
+    pub passed: usize,
+    /// Time trial: on a run (between leaving the start and the finish).
+    pub on: bool,
+    /// A race's finishing time, or the best time of a time trial.
+    pub time: Option<f32>,
+}
+
+/// What the server keeps of a match on a course: everybody's run.
+#[derive(Default)]
+pub struct Runs(HashMap<PlayerId, Run>);
+
+/// Where `id`'s run stands (not started, for somebody we know no run of).
+pub fn run_of(server: &Server, id: PlayerId) -> Run {
+    server.state.downcast_ref::<Runs>().and_then(|runs| runs.0.get(&id).copied()).unwrap_or_default()
+}
+
+fn start(server: &mut Server) {
+    server.state = Box::new(Runs::default());
+}
+
+fn stats(server: &Server, id: PlayerId) -> ModeStats {
+    let run = run_of(server, id);
+    ModeStats::Course {
+        time: run.time,
+        gates: run.passed.min(u8::MAX as usize) as u8,
+    }
+}
+
 /// The best time wins.
 fn best_time(server: &Server) -> Winner {
-    let best = server.players.iter().filter_map(|(id, p)| Some((*id, p.run_time?))).min_by(|a, b| a.1.total_cmp(&b.1));
+    let best = server.players.keys().filter_map(|id| Some((*id, run_of(server, *id).time?))).min_by(|a, b| a.1.total_cmp(&b.1));
     best.map_or(Winner::Nobody, |(id, _)| Winner::Player(id))
 }
 
@@ -36,27 +77,31 @@ fn run(server: &mut Server, id: PlayerId, event: RunEvent, trial: bool) {
     let gates = course.gates.len();
     let elapsed = server.elapsed;
     let plausible = |time: f32| time.is_finite() && time > 0.0 && time <= elapsed + 0.5;
-    let Some(player) = server.players.get_mut(&id).filter(|p| p.alive) else { return };
-    let on = !trial || player.run_on;
-    let finished = !trial && player.run_time.is_some();
+    if !server.players.get(&id).is_some_and(|p| p.alive) {
+        return;
+    }
+    let Some(runs) = server.state.downcast_mut::<Runs>() else { return };
+    let player = runs.0.entry(id).or_default();
+    let on = !trial || player.on;
+    let finished = !trial && player.time.is_some();
     match event {
         RunEvent::Started if trial => {
-            player.run_on = true;
-            player.run_passed = 0;
+            player.on = true;
+            player.passed = 0;
         }
         RunEvent::Abandoned if trial => {
-            player.run_on = false;
-            player.run_passed = 0;
+            player.on = false;
+            player.passed = 0;
         }
-        RunEvent::Gate { gate, time } if on && !finished && gate as usize == player.run_passed && plausible(time) => {
-            player.run_passed += 1;
+        RunEvent::Gate { gate, time } if on && !finished && gate as usize == player.passed && plausible(time) => {
+            player.passed += 1;
         }
-        RunEvent::Finished { time } if on && !finished && player.run_passed == gates && plausible(time) => {
+        RunEvent::Finished { time } if on && !finished && player.passed == gates && plausible(time) => {
             if trial {
-                player.run_on = false;
-                player.run_passed = 0;
+                player.on = false;
+                player.passed = 0;
             }
-            player.run_time = Some(player.run_time.map_or(time, |best| best.min(time)));
+            player.time = Some(player.time.map_or(time, |best| best.min(time)));
         }
         _ => return,
     }
@@ -65,7 +110,7 @@ fn run(server: &mut Server, id: PlayerId, event: RunEvent, trial: bool) {
     if trial || !matches!(event, RunEvent::Finished { .. }) {
         return;
     }
-    let everybody = server.players.values().filter(|p| p.bot.is_none()).all(|p| p.run_time.is_some());
+    let everybody = server.players.iter().filter(|(_, p)| p.bot.is_none()).all(|(id, _)| run_of(server, *id).time.is_some());
     let wait = if everybody { RACE_END_DELAY } else { RACE_FINISH_GRACE };
     server.time_left = server.time_left.min(wait);
 }
@@ -154,18 +199,18 @@ mod tests {
         // Out of order, or the finish before the checkpoints: not taken.
         told(&mut server, ids[0], RunEvent::Gate { gate: 1, time: 5.0 });
         told(&mut server, ids[0], RunEvent::Finished { time: 9.0 });
-        assert_eq!((server.players[&ids[0]].run_passed, server.players[&ids[0]].run_time), (0, None));
+        assert_eq!((run_of(&server, ids[0]).passed, run_of(&server, ids[0]).time), (0, None));
         through_the_gates(&mut server, ids[0], 5.0);
-        assert_eq!(server.players[&ids[0]].run_passed, gates(&server) as usize);
+        assert_eq!(run_of(&server, ids[0]).passed, gates(&server) as usize);
         // Longer than the race has been on: not taken.
         told(&mut server, ids[0], RunEvent::Finished { time: 99.0 });
-        assert_eq!(server.players[&ids[0]].run_time, None);
+        assert_eq!(run_of(&server, ids[0]).time, None);
         told(&mut server, ids[0], RunEvent::Finished { time: 30.0 });
-        assert_eq!(server.players[&ids[0]].run_time, Some(30.0));
+        assert_eq!(run_of(&server, ids[0]).time, Some(30.0));
         assert!(server.time_left <= RACE_FINISH_GRACE);
         // Only one finish each.
         told(&mut server, ids[0], RunEvent::Finished { time: 20.0 });
-        assert_eq!(server.players[&ids[0]].run_time, Some(30.0));
+        assert_eq!(run_of(&server, ids[0]).time, Some(30.0));
         // A slower one; the race goes on for the last.
         through_the_gates(&mut server, ids[1], 6.0);
         told(&mut server, ids[1], RunEvent::Finished { time: 33.0 });
@@ -185,20 +230,20 @@ mod tests {
         server.elapsed = 300.0;
         // Not on a run: nothing counts.
         told(&mut server, ids[0], RunEvent::Gate { gate: 0, time: 3.0 });
-        assert_eq!(server.players[&ids[0]].run_passed, 0);
+        assert_eq!(run_of(&server, ids[0]).passed, 0);
         for (time, best) in [(40.0, 40.0), (45.0, 40.0), (38.0, 38.0)] {
             told(&mut server, ids[0], RunEvent::Started);
             through_the_gates(&mut server, ids[0], 5.0);
             told(&mut server, ids[0], RunEvent::Finished { time });
-            let player = &server.players[&ids[0]];
-            assert_eq!((player.run_time, player.run_on, player.run_passed), (Some(best), false, 0));
+            let player = run_of(&server, ids[0]);
+            assert_eq!((player.time, player.on, player.passed), (Some(best), false, 0));
         }
         // A run given up counts for nothing.
         told(&mut server, ids[1], RunEvent::Started);
         told(&mut server, ids[1], RunEvent::Gate { gate: 0, time: 3.0 });
         told(&mut server, ids[1], RunEvent::Abandoned);
         told(&mut server, ids[1], RunEvent::Gate { gate: 1, time: 4.0 });
-        assert_eq!((server.players[&ids[1]].run_passed, server.players[&ids[1]].run_time), (0, None));
+        assert_eq!((run_of(&server, ids[1]).passed, run_of(&server, ids[1]).time), (0, None));
         // A finish does not run the clock down: there is no clock.
         assert_eq!(server.time_left, f32::INFINITY);
         // The leader ends it, and the best time wins.

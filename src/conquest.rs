@@ -162,12 +162,12 @@ fn show_flags(
     mut rings: Query<(&FlagRing, &mut Visibility, &mut MeshMaterial3d<StandardMaterial>), Without<FlagCloth>>,
 ) {
     let mine = session.team_of(session.my_id);
-    let on = session.mode == MODE_CONQUEST && !session.flags.is_empty();
+    let on = session.mode == MODE_CONQUEST && !session.flags().is_empty();
     let wanted = if on { Visibility::Inherited } else { Visibility::Hidden };
     let t = time.elapsed_secs();
     for (cloth, mut transform, mut visibility, mut material) in &mut cloths {
         visibility.set_if_neq(wanted);
-        let (Some(flag), Some(point)) = (session.flags.get(cloth.0), map.0.flags.get(cloth.0)) else {
+        let (Some(flag), Some(point)) = (session.flags().get(cloth.0), map.0.flags.get(cloth.0)) else {
             continue;
         };
         let (shade, height) = flag_look(flag, mine);
@@ -183,7 +183,7 @@ fn show_flags(
     }
     for (ring, mut visibility, mut material) in &mut rings {
         visibility.set_if_neq(wanted);
-        let Some(flag) = session.flags.get(ring.0) else {
+        let Some(flag) = session.flags().get(ring.0) else {
             continue;
         };
         let shade = team_shade(flag.owner, mine);
@@ -328,7 +328,7 @@ fn update_badges(
 ) {
     let mine = session.team_of(session.my_id);
     for (badge, mut border, mut background) in &mut badges {
-        let Some(flag) = session.flags.get(badge.0) else {
+        let Some(flag) = session.flags().get(badge.0) else {
             continue;
         };
         let owner = team_shade(flag.owner, mine);
@@ -338,7 +338,7 @@ fn update_badges(
         background.set_if_neq(BackgroundColor(fill));
     }
     for (fill, mut node, mut background) in &mut fills {
-        let Some(flag) = session.flags.get(fill.0) else {
+        let Some(flag) = session.flags().get(fill.0) else {
             continue;
         };
         let (shade, amount) = flag_look(flag, mine);
@@ -365,7 +365,7 @@ fn update_capture_bar(
     for mut visibility in &mut bar {
         visibility.set_if_neq(if here.is_some() { Visibility::Inherited } else { Visibility::Hidden });
     }
-    let (Some(index), Some(state)) = (here, here.and_then(|i| session.flags.get(i))) else {
+    let (Some(index), Some(state)) = (here, here.and_then(|i| session.flags().get(i))) else {
         return;
     };
     let point = &map.0.flags[index];
@@ -434,7 +434,7 @@ fn update_markers(
         }
     }
     for (letter, mut color) in &mut letters {
-        if let Some(state) = session.flags.get(letter.0) {
+        if let Some(state) = session.flags().get(letter.0) {
             color.set_if_neq(TextColor(shade_color(flag_look(state, session.team_of(session.my_id)).0)));
         }
     }
@@ -453,7 +453,7 @@ fn announce(
     mut notices: ResMut<Notices>,
     mut sounds: MessageWriter<SoundCue>,
 ) {
-    let owners: Vec<Option<u8>> = session.flags.iter().map(|flag| flag.owner).collect();
+    let owners: Vec<Option<u8>> = session.flags().iter().map(|flag| flag.owner).collect();
     if last.len() != owners.len() {
         *last = owners;
         return;

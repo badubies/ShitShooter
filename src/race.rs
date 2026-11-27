@@ -166,7 +166,7 @@ fn announce_runs(
         let ahead = session
             .roster
             .iter()
-            .filter(|p| p.id != *id && p.time.is_some_and(|then| then < *time))
+            .filter(|p| p.id != *id && p.time().is_some_and(|then| then < *time))
             .count();
         let name = session.name_of(*id);
         if session.mode == MODE_RACE {
@@ -177,7 +177,7 @@ fn announce_runs(
                 feed.say(format!("{name} finished {place}   {}", format_time(*time)));
             }
         } else if *id != session.my_id {
-            let old = session.roster.iter().find(|p| p.id == *id).and_then(|p| p.time);
+            let old = session.roster.iter().find(|p| p.id == *id).and_then(|p| p.time());
             if old.is_none_or(|old| *time < old) {
                 let lead = if ahead == 0 { "   the best yet" } else { "" };
                 feed.say(format!("{name}: a best of {}{lead}", format_time(*time)));

@@ -272,7 +272,7 @@ fn show_hill(
         if *visibility != wanted {
             *visibility = wanted;
         }
-        let shade = match session.hill {
+        let shade = match session.hill() {
             HILL_EMPTY => 0,
             HILL_CONTESTED => 3,
             held => 1 + ((held - HILL_HELD) ^ session.team_of(session.my_id)) as usize & 1,

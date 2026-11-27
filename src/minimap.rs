@@ -378,7 +378,7 @@ fn update_minimap(
             node.left = left;
             node.top = top;
         }
-        border.set_if_neq(BorderColor::all(flag_color(session.flags.get(flag.0), session.team_of(session.my_id))));
+        border.set_if_neq(BorderColor::all(flag_color(session.flags().get(flag.0), session.team_of(session.my_id))));
     }
     for (mut node, mut transform) in &mut me {
         let (left, top) = place(player.pos, 14.0);
@@ -488,7 +488,7 @@ fn update_deploy_map(
     };
     let held = |point: u8| match point {
         0 => true,
-        _ => session.flags.get(point as usize - 1).is_some_and(|flag| flag.owner == Some(mine)),
+        _ => session.flags().get(point as usize - 1).is_some_and(|flag| flag.owner == Some(mine)),
     };
     if points.is_empty() {
         let inner = DEPLOY - 4.0;
@@ -510,7 +510,7 @@ fn update_deploy_map(
                 observe(move |_: On<Activate>, mut choice: ResMut<SpawnChoice>, session: Res<Session>| {
                     let mine = session.team_of(session.my_id);
                     let ours = point == 0
-                        || session.flags.get(point as usize - 1).is_some_and(|flag| flag.owner == Some(mine));
+                        || session.flags().get(point as usize - 1).is_some_and(|flag| flag.owner == Some(mine));
                     if ours {
                         // Clicking the chosen one again leaves it to the server.
                         choice.point = if choice.point == Some(point) { None } else { Some(point) };
@@ -526,7 +526,7 @@ fn update_deploy_map(
         let color = if point.0 == 0 {
             BLUE
         } else {
-            flag_color(session.flags.get(point.0 as usize - 1), mine)
+            flag_color(session.flags().get(point.0 as usize - 1), mine)
         };
         let chosen = choice.point == Some(point.0);
         border.set_if_neq(BorderColor::all(if chosen { ACCENT } else { color }));

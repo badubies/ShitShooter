@@ -61,7 +61,7 @@ pub fn next_air_accel(current: u16) -> u16 {
 // brings every number both sides must agree on.
 #[allow(unused_imports)]
 pub use crate::modes::{
-    MODE_CONQUEST, MODE_FFA, MODE_HILL, MODE_RACE, MODE_TEAMS, MODE_TRIAL,
+    Guns, Kit, MODE_CONQUEST, MODE_FFA, MODE_HILL, MODE_RACE, MODE_TEAMS, MODE_TRIAL, ModeSnap, ModeStats,
     conquest::{CAPTURE_CROWD, CAPTURE_TIME, CONQUEST_TICKETS, FLAG_HEIGHT, TICKET_BLEED},
     course::{RACE_END_DELAY, RACE_FINISH_GRACE},
     hill::{HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, HILL_SCORE_LIMIT},
@@ -155,7 +155,7 @@ pub type PlayerId = u64;
 /// the wrong password (or a different game version) is simply never accepted.
 pub fn protocol_id(password: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in b"shitshooter-proto-23:".iter().chain(password.as_bytes()) {
+    for byte in b"shitshooter-proto-24:".iter().chain(password.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -171,6 +171,9 @@ pub struct PlayerInfo {
     pub color: u8,
     /// 0 or 1. Only means something in the team modes.
     pub team: u8,
+    /// What they are in a mode where players are not all alike; each such
+    /// mode has its own numbers for it. 0 everywhere else.
+    pub role: u8,
     pub kills: u32,
     pub deaths: u32,
     /// Kills somebody else finished after this player hurt the victim.
@@ -178,12 +181,28 @@ pub struct PlayerInfo {
     /// Health and armor taken off other players this match.
     pub damage: u32,
     pub is_bot: bool,
+    /// What only the mode being played keeps of them.
+    pub stats: ModeStats,
+}
+
+impl PlayerInfo {
     /// The racing modes: a race's finishing time, or the best time of a
     /// time trial, once there is one.
-    pub time: Option<f32>,
+    pub fn time(&self) -> Option<f32> {
+        match self.stats {
+            ModeStats::Course { time, .. } => time,
+            _ => None,
+        }
+    }
+
     /// The racing modes: how many checkpoints they are through (in a time
     /// trial, on the run they are on).
-    pub gates: u8,
+    pub fn gates(&self) -> u8 {
+        match self.stats {
+            ModeStats::Course { gates, .. } => gates,
+            _ => 0,
+        }
+    }
 }
 
 /// Client -> server, reliable ordered.
@@ -335,6 +354,8 @@ pub enum ServerMsg {
         spawn_seq: u32,
         /// The grenade they carry this life, and start with `max` of.
         grenade: GrenadeKind,
+        /// What they have this life: guns, health, how they move.
+        kit: Kit,
     },
     /// Somebody else fired. Sent to everyone but the shooter.
     Fire {
@@ -441,10 +462,8 @@ pub struct Snapshot {
     pub time_left: f32,
     /// Team modes: each team's score (conquest: tickets left).
     pub team_scores: [u32; 2],
-    /// Conquest: the map's flags, in order.
-    pub flags: Vec<FlagSnap>,
-    /// King of the hill: who holds the hill (`HILL_*`).
-    pub hill: u8,
+    /// What only the mode being played has to tell: who holds the hill, the flags.
+    pub mode: ModeSnap,
     /// Bit `i` is set while the armor at `map.armor_spots[i]` is taken.
     pub armor_taken: u32,
     pub players: Vec<PlayerSnap>,

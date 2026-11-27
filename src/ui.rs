@@ -29,7 +29,7 @@ use crate::{
     paint::{Skins, palette_color},
     loadout::{DeathLoadout, DeathLoadoutOpen, Preview, Thumbnails, death_loadout, loadout_summary, on_open_loadout, summary_button},
     paint_editor::on_open_paint,
-    player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, Racing},
+    player::{Controls, DAMAGE_ARC_TIME, LocalPlayer, Racing},
     remote::Spectate,
     modes,
     protocol::*,
@@ -779,8 +779,8 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey, right: bool) 
             roster_stat_if(player.assists.to_string(), 16.0, DIM, right, key.team_mode),
             roster_stat_if(player.deaths.to_string(), 16.0, DIM, right, !key.course),
             roster_stat_if(player.damage.to_string(), 16.0, DIM, right, !key.course),
-            roster_stat_if(player.gates.to_string(), 16.0, DIM, right, key.course),
-            roster_time(player.time.map_or("-".to_string(), format_time), 16.0, TEXT, key.course),
+            roster_stat_if(player.gates().to_string(), 16.0, DIM, right, key.course),
+            roster_time(player.time().map_or("-".to_string(), format_time), 16.0, TEXT, key.course),
         ],
     )
 }
@@ -791,11 +791,11 @@ fn roster_row(player: &PlayerInfo, swatch: Color, key: &RosterKey, right: bool) 
 fn ranking(mode: u8) -> impl Fn(&PlayerInfo, &PlayerInfo) -> std::cmp::Ordering {
     move |a, b| {
         if is_course_mode(mode) {
-            return match (a.time, b.time) {
+            return match (a.time(), b.time()) {
                 (Some(a), Some(b)) => a.total_cmp(&b),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => b.gates.cmp(&a.gates),
+                (None, None) => b.gates().cmp(&a.gates()),
             };
         }
         b.kills.cmp(&a.kills).then(b.assists.cmp(&a.assists)).then(a.deaths.cmp(&b.deaths))
@@ -3185,13 +3185,13 @@ struct TopBar {
 fn top_bar(session: &Session) -> TopBar {
     if is_course_mode(session.mode) {
         let me = session.roster.iter().find(|p| p.id == session.my_id);
-        let best = session.roster.iter().filter_map(|p| Some((p.time?, p))).min_by(|a, b| a.0.total_cmp(&b.0));
+        let best = session.roster.iter().filter_map(|p| Some((p.time()?, p))).min_by(|a, b| a.0.total_cmp(&b.0));
         let time = |time: Option<f32>| time.map_or("-".to_string(), format_time);
         if session.mode == MODE_RACE {
             let mut order: Vec<_> = session.roster.iter().collect();
             order.sort_by(|a, b| ranking(session.mode)(a, b));
             let place = order.iter().position(|p| p.id == session.my_id).map_or(0, |i| i + 1);
-            let finished = session.roster.iter().filter(|p| p.time.is_some()).count();
+            let finished = session.roster.iter().filter(|p| p.time().is_some()).count();
             let info = match best {
                 Some((time, p)) => format!("race   |   {} won in {}", p.name, format_time(time)),
                 None => "race   |   first through the finish wins".to_string(),
@@ -3209,7 +3209,7 @@ fn top_bar(session: &Session) -> TopBar {
         };
         return TopBar {
             labels: ["YOUR BEST".to_string(), "BEST".to_string()],
-            scores: [time(me.and_then(|p| p.time)), time(best.map(|(time, _)| time))],
+            scores: [time(me.and_then(|p| p.time())), time(best.map(|(time, _)| time))],
             colors: [ACCENT, TEXT],
             info,
         };
@@ -3235,7 +3235,7 @@ fn top_bar(session: &Session) -> TopBar {
     let mine = session.team_of(session.my_id) as usize;
     let mut info = format!("first to {}", session.score_limit);
     if session.mode == MODE_CONQUEST {
-        let held = |team: usize| session.flags.iter().filter(|f| f.owner == Some(team as u8)).count();
+        let held = |team: usize| session.flags().iter().filter(|f| f.owner == Some(team as u8)).count();
         info = match held(mine).cmp(&held(mine ^ 1)) {
             std::cmp::Ordering::Less => "tickets   |   fewer flags: your team is bleeding".to_string(),
             std::cmp::Ordering::Greater => "tickets   |   more flags: the enemy is bleeding".to_string(),
@@ -3243,7 +3243,7 @@ fn top_bar(session: &Session) -> TopBar {
         };
     }
     if session.mode == MODE_HILL {
-        info.push_str(match session.hill {
+        info.push_str(match session.hill() {
             HILL_EMPTY => "   |   hill: empty",
             HILL_CONTESTED => "   |   hill: CONTESTED",
             held if (held - HILL_HELD) as usize == mine => "   |   hill: YOURS",
@@ -3484,7 +3484,7 @@ fn update_hud(
                 };
                 (line, DIM)
             }
-            Hud::PauseTime => (me.and_then(|p| p.time).map_or("-".to_string(), format_time), TEXT),
+            Hud::PauseTime => (me.and_then(|p| p.time()).map_or("-".to_string(), format_time), TEXT),
             Hud::PauseGates => (format!("{}/{gates}", player.run.passed), TEXT),
         };
         set_text(&mut text, value);
@@ -3519,7 +3519,7 @@ fn update_hud_shapes(
         GOOD
     };
 
-    let dash_part = 1.0 - player.dash_cooldown / DASH_COOLDOWN;
+    let dash_part = 1.0 - player.dash_cooldown / player.moves.dash_cooldown.max(0.01);
     let armor_part = if player.alive { player.armor.max(0) as f32 / MAX_ARMOR as f32 } else { 0.0 };
 
     for (bar, mut node, mut background) in &mut bars {
@@ -3805,15 +3805,18 @@ fn update_overlays(
     let paused = !controls.captured && !show_scores;
     let dead = player.on_death_screen() && !paused && !show_scores;
     set_shown(&mut nodes.p3(), dead);
+    // What is on screen for a gun goes by what we have this life; the rest
+    // by whether the mode has guns at all.
     let armed = modes::info(session.mode).armed;
+    let in_hand = armed && !player.unarmed;
     for (mut node, armed_only) in &mut nodes.p4() {
-        set_shown(&mut node, !player.on_death_screen() && (armed || !armed_only));
+        set_shown(&mut node, !player.on_death_screen() && (in_hand || !armed_only));
     }
     for mut node in &mut nodes.p6() {
         set_shown(&mut node, armed);
     }
     for mut node in &mut nodes.p7() {
-        set_shown(&mut node, !armed);
+        set_shown(&mut node, is_course_mode(session.mode));
     }
     set_shown(&mut nodes.p0(), show_scores);
     set_shown(&mut nodes.p1(), paused);
