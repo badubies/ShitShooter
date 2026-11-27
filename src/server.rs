@@ -19,6 +19,7 @@ use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 
 use crate::{
     map::{self, Map},
+    modes,
     nav::NavGrid,
     canvas::Canvas,
     protocol::*,
@@ -558,7 +559,7 @@ impl Server {
         // A map that is not played in the mode asked for (`--map` checks
         // this): its first mode instead.
         if !map::plays(settings.map, settings.mode) {
-            settings.mode = (0..MODE_NAMES.len() as u8).find(|mode| map::plays(settings.map, *mode)).unwrap_or(MODE_FFA);
+            settings.mode = (0..modes::count()).find(|mode| map::plays(settings.map, *mode)).unwrap_or(MODE_FFA);
         }
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, settings.port))?;
         let now = SystemTime::now()
@@ -747,7 +748,7 @@ impl Server {
 
     /// The match is live and there is fighting in it: not on a course.
     fn armed(&self) -> bool {
-        self.live() && !is_course_mode(self.settings.mode)
+        self.live() && modes::info(self.settings.mode).armed
     }
 
     fn update_match(&mut self, dt: f32) {
@@ -1073,7 +1074,7 @@ impl Server {
             }
             ClientMsg::NextMode if is_leader && self.phase == Phase::Lobby => {
                 // The next mode the map is played in.
-                let modes = MODE_NAMES.len() as u8;
+                let modes = modes::count();
                 let next = (1..=modes)
                     .map(|step| (self.settings.mode + step) % modes)
                     .find(|mode| map::plays(self.settings.map, *mode))
@@ -1148,7 +1149,7 @@ impl Server {
                 }
             }
             ClientMsg::Run(event) => self.handle_run(id, event),
-            ClientMsg::Respawn if self.phase == Phase::Playing && early_respawn(self.settings.mode) => {
+            ClientMsg::Respawn if self.phase == Phase::Playing && modes::info(self.settings.mode).early_respawn => {
                 if let Some(player) = self.players.get_mut(&id)
                     && !player.alive
                     && RESPAWN_DELAY - player.respawn_in >= MIN_RESPAWN_DELAY
@@ -1648,7 +1649,7 @@ impl Server {
         self.phase = Phase::Playing;
         self.countdown = COUNTDOWN;
         // A time trial has no time limit: it goes on until the leader ends it.
-        self.time_left = if self.settings.mode == MODE_TRIAL { f32::INFINITY } else { self.settings.match_minutes * 60.0 };
+        self.time_left = if modes::info(self.settings.mode).timed { self.settings.match_minutes * 60.0 } else { f32::INFINITY };
         self.elapsed = 0.0;
         self.grenades.clear();
         self.smokes.clear();
@@ -1874,12 +1875,12 @@ impl Server {
     /// Plays `mode` from the next match on: on the map picked if it is played
     /// there, or else on the first map that it is.
     fn set_mode(&mut self, mode: u8) {
-        if mode as usize >= MODE_NAMES.len() {
+        if mode >= modes::count() {
             return;
         }
         self.settings.mode = mode;
         // Nobody races bots.
-        if is_course_mode(mode) {
+        if !modes::info(mode).bots {
             self.players.retain(|_, player| player.bot.is_none());
         }
         if !map::plays(self.settings.map, mode) {
@@ -1939,7 +1940,7 @@ impl Server {
     }
 
     fn add_bot(&mut self) {
-        if self.players.len() >= MAX_PLAYERS || is_course_mode(self.settings.mode) {
+        if self.players.len() >= MAX_PLAYERS || !modes::info(self.settings.mode).bots {
             return;
         }
         let id = self.next_bot_id;
@@ -2261,7 +2262,7 @@ impl Drop for ServerHandle {
 /// inside, or right up against, one whose box is centred at `body`.
 /// Where bots can walk: nowhere on a course, where there are none.
 fn nav_for(map: &Map, mode: u8) -> NavGrid {
-    if is_course_mode(mode) { NavGrid::empty() } else { NavGrid::new(map) }
+    if modes::info(mode).bots { NavGrid::new(map) } else { NavGrid::empty() }
 }
 
 fn crowds(body: Vec3, spawn: Vec3) -> bool {
@@ -3307,7 +3308,7 @@ mod tests {
     #[test]
     fn a_full_server_spawns_nobody_inside_anybody_else() {
         for map in 0..map::MAP_NAMES.len() as u8 {
-            for mode in (0..MODE_NAMES.len() as u8).filter(|mode| map::plays(map, *mode)) {
+            for mode in (0..modes::count()).filter(|mode| map::plays(map, *mode)) {
                 let mut server = Server::bind(ServerSettings { port: 0, mode, map, ..ServerSettings::default() }).unwrap();
                 // Nobody races bots: a course fills up with people.
                 while server.players.len() < MAX_PLAYERS {
@@ -3411,10 +3412,10 @@ mod tests {
     #[test]
     fn bots_pick_guns_for_the_map() {
         for id in 0..map::MAP_NAMES.len() as u8 {
-            for mode in 0..MODE_NAMES.len() as u8 {
+            for mode in 0..modes::count() {
                 if map::plays(id, mode) {
                     let range = typical_range(&Map::for_game(id, mode), mode);
-                    println!("{} / {}: {range:.1} m", map::MAP_NAMES[id as usize], MODE_NAMES[mode as usize]);
+                    println!("{} / {}: {range:.1} m", map::MAP_NAMES[id as usize], modes::name(mode));
                 }
             }
         }

@@ -31,6 +31,7 @@ use crate::{
     paint_editor::on_open_paint,
     player::{Controls, DAMAGE_ARC_TIME, DASH_COOLDOWN, LocalPlayer, Racing},
     remote::Spectate,
+    modes,
     protocol::*,
     settings::{Action, ActionInput, Settings, on_open_settings},
     weapons::{GRENADE, IRON_SIGHTS},
@@ -1042,10 +1043,10 @@ fn spawn_lobby(mut commands: Commands, session: Res<Session>, asset_server: Res<
     let share = session.share_address.clone();
     let server_label = session.server_label.clone();
     let pictures: Vec<_> = (0..crate::map::count()).map(|id| crate::browser::map_picture(&asset_server, id)).collect();
-    let modes = (0..MODE_NAMES.len() as u8).map(|mode| {
+    let modes = (0..modes::count()).map(|mode| {
         (
             MatchChoice::Mode(mode),
-            small_button(MODE_NAMES[mode as usize]),
+            small_button(modes::name(mode)),
             Pickable::default(),
             observe(send_choice),
         )
@@ -1618,7 +1619,7 @@ fn update_lobby(
             LobbyText::Caption => format!("{leader}'S LOBBY  ·  {leader} PICKS THE MATCH").to_uppercase(),
             LobbyText::MatchHint if session.is_leader() => "MATCH  ·  CLICK TO CHANGE".to_string(),
             LobbyText::MatchHint => "MATCH  ·  CLICK TO SEE THE CHOICES".to_string(),
-            LobbyText::Mode => MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?").to_uppercase(),
+            LobbyText::Mode => modes::name(session.mode).to_uppercase(),
             LobbyText::MatchLine if is_course_mode(session.mode) => {
                 format!("{map_name}  ·  air accel {}  ·  no guns, no bots", session.air_accel() as u16)
             }
@@ -1640,7 +1641,7 @@ fn update_lobby(
             LobbyText::FinalCaption => match &session.last_match {
                 Some(last) => {
                     let map = crate::map::name(last.map);
-                    let mode = MODE_NAMES.get(last.mode as usize).copied().unwrap_or("?");
+                    let mode = modes::name(last.mode);
                     format!("LAST MATCH  ·  {map}  ·  {mode}").to_uppercase()
                 }
                 None => String::new(),
@@ -1681,7 +1682,7 @@ fn update_lobby(
         set_shown(&mut node, final_scores.0);
     }
     for mut node in &mut shown.p6() {
-        set_shown(&mut node, !is_course_mode(session.mode));
+        set_shown(&mut node, modes::info(session.mode).armed);
     }
 }
 
@@ -3144,7 +3145,7 @@ fn on_resume(_: On<Activate>, mut controls: ResMut<Controls>) {
 /// The match's clock as shown: the time left, or for a time trial, which
 /// has no time limit, none.
 fn match_clock(session: &Session) -> String {
-    if session.mode == MODE_TRIAL { "∞".to_string() } else { format_clock(session.time_left) }
+    if modes::info(session.mode).timed { format_clock(session.time_left) } else { "∞".to_string() }
 }
 
 fn format_clock(seconds: f32) -> String {
@@ -3275,7 +3276,7 @@ fn update_hud(
     let top = top_bar(&session);
     let my_team = session.team_of(session.my_id);
     let map_name = crate::map::name(map.0.id);
-    let mode_name = MODE_NAMES.get(session.mode as usize).copied().unwrap_or("?");
+    let mode_name = modes::name(session.mode);
     let me = session.roster.iter().find(|p| p.id == session.my_id);
     // Where we stand: best score first, as on the scoreboard.
     let place = {
@@ -3400,7 +3401,7 @@ fn update_hud(
                 (if player.respawn_asked { "…".to_string() } else { format!("{left:.0}") }, TEXT)
             }
             Hud::RespawnHint => (
-                if early_respawn(session.mode) {
+                if modes::info(session.mode).early_respawn {
                     format!("{}: now", settings.key_name(Action::Jump).to_uppercase())
                 } else {
                     String::new()
@@ -3408,7 +3409,7 @@ fn update_hud(
                 TEXT,
             ),
             Hud::Tip => (TIPS[me.map_or(0, |p| p.deaths as usize) % TIPS.len()].to_string(), TEXT),
-            Hud::PauseClock if session.mode == MODE_TRIAL => ("No time limit".to_string(), DIM),
+            Hud::PauseClock if !modes::info(session.mode).timed => ("No time limit".to_string(), DIM),
             Hud::PauseClock => (format!("{} left", format_clock(session.time_left)), DIM),
             Hud::PauseInfo => (format!("{map_name}  ·  {mode_name}  ·  the match keeps going"), DIM),
             Hud::PausePlace => (place.clone(), TEXT),
@@ -3804,7 +3805,7 @@ fn update_overlays(
     let paused = !controls.captured && !show_scores;
     let dead = player.on_death_screen() && !paused && !show_scores;
     set_shown(&mut nodes.p3(), dead);
-    let armed = !is_course_mode(session.mode);
+    let armed = modes::info(session.mode).armed;
     for (mut node, armed_only) in &mut nodes.p4() {
         set_shown(&mut node, !player.on_death_screen() && (armed || !armed_only));
     }

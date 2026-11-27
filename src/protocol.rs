@@ -56,25 +56,8 @@ pub fn next_air_accel(current: u16) -> u16 {
     AIR_ACCEL_CHOICES[here.map_or(0, |i| (i + 1) % AIR_ACCEL_CHOICES.len())]
 }
 
-// Game modes. In the team modes players are split into two teams that cannot
-// hurt each other.
-pub const MODE_FFA: u8 = 0;
-/// Team deathmatch: every kill is a point for the team.
-pub const MODE_TEAMS: u8 = 1;
-/// King of the hill: a team scores a point for every second it alone holds
-/// the zone in the middle of the map.
-pub const MODE_HILL: u8 = 2;
-/// Conquest: each team has tickets. Every death costs one, and the team
-/// holding fewer of the map's flags bleeds them. Out of tickets, you lose.
-pub const MODE_CONQUEST: u8 = 3;
-/// Race: everybody sets off down the course together at "GO", with no guns
-/// and no bots, and the first through the finish wins. Once somebody is
-/// through, the rest have `RACE_FINISH_GRACE` seconds to follow.
-pub const MODE_RACE: u8 = 4;
-/// Time trial: the same course, each on your own clock, which starts as you
-/// leave the start; as many runs as you like, and the best time wins.
-pub const MODE_TRIAL: u8 = 5;
-pub const MODE_NAMES: [&str; 6] = ["Free for all", "Team deathmatch", "King of the hill", "Conquest", "Race", "Time trial"];
+// The game modes are in `modes`: their ids and what each is like.
+pub use crate::modes::{MODE_CONQUEST, MODE_FFA, MODE_HILL, MODE_RACE, MODE_TEAMS, MODE_TRIAL, is_course_mode, is_team_mode, score_limit};
 /// A race goes on for at most this many seconds after the first finish.
 pub const RACE_FINISH_GRACE: f32 = 30.0;
 /// Once everybody is through the finish, the race ends this many seconds later.
@@ -106,34 +89,6 @@ pub const HILL_EMPTY: u8 = 0;
 /// Held by team 0 or team 1: `HILL_HELD + team`.
 pub const HILL_HELD: u8 = 1;
 pub const HILL_CONTESTED: u8 = 3;
-
-/// A dead player may ask to come back before `RESPAWN_DELAY` is up, except
-/// in conquest, where every death costs the team the whole wait.
-pub fn early_respawn(mode: u8) -> bool {
-    mode != MODE_CONQUEST
-}
-
-pub fn is_team_mode(mode: u8) -> bool {
-    matches!(mode, MODE_TEAMS | MODE_HILL | MODE_CONQUEST)
-}
-
-/// The racing modes, run on a course with no weapons and no bots.
-pub fn is_course_mode(mode: u8) -> bool {
-    matches!(mode, MODE_RACE | MODE_TRIAL)
-}
-
-/// The score that wins a match: kills for one player, kills for a team, or
-/// seconds on the hill.
-pub fn score_limit(mode: u8, frag_limit: u32) -> u32 {
-    match mode {
-        MODE_TEAMS => frag_limit * 2,
-        MODE_HILL => HILL_SCORE_LIMIT,
-        MODE_CONQUEST => CONQUEST_TICKETS,
-        // Won on time, not on a score.
-        MODE_RACE | MODE_TRIAL => 0,
-        _ => frag_limit,
-    }
-}
 
 /// The kinds of grenade, indexes into `GRENADES`.
 pub type GrenadeKind = u8;

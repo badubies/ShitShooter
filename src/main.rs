@@ -20,6 +20,7 @@ mod gauntlet;
 mod hamlet;
 mod hub;
 mod map;
+mod modes;
 mod nav;
 mod props;
 mod protocol;
@@ -225,12 +226,9 @@ fn parse_args() -> Result<LaunchArgs, String> {
             }
             "--mode" => {
                 let name = value("name")?;
-                args.server.mode = ["ffa", "teams", "hill", "conquest", "race", "trial"]
-                    .iter()
-                    .position(|known| known.eq_ignore_ascii_case(&name))
-                    .ok_or_else(|| format!("unknown mode '{name}' (try: ffa, teams, hill, conquest, race, trial)"))? as u8;
+                args.server.mode = modes::by_key(&name).ok_or_else(|| format!("unknown mode '{name}' (try: {})", modes::keys()))?;
                 // The racing modes are only run on the course.
-                if protocol::is_course_mode(args.server.mode) && args.map.is_none() {
+                if modes::is_course_mode(args.server.mode) && args.map.is_none() {
                     args.server.map = map::GAUNTLET;
                 }
             }
@@ -255,14 +253,14 @@ fn parse_args() -> Result<LaunchArgs, String> {
         }
     }
     // A course on its own means a race.
-    if map::is_course(args.server.map) && args.server.mode == protocol::MODE_FFA {
-        args.server.mode = protocol::MODE_RACE;
+    if map::is_course(args.server.map) && args.server.mode == modes::MODE_FFA {
+        args.server.mode = modes::MODE_RACE;
     }
     if !map::plays(args.server.map, args.server.mode) {
         return Err(format!(
             "{} is not played in {}",
             map::name(args.server.map),
-            protocol::MODE_NAMES[args.server.mode as usize].to_lowercase()
+            modes::name(args.server.mode).to_lowercase()
         ));
     }
     Ok(args)

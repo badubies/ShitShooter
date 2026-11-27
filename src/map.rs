@@ -6,7 +6,8 @@ use bevy::math::{Quat, Vec2, Vec3};
 
 use crate::{
     course::Course,
-    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, MODE_FFA, MODE_TEAMS, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE, is_course_mode},
+    modes::{self, Offers},
+    protocol::{FLASH_BLIND, FLASH_RANGE, MODE_CONQUEST, SMOKE_RADIUS, SMOKE_RISE, TEAM_SIZE},
     props::{FLAGPOLE, PROPS},
     ramp::{Ramp, WALKABLE},
     terrain::Terrain,
@@ -64,21 +65,35 @@ pub fn is_course(id: u8) -> bool {
     id == GAUNTLET
 }
 
-/// True if map `id` can be played in `mode`. Hamlet is built for close
-/// fights only, and Surf for riding ramps: neither has flags for conquest
-/// nor a hill. The racing modes are run on the courses, and the courses
-/// are for nothing else.
-pub fn plays(id: u8, mode: u8) -> bool {
-    if is_course_mode(mode) || is_course(id) {
-        return is_course_mode(mode) && is_course(id);
+/// What each built-in map has to play on, in the order of `MAP_NAMES`.
+/// Hamlet is built for close fights only, and Surf for riding ramps: neither
+/// has flags for conquest nor a hill.
+const BUILT_IN_OFFERS: [Offers; MAP_NAMES.len()] = {
+    let all = Offers { hill: true, flags: true, course: false };
+    let fights = Offers { hill: false, flags: false, course: false };
+    let course = Offers { hill: false, flags: false, course: true };
+    [all, all, all, fights, fights, course]
+};
+
+/// What map `id` has to play on. Maps made in Blender have no flags nor
+/// hill: they are a course or somewhere to fight.
+pub fn offers(id: u8) -> Offers {
+    match BUILT_IN_OFFERS.get(id as usize) {
+        Some(offers) => *offers,
+        None => Offers { course: is_course(id), ..Offers::default() },
     }
-    // Maps made in Blender that are not courses have no flags nor hill.
-    !(matches!(id, 3 | 4) || id >= BUILT_IN) || mode == MODE_FFA || mode == MODE_TEAMS
+}
+
+/// True if map `id` can be played in `mode`: it has what the mode needs.
+/// The racing modes are run on the courses, and the courses are for nothing
+/// else.
+pub fn plays(id: u8, mode: u8) -> bool {
+    mode < modes::count() && offers(id).has(modes::info(mode).needs)
 }
 
 /// The most maps any one mode is played on.
 pub fn most_maps_in_a_mode() -> usize {
-    (0..crate::protocol::MODE_NAMES.len() as u8)
+    (0..modes::count())
         .map(|mode| (0..MAP_NAMES.len() as u8).filter(|id| plays(*id, mode)).count())
         .max()
         .unwrap_or(1)

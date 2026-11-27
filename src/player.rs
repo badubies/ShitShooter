@@ -676,7 +676,7 @@ fn handle_net(
                     yaw: *yaw,
                     frame_yaw: *yaw,
                     alive: true,
-                    unarmed: is_course_mode(session.mode),
+                    unarmed: !crate::modes::info(session.mode).armed,
                     racing,
                     // Coming into a race already under way: on its clock.
                     run: Run {
@@ -741,7 +741,7 @@ fn handle_net(
 /// Puts us back in now rather than at the end of `RESPAWN_DELAY`, if we have
 /// been dead long enough (see `MIN_RESPAWN_DELAY`) and the mode allows it.
 pub fn ask_respawn(player: &mut LocalPlayer, connection: &mut Connection, mode: u8) {
-    if early_respawn(mode)
+    if crate::modes::info(mode).early_respawn
         && !player.alive
         && player.killed_by.is_some()
         && !player.respawn_asked

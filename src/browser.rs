@@ -20,7 +20,8 @@ use crate::{
         title_bar,
     },
     net::{self, MenuStatus},
-    protocol::{DEFAULT_PORT, MAX_PLAYERS, MODE_NAMES, MODE_RACE, MODE_TRIAL, protocol_id},
+    modes,
+    protocol::{DEFAULT_PORT, MAX_PLAYERS, protocol_id},
     settings::Settings,
     ui::{
         ACCENT, BUTTON, ButtonKind, DIM, GOOD, PANEL, PANEL_EDGE, TEXT, field_sized, heading, label,
@@ -197,10 +198,6 @@ pub(crate) fn map_picture(asset_server: &AssetServer, id: u8) -> Option<Handle<I
     Some(asset_server.load(format!("ui/maps/{}.jpg", name.to_lowercase())))
 }
 
-fn mode_name(mode: u8) -> &'static str {
-    MODE_NAMES.get(mode as usize).copied().unwrap_or("?")
-}
-
 /// A lobby's map: a built-in one, or one made in Blender (whose name we may
 /// not know until we join).
 fn map_name(map: u8) -> &'static str {
@@ -254,23 +251,18 @@ pub fn online_page(prefs: &MenuPrefs) -> impl Bundle {
                     column_gap: px(8),
                     ..default()
                 },
-                children![
-                    mode_filter(None, "All modes"),
-                    mode_filter(Some(0), mode_name(0)),
-                    mode_filter(Some(1), mode_name(1)),
-                    mode_filter(Some(2), mode_name(2)),
-                    mode_filter(Some(3), mode_name(3)),
-                    mode_filter(Some(MODE_RACE), mode_name(MODE_RACE)),
-                    mode_filter(Some(MODE_TRIAL), mode_name(MODE_TRIAL)),
-                    (
+                Children::spawn((
+                    Spawn(mode_filter(None, "All modes")),
+                    SpawnIter((0..modes::count()).map(|mode| mode_filter(Some(mode), modes::name(mode)))),
+                    Spawn((
                         Node {
                             flex_grow: 1.0,
                             justify_content: JustifyContent::FlexEnd,
                             ..default()
                         },
                         children![(label("", 14.0, DIM), OnlineSummary)],
-                    ),
-                ],
+                    )),
+                )),
             ),
             (
                 Node {
@@ -381,7 +373,7 @@ fn lobby_row(lobby: &LobbyInfo, picked: bool, picture: Option<Handle<Image>>) ->
                 children![
                     (weighted(name, 18.0, 700, TEXT), Pickable::IGNORE),
                     (
-                        label(format!("{}  ·  {}", mode_name(lobby.mode), map_name(lobby.map)), 14.0, DIM),
+                        label(format!("{}  ·  {}", modes::name(lobby.mode), map_name(lobby.map)), 14.0, DIM),
                         Pickable::IGNORE,
                     ),
                 ],
@@ -651,7 +643,7 @@ fn lobby_detail(lobby: &LobbyInfo, server: SocketAddr, prefs: &MenuPrefs, pictur
                         },
                         children![
                             heading(&format!("{host}'s lobby"), 24.0, TEXT),
-                            label(format!("{} on {}", mode_name(lobby.mode), map_name(lobby.map)), 15.0, DIM),
+                            label(format!("{} on {}", modes::name(lobby.mode), map_name(lobby.map)), 15.0, DIM),
                         ],
                     ),
                     (
