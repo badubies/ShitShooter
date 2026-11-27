@@ -121,6 +121,9 @@ jobs:
       # Bevy's sound, gamepads and windows (X11 and Wayland).
       - name: Install build dependencies
         run: |
+          # The runner image ships with Microsoft's apt repo, which we don't
+          # need; when it's down (403s), apt-get update fails the whole build.
+          sudo grep -rlZ packages.microsoft.com /etc/apt/sources.list.d/ | sudo xargs -0r rm -f
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
