@@ -9,10 +9,13 @@ the map, and add ramps and the markers a course needs.
 
 How a map is read (see blender/README.md for more):
 
-- Every visible mesh is solid. Each loose part of a mesh is one solid
-  shape: its convex hull (shrink-wrapped, every dent filled). Build curved
-  or bent ramps from several pieces. Faces steeper than about 45 degrees
-  are surfed; flatter ones are stood on.
+- Every visible mesh is solid, and so is every curve with a bevel or an
+  extrusion (no need to convert it). Each loose part is solid as it looks:
+  a curve's tube is cut into its sections along the path, one solid each
+  (if its profile is convex); a convex part (a box, a wedge) is one solid;
+  anything else is built from its faces, each a thin slab under the face.
+  Faces steeper than about 45 degrees are surfed; flatter ones are stood
+  on.
 - A mesh's material gives its colour, and, if its name has a texture's name
   in it (panels, slab, concrete, paint, plaster, brick, cinder, stone,
   rock, wood, boards, metal, corrugated, rust, asphalt, ground), that
@@ -36,7 +39,7 @@ How a map is read (see blender/README.md for more):
 bl_info = {
     "name": "ShitShooter map tools",
     "author": "ShitShooter",
-    "version": (1, 0, 0),
+    "version": (1, 2, 0),
     "blender": (4, 2, 0),
     "location": "File > Export > ShitShooter map; 3D View > Sidebar > ShitShooter",
     "description": "Build maps for ShitShooter and export them for the game",
@@ -61,6 +64,8 @@ TEXTURES = (
 )
 # A part whose volume is less than this share of its hull's is not convex.
 CONVEX = 0.98
+# A part that is not convex is built of slabs this thick, under its faces.
+SLAB = 0.5
 
 
 # ---------------------------------------------------------------- reading the scene
@@ -135,57 +140,210 @@ def part_volume(verts):
 
 def hull(points):
     """The convex hull of `points`: its corners, its faces (indices round
-    each, coplanar triangles merged), and its volume."""
+    each, coplanar triangles merged), and its volume; None if the points are
+    flat (or a line, or a point), so have no hull."""
     bm = bmesh.new()
+    seen = set()
     for p in points:
-        bm.verts.new(p)
-    result = bmesh.ops.convex_hull(bm, input=bm.verts[:], use_existing_faces=False)
-    bmesh.ops.delete(bm, geom=result["geom_interior"] + result["geom_unused"], context="VERTS")
+        # A point twice (a curve's caps meet its sides there) is once.
+        key = (round(p.x, 4), round(p.y, 4), round(p.z, 4))
+        if key not in seen:
+            seen.add(key)
+            bm.verts.new(p)
+    if len(bm.verts) < 4:
+        bm.free()
+        return None
+    try:
+        result = bmesh.ops.convex_hull(bm, input=bm.verts[:], use_existing_faces=False)
+    except (RuntimeError, ValueError):
+        bm.free()
+        return None
+    on_hull = {e for e in result["geom"] if isinstance(e, bmesh.types.BMVert)}
+    inside = [v for v in bm.verts if v not in on_hull]
+    if inside:
+        bmesh.ops.delete(bm, geom=inside, context="VERTS")
     bmesh.ops.dissolve_limit(bm, angle_limit=math.radians(0.5), verts=bm.verts[:], edges=bm.edges[:])
     bm.verts.index_update()
     corners = [v.co.copy() for v in bm.verts]
     faces = [[v.index for v in f.verts] for f in bm.faces]
-    volume = bm.calc_volume() if bm.faces else 0.0
+    volume = abs(bm.calc_volume()) if bm.faces else 0.0
     bm.free()
-    return corners, faces, abs(volume)
+    if volume < 1e-4 or len(faces) < 4:
+        return None
+    return corners, faces, volume
+
+
+def rings_of(part):
+    """If a loose part is a tube swept along a path (what a curve with a
+    bevel, or one converted to a mesh, is): its rings of corners in order
+    along it, each in the same order round. None if it is not one.
+
+    Blender lays such a mesh out ring by ring, each ring its profile's
+    corners in turn, so its corners' numbers run on from ring to ring:
+    every corner joined to the next round its ring and to the same one in
+    the next ring."""
+    verts = sorted(part, key=lambda v: v.index)
+    first = verts[0].index
+    if [v.index - first for v in verts] != list(range(len(verts))):
+        return None
+    joined = lambda a, b: any(e.other_vert(a) is b for e in a.link_edges)
+    # The first corner is joined to the next round, maybe the last round,
+    # and the first of the next ring: the highest of those is the ring size.
+    k = max((e.other_vert(verts[0]).index - first for e in verts[0].link_edges), default=0)
+    if k < 3 or len(verts) % k or len(verts) // k < 2:
+        return None
+    rings = [verts[r * k:(r + 1) * k] for r in range(len(verts) // k)]
+    for r, ring in enumerate(rings):
+        for j in range(k - 1):
+            if not joined(ring[j], ring[j + 1]):
+                return None
+        if r + 1 < len(rings) and not all(joined(a, b) for a, b in zip(ring, rings[r + 1])):
+            return None
+    return [[v.co.copy() for v in ring] for ring in rings]
+
+
+def band_volume(ring_a, ring_b):
+    """The volume between two rings, closed at both: a tube's section as it
+    is, to tell if it is convex."""
+    bm = bmesh.new()
+    a = [bm.verts.new(p) for p in ring_a]
+    b = [bm.verts.new(p) for p in ring_b]
+    k = len(a)
+    try:
+        for j in range(k):
+            bm.faces.new((a[j], a[(j + 1) % k], b[(j + 1) % k], b[j]))
+        bm.faces.new(a)
+        bm.faces.new(list(reversed(b)))
+    except ValueError:
+        bm.free()
+        return 0.0
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    volume = abs(bm.calc_volume())
+    bm.free()
+    return volume
+
+
+def sections(rings):
+    """A tube cut into one solid per section, between each ring and the
+    next; None if any section is not convex (a bent profile, a U)."""
+    out = []
+    for ring_a, ring_b in zip(rings, rings[1:]):
+        made = hull(ring_a + ring_b)
+        if made is None or band_volume(ring_a, ring_b) < made[2] * CONVEX:
+            return None
+        out.append(made)
+    return out
+
+
+def is_cap(part, rings):
+    """Is a loose part a tube's cap: a flat copy of one of its end rings?"""
+    for end in (rings[0], rings[-1]):
+        if len(part) == len(end) and all(min((v.co - p).length for p in end) < 1e-4 for v in part):
+            return True
+    return False
+
+
+def solid_of(corners, faces, look, visible):
+    color, texture = look
+    solid = {"corners": [game_point(c) for c in corners], "faces": faces, "color": color}
+    if texture:
+        solid["texture"] = texture
+    if not visible:
+        solid["visible"] = False
+    return solid
+
+
+# Objects that are, or are made into, meshes: a curve with a bevel or an
+# extrusion makes one, and so does text.
+SHAPES = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
 
 
 def solids(context, problems):
-    """Every visible mesh's loose parts, as the game's solids."""
+    """Every visible shape's loose parts, as the game's solids. A tube swept
+    along a path (a curve with a bevel) is cut into its sections, each one
+    solid. A convex part is one solid, the part itself. Any other (bent,
+    open, or flat) is a shell: each of its faces is a thin slab under the
+    face, so it collides just as it looks."""
     out = []
     depsgraph = context.evaluated_depsgraph_get()
     for obj in context.scene.objects:
-        if obj.type != "MESH" or not obj.visible_get():
+        if obj.type not in SHAPES or not obj.visible_get():
             continue
         evaluated = obj.evaluated_get(depsgraph)
-        mesh = evaluated.to_mesh()
+        try:
+            mesh = evaluated.to_mesh()
+        except RuntimeError:
+            continue
+        if mesh is None or not mesh.vertices:
+            evaluated.to_mesh_clear()
+            continue
         bm = bmesh.new()
         bm.from_mesh(mesh)
         bm.transform(obj.matrix_world)
         bm.verts.ensure_lookup_table()
         bm.verts.index_update()
         materials = [slot.material for slot in obj.material_slots]
+        looks = [material_look(m) for m in materials] or [material_look(None)]
         visible = not base_name(obj).startswith("clip")
+        # Tubes swept along a path (curves with a bevel): one solid for each
+        # section between one ring and the next, and their caps left out.
+        parts = loose_parts(bm)
+        done, cut = set(), 0
+        for part in parts:
+            rings = rings_of(part)
+            pieces = sections(rings) if rings else None
+            if not pieces:
+                continue
+            faces = [f for v in part for f in v.link_faces]
+            index = max((f.material_index for f in faces), key=[f.material_index for f in faces].count, default=0)
+            for corners, shape, _ in pieces:
+                out.append(solid_of(corners, shape, looks[min(index, len(looks) - 1)], visible))
+            done.update(part)
+            done.update(v for other in parts if is_cap(other, rings) for v in other)
+            cut += 1
+        if cut:
+            problems.append(f"{obj.name}: cut into sections along its path ({cut} tube(s))")
+        if done:
+            bmesh.ops.delete(bm, geom=list(done), context="VERTS")
+        if not bm.verts:
+            bm.free()
+            evaluated.to_mesh_clear()
+            continue
+        # Two corners in one place (where a curve's caps meet its sides) are one.
+        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=1e-4)
+        bm.verts.ensure_lookup_table()
+        bm.verts.index_update()
+        shells = 0
         for n, part in enumerate(loose_parts(bm)):
             label = obj.name if n == 0 else f"{obj.name} (part {n + 1})"
-            if len(part) < 4:
-                problems.append(f"{label}: too few corners to be solid, left out")
+            faces = list({f for v in part for f in v.link_faces})
+            # Outward faces, where the part is closed: to tell if it is convex
+            # by its volume, and so a shell's slabs go inward.
+            if faces:
+                bmesh.ops.recalc_face_normals(bm, faces=faces)
+            made = hull([v.co for v in part])
+            if made and part_volume(part) >= made[2] * CONVEX:
+                index = max((f.material_index for f in faces), key=[f.material_index for f in faces].count, default=0)
+                out.append(solid_of(made[0], made[1], looks[min(index, len(looks) - 1)], visible))
                 continue
-            corners, faces, volume = hull([v.co for v in part])
-            if volume < 1e-4 or len(faces) < 4:
-                problems.append(f"{label}: flat, so not solid (give it thickness), left out")
+            if not faces:
+                problems.append(f"{label}: no faces, left out")
                 continue
-            if part_volume(part) < volume * CONVEX:
-                problems.append(f"{label}: not convex, so it collides as its hull (every dent filled); split it into convex pieces")
-            face_mats = [f.material_index for v in part for f in v.link_faces]
-            index = max(set(face_mats), key=face_mats.count) if face_mats else 0
-            color, texture = material_look(materials[index] if index < len(materials) else None)
-            solid = {"corners": [game_point(c) for c in corners], "faces": faces, "color": color}
-            if texture:
-                solid["texture"] = texture
-            if not visible:
-                solid["visible"] = False
-            out.append(solid)
+            # Each slab's inner corners go in along its corners' averaged
+            # normals, which neighbouring slabs share: so they meet flush,
+            # and none pokes out past the face beside it at a sharp edge.
+            bm.normal_update()
+            inner = {v: v.co - v.normal * SLAB for v in part}
+            for face in faces:
+                if face.calc_area() < 1e-6:
+                    continue
+                top = [v.co.copy() for v in face.verts]
+                slab = hull(top + [inner[v] for v in face.verts])
+                if slab:
+                    out.append(solid_of(slab[0], slab[1], looks[min(face.material_index, len(looks) - 1)], visible))
+            shells += 1
+        if shells:
+            problems.append(f"{obj.name}: {shells} part(s) not convex, so built from their faces (fine for curved ramps; a convex piece is lighter)")
         bm.free()
         evaluated.to_mesh_clear()
     return out

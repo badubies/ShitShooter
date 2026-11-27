@@ -27,9 +27,13 @@ Blender's metres are the game's metres, and Z is up. Players are about 1.8 m tal
 
 ### Solids
 
-- Every **visible mesh** is solid. Hidden objects aren't exported.
-- Each **loose part** of a mesh is one solid shape: its **convex hull**. Think of shrink-wrap: every dent and hole gets filled. A wedge, a box or a prism is fine as it is. Build anything bent (an L, a curved ramp, a half-pipe) from several pieces, either as separate objects or as loose parts of one mesh. An Array modifier with **Merge** off works well. **Check map** names every piece that isn't convex.
-- Modifiers are applied when exporting. Flat pieces (a plane with no thickness) are left out.
+- Every **visible mesh** is solid, and so is every **curve with a bevel or an extrusion** (a Bezier path with a bevel object, filled caps or not). You don't need to convert curves to meshes. Hidden objects aren't exported.
+- Each loose part collides just as it looks:
+  - A **curve with a bevel** (or a curve converted to a mesh and not edited since) is cut into its sections along the path, one solid each, as long as its bevel profile is **convex** (a triangle, a trapezoid). The curve's resolution sets how many sections there are: more is smoother, fewer is lighter.
+  - A **convex** part (a box, a wedge, a straight prism) is one solid.
+  - Anything else (a U-shaped profile, a sculpted or hand-modelled curved shape, an open surface, a plane) is built from its faces: each face becomes a thin solid slab just under it. That works for any shape but makes many more pieces. **Check map** says how each object was built.
+- Built from faces, a part's faces should point outward (Mesh → Normals → Recalculate Outside); the exporter does this itself for closed parts.
+- Modifiers are applied when exporting.
 - A face steeper than about **45°** is surfed: you slide on it and strafe against it. A flatter one is ground you stand on. Surf ramps usually have faces of 50° to 65°.
 - An object whose name starts with **`clip`** is solid but invisible. Use it for invisible walls.
 

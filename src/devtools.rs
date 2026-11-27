@@ -1010,7 +1010,10 @@ fn selftest_course(
     }
     if test.reached(2, 0.6) {
         println!("[selftest] off the start: run {:?}", player.run.clock);
-        through(player, &course.gates[0].0, 6.0, 30.0);
+        // Through the first checkpoint, if the course has any.
+        if let Some((gate, _)) = course.gates.first() {
+            through(player, gate, 6.0, 30.0);
+        }
     }
     if test.reached(3, 0.9) {
         test.capture("course_checkpoint.png");
