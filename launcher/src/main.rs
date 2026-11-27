@@ -687,6 +687,7 @@ fn sign_app(exe: &Path) {
 }
 
 /// Finds this launcher's Terminal window: the one-tab window on our tty.
+#[cfg(target_os = "macos")]
 const FIND_TERMINAL_WINDOW: &str = r#"on run argv
     tell application "Terminal"
         repeat with w in windows
@@ -698,6 +699,7 @@ end run"#;
 
 /// Closes Terminal window `item 1 of argv` once nothing runs in it any more,
 /// giving up after 10 seconds.
+#[cfg(target_os = "macos")]
 const CLOSE_TERMINAL_WINDOW: &str = r#"on run argv
     set windowId to (item 1 of argv) as integer
     tell application "Terminal"
@@ -719,12 +721,12 @@ end run"#;
 /// as a Windows console closes by itself. Terminal keeps it open by default,
 /// showing "[Process completed]". The window closes only once nothing runs in
 /// it: started from a shell someone typed into, it stays, since the shell does.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn close_terminal_window() {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     let in_terminal = std::env::var_os("TERM_PROGRAM").is_some_and(|program| program == "Apple_Terminal");
-    if !cfg!(target_os = "macos") || !in_terminal {
+    if !in_terminal {
         return;
     }
     let output = |command: &mut Command| {
@@ -748,7 +750,7 @@ fn close_terminal_window() {
         .spawn();
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 fn close_terminal_window() {}
 
 /// Deletes the previous launcher left behind by a self-update. It may still be

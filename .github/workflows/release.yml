@@ -67,7 +67,7 @@ jobs:
           Set-Content out\launcher-version.txt $launcher -NoNewline
           Get-ChildItem out
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: out/
@@ -104,7 +104,7 @@ jobs:
           ditto -c -k --keepParent app/ShitShooter.app out/ShitShooterLauncher-macos-arm64.zip
           ls -l out
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: out/
@@ -161,7 +161,7 @@ jobs:
           tar -czf out/ShitShooterLauncher-linux-x64.tar.gz -C target/release ShitShooterLauncher
           ls -l out
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: out/
@@ -173,7 +173,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: out
           merge-multiple: true
