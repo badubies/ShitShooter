@@ -5,9 +5,15 @@ Build a map in Blender, export it into the game's `maps` folder, and pick it in 
 ## Setup (once)
 
 1. Blender 4.2 or newer: **Edit → Preferences → Add-ons**, the menu at the top right → **Install from Disk…**, and pick [`shitshooter_maps.py`](shitshooter_maps.py). Tick **ShitShooter map tools**.
-2. Make a `maps` folder next to the game (`shitshooter.exe`). If you installed with the launcher, that's `%LOCALAPPDATA%\ShitShooter\maps` on Windows, `~/Library/Application Support/ShitShooter/maps` on a Mac and `~/.local/share/ShitShooter/maps` on Linux. When running from the source with `cargo run`, use the `maps` folder at the top of the repository.
+2. Make a `maps` folder next to the game (`shitshooter.exe`). This is where your own maps go. If you installed with the launcher, that's `%LOCALAPPDATA%\ShitShooter\maps` on Windows, `~/Library/Application Support/ShitShooter/maps` on a Mac and `~/.local/share/ShitShooter/maps` on Linux. When running from the source with `cargo run`, use the `maps` folder at the top of the repository. Git ignores it, so work in progress never gets committed by accident.
 
-To start from an example, open [`example_surf.blend`](example_surf.blend). It has a start deck, three surf ramps, a checkpoint, a finish deck and a kill zone. [`example_surf_map.py`](example_surf_map.py) is the script that builds it.
+To start from an example, open [`example_surf.blend`](example_surf.blend). It has a start deck, three surf ramps, a checkpoint, a finish deck and a kill zone. Its export, [`example surf.json`](example%20surf.json), plays once you copy it into your `maps` folder. [`example_surf_map.py`](example_surf_map.py) is the script that builds both.
+
+## Shipping a map with the game
+
+When a map is ready for everyone, put its `.json` in [`assets/maps/`](../assets/maps) in the repository and push. Every release carries it: the launcher installs it for every player like any other asset, and a lobby server installed with `deploy/install.sh` fetches it when it updates. Every player can then host it, and it's offered in the lobby server's lobbies. Delete it from `assets/maps/` and it goes away again with the next release.
+
+A map in your own `maps` folder wins over a shipped one with the same name. So to rework a shipped map, export it under the same name into your own folder, try it, and copy it to `assets/maps/` when it's done.
 
 ## The loop
 
@@ -17,7 +23,7 @@ To start from an example, open [`example_surf.blend`](example_surf.blend). It ha
 4. In the game, host a lobby, pick the map (and **Race** or **Time trial** for a course), and start.
 5. To change it, edit in Blender, click **Export again**, then end the match in the game and start a new one. The host reads the file again at the start of every match and sends the new version to everyone. A new map file only shows up in the picker the next time you host.
 
-A lobby server (`--hub`) or a dedicated one (`--server`) offers the maps in the `maps` folder next to it, and sends them to the players the same way.
+A lobby server (`--hub`) or a dedicated one (`--server`) offers the maps in the `maps` and `assets/maps` folders next to it, and sends them to the players the same way.
 
 If a map file can't be played (it's broken, or made by an older version of the exporter), it's left out of the picker, and the reason is in the game's log.
 

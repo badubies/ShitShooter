@@ -3,7 +3,8 @@ start from: a start deck, three ramps to transfer between (off the left
 face of one onto the right face of the next, and back), a checkpoint, a
 finish deck and a kill zone under it all.
 
-Saves blender/example_surf.blend and exports maps/example surf.json.
+Saves blender/example_surf.blend and exports blender/example surf.json
+(copy it into your maps folder to play it).
 
 Run with:
 blender --background --factory-startup --python blender/example_surf_map.py -- <repo root>
@@ -107,9 +108,9 @@ if scene.world is None:
     scene.world = bpy.data.worlds.new("World")
 scene.world.color = lin((0.55, 0.68, 0.88))
 
-ok, lines = shitshooter_maps.export(bpy.context, os.path.join(ROOT, "maps", "example surf.json"))
+ok, lines = shitshooter_maps.export(bpy.context, os.path.join(ROOT, "blender", "example surf.json"))
 print("\n".join(lines))
-scene["shitshooter_path"] = os.path.join(ROOT, "maps", "example surf.json")
+scene["shitshooter_path"] = os.path.join(ROOT, "blender", "example surf.json")
 bpy.ops.wm.save_as_mainfile(filepath=os.path.join(ROOT, "blender", "example_surf.blend"))
 if not ok:
     sys.exit(1)

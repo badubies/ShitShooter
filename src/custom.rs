@@ -1,7 +1,8 @@
 //! Maps made in Blender. The exporter in `blender/shitshooter_maps.py`
 //! writes a map as a JSON file; every `*.json` in a `maps` folder (beside
-//! the game, or where it is started from) is a map, listed after the
-//! built-in ones. The host sends the one being played to everybody who
+//! the game, or where it is started from: your own) or in `assets/maps`
+//! (shipped with every release) is a map, listed after the built-in ones.
+//! One of your own wins over a shipped one of the same name. The host sends the one being played to everybody who
 //! joins, so only the host needs the file, and reads it again at the start
 //! of each match: export again from Blender, start a match, and you are
 //! riding the new version.
@@ -229,19 +230,26 @@ pub struct Entry {
 /// `i`th. Shared by the hosted server's thread and the game.
 static MAPS: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
 
-/// The folders maps are read from: `maps` beside the game, and `maps` where
-/// it was started from.
+/// The folders maps are read from, in order (the first map of a name wins):
+/// your own, `maps` beside the game and where it was started from; then the
+/// ones shipped with the release, `assets/maps` in both.
 pub fn folders() -> Vec<PathBuf> {
-    let mut folders = Vec::new();
+    let mut bases = Vec::new();
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        folders.push(dir.join("maps"));
+        bases.push(dir.to_path_buf());
     }
     if let Ok(dir) = std::env::current_dir() {
-        let here = dir.join("maps");
-        if !folders.iter().any(|f| same(f, &here)) {
-            folders.push(here);
+        bases.push(dir);
+    }
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for sub in ["maps", "assets/maps"] {
+        for base in &bases {
+            let folder = base.join(sub);
+            if !folders.iter().any(|f| same(f, &folder)) {
+                folders.push(folder);
+            }
         }
     }
     folders
@@ -423,7 +431,7 @@ mod tests {
     /// The example made by `blender/example_surf_map.py` is a course.
     #[test]
     fn the_example_map_is_a_course() {
-        let bytes = std::fs::read("maps/example surf.json").expect("the example map");
+        let bytes = std::fs::read("blender/example surf.json").expect("the example map");
         let map = build(9, &parse(&bytes).unwrap());
         let course = map.course.as_ref().unwrap();
         assert_eq!(course.gates.len(), 1);

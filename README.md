@@ -14,7 +14,7 @@ The game is installed to `%LOCALAPPDATA%\ShitShooter` on Windows, `~/Library/App
 
 ## Making maps
 
-Maps can be built in Blender and exported into a `maps` folder next to the game. They show up in the lobby's map picker, and whoever hosts sends theirs to everyone who joins. See [blender/README.md](blender/README.md).
+Maps can be built in Blender and exported into a `maps` folder next to the game. They show up in the lobby's map picker, and whoever hosts sends theirs to everyone who joins. Maps in [assets/maps/](assets/maps) ship with every release, to every player and to lobby servers. See [blender/README.md](blender/README.md).
 
 ## Running a lobby server (Raspberry Pi)
 
@@ -26,7 +26,7 @@ A Raspberry Pi 3, 4 or 5 is plenty. The server does no graphics, and each lobby 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/badubies/ShitShooter/main/deploy/install.sh | sudo sh
    ```
-   This installs the server to `/opt/shitshooter` as a service that starts on boot. Every 5 minutes it checks for a new release and installs it, but never while people are playing on it. Clients and the server must run the same game version: when they don't, the game says the server is updating.
+   This installs the server to `/opt/shitshooter` as a service that starts on boot. Every 5 minutes it checks for a new release and installs it, but never while people are playing on it. Each update also fetches the maps shipped with the release (`assets/maps`), which its lobbies offer. Clients and the server must run the same game version: when they don't, the game says the server is updating. Installed before maps were shipped? Run the command again once: the updater it wrote doesn't fetch maps.
 2. On your router, give the Pi a fixed LAN IP, and forward **UDP ports 7777–7785** to it. The server listens on 7777, and the lobbies use the ports after it.
 3. Players need an address that reaches the Pi: your public IP, or better a free dynamic DNS name (e.g. [DuckDNS](https://www.duckdns.org)), since home IPs change. If your ISP uses CGNAT, port forwarding won't work from outside. In that case run the server on a cheap Linux VPS instead (the same script works there).
 4. To put the address in everyone's game, set the repository variable `SHITSHOOTER_LOBBY_SERVER` (Settings → Secrets and variables → Actions → Variables), e.g. `mypi.duckdns.org`. Every build after that has it filled in. Players can also type it in themselves.

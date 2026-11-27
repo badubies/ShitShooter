@@ -23,7 +23,13 @@ nothing about fun, were dropped with it.
   the file; it reads it again at every match start, so export, start a
   match, and you ride the new version. Protocol 23.
 - [x] `blender/example_surf_map.py` builds `blender/example_surf.blend` and
-  exports `maps/example surf.json`; `build-release.ps1` ships `maps/`.
+  exports `blender/example surf.json`.
+- [x] Shipped maps: `assets/maps/*.json` go out with every release like any
+  asset (the launcher installs them), and the lobby server's updater
+  (`deploy/install.sh`) fetches them by hash from the `assets` release into
+  `/opt/shitshooter/assets/maps`. The game reads your own `maps` folders
+  first, then `assets/maps`, so your copy of a map wins. `/maps/` is
+  git-ignored: it is the working folder.
 
 ## Round 5: a surf course, and racing on it
 

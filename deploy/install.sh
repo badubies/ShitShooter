@@ -62,6 +62,30 @@ if [ -x "$DIR/shitshooter" ] && systemctl is-active --quiet shitshooter; then
         exit 0
     fi
 fi
+# The maps shipped with the release (the files under assets/maps in its asset
+# list), which the lobbies offer, into $DIR/assets/maps: each fetched by its
+# hash from the "assets" release, unless the one here already matches it. All
+# of them or none: a failure leaves the old ones, and the old server, in place.
+maps="$DIR/assets/maps"
+rm -rf "$maps.new"
+mkdir -p "$maps.new"
+curl -fsSL -o "$maps.new.list" "https://github.com/$REPO/releases/download/$latest/assets.txt"
+while IFS=' ' read -r hash size path || [ -n "$hash" ]; do
+    case "$path" in maps/*.json) ;; *) continue ;; esac
+    name=${path#maps/}
+    case "$name" in */*) continue ;; esac
+    if [ -f "$maps/$name" ] && [ "$(sha256sum "$maps/$name" | cut -d' ' -f1)" = "$hash" ]; then
+        cp "$maps/$name" "$maps.new/$name"
+    else
+        curl -fsSL -o "$maps.new/$name" "https://github.com/$REPO/releases/download/assets/$hash"
+        [ "$(sha256sum "$maps.new/$name" | cut -d' ' -f1)" = "$hash" ] || { echo "map $name: wrong download"; exit 1; }
+    fi
+done <"$maps.new.list"
+rm -f "$maps.new.list"
+rm -rf "$maps.old"
+if [ -d "$maps" ]; then mv "$maps" "$maps.old"; fi
+mv "$maps.new" "$maps"
+rm -rf "$maps.old"
 curl -fsSL -o "$DIR/shitshooter.new" \
     "https://github.com/$REPO/releases/download/$latest/shitshooter-server-linux-$ARCH"
 chmod 755 "$DIR/shitshooter.new"

@@ -1,6 +1,8 @@
 /target
 /screenshots
 /dist
+# Your own maps, to play and work on; the ones shipped go in assets/maps
+/maps/
 # Blender keeps the previous save of a .blend as .blend1
 *.blend1
 __pycache__
