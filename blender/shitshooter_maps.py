@@ -23,7 +23,12 @@ How a map is read (see blender/README.md for more):
   A material with emission glows in the dark, in its emission colour.
 - Light: a Sun light is the game's sun, or its moon (its direction, its
   colour, and its strength: 4 is daylight). Point lights are lamps, and
-  ones named "fire..." waver. The sidebar has the ambient light and the fog.
+  ones named "fire..." waver. Spot lights are lamps that shine one way, cast
+  shadows and light the mist. The sidebar has the ambient light and the fog.
+- Mist and steam, also empties: a Cube empty named "mist" is a box of mist,
+  thick at its bottom and nothing at its top (its "density" custom property:
+  1 is light); an empty named "steam" is a grate a plume of steam comes up
+  out of, as big as its scale.
 - Empties mark the rest, by name (".001" endings are fine):
     spawn          where players start, standing, facing its Y axis
                    (one per player you expect, up to 16)
@@ -49,7 +54,7 @@ How a map is read (see blender/README.md for more):
 bl_info = {
     "name": "ShitShooter map tools",
     "author": "ShitShooter",
-    "version": (1, 5, 0),
+    "version": (1, 6, 0),
     "blender": (4, 2, 0),
     "location": "File > Export > ShitShooter map; 3D View > Sidebar > ShitShooter",
     "description": "Build maps for ShitShooter and export them for the game",
@@ -388,18 +393,24 @@ def lighting(context, problems):
             continue
         if obj.data.type == "SUN":
             suns.append(obj)
-        elif obj.data.type == "POINT":
+        elif obj.data.type in ("POINT", "SPOT"):
             lamp = {
                 "at": game_point(obj.matrix_world.translation),
                 "color": to_srgb(list(obj.data.color)),
                 "power": round(obj.data.energy * LUMENS_PER_WATT, 1),
                 "range": round(obj.data.cutoff_distance, 2) if getattr(obj.data, "use_custom_distance", False) else 25.0,
             }
-            if base_name(obj).startswith("fire"):
+            if obj.data.type == "SPOT":
+                # A spot shines along its -Z.
+                towards = (obj.matrix_world.to_3x3() @ Vector((0, 0, -1))).normalized()
+                lamp["spot"] = {"to": game_point(towards), "angle": round(math.degrees(obj.data.spot_size), 1), "blend": round(obj.data.spot_blend, 3)}
+                if obj.data.spot_size > math.radians(160):
+                    problems.append(f"{obj.name}: the game's spot lamps are 160 degrees across at most")
+            elif base_name(obj).startswith("fire"):
                 lamp["flicker"] = True
             lamps.append((obj.name, lamp))
         else:
-            problems.append(f"{obj.name}: only Sun and Point lights light the game")
+            problems.append(f"{obj.name}: only Sun, Point and Spot lights light the game")
     if suns:
         sun = sorted(suns, key=lambda o: o.name)[0]
         if len(suns) > 1:
@@ -423,7 +434,7 @@ def lighting(context, problems):
             problems.append("the fog ends before it starts: left as the game makes it")
     lamps.sort(key=lambda item: item[0])
     if len(lamps) > 64:
-        problems.append(f"{len(lamps)} point lights: the game lights the first 64 by name")
+        problems.append(f"{len(lamps)} lamps: the game lights the first 64 by name")
     return light or None, [lamp for _, lamp in lamps]
 
 
@@ -506,7 +517,7 @@ def read_map(context):
     # Every object's place, up to date (a script may just have moved them).
     context.view_layer.update()
     problems, fatal = [], []
-    found = {"spawns": [], "posts": [], "checkpoints": {}, "respawns": {}, "kills": []}
+    found = {"spawns": [], "posts": [], "checkpoints": {}, "respawns": {}, "kills": [], "mist": [], "steam": []}
     start = finish = finish_spawn = None
     mode = made_for(context)
     for obj in context.scene.objects:
@@ -526,6 +537,18 @@ def read_map(context):
             finish = gate(obj, problems)
         elif name.startswith("kill"):
             found["kills"].append(kill_box(obj, problems))
+        elif name.startswith("mist"):
+            box = gate(obj, problems)
+            density = float(obj.get("density", 1.0))
+            if density != 1.0:
+                box["density"] = round(density, 3)
+            found["mist"].append((obj.name, box))
+        elif name.startswith("steam"):
+            vent = {"at": game_point(obj.matrix_world.translation)}
+            size = max(abs(s) for s in obj.matrix_world.to_scale())
+            if abs(size - 1.0) > 1e-3:
+                vent["size"] = round(size, 3)
+            found["steam"].append((obj.name, vent))
         elif number and number.group(1) == "checkpoint":
             found["checkpoints"][int(number.group(2))] = gate(obj, problems)
         elif number:
@@ -583,6 +606,11 @@ def read_map(context):
         data["light"] = light
     if lamps:
         data["lamps"] = lamps
+    for kind in ("mist", "steam"):
+        if found[kind]:
+            if len(found[kind]) > 16:
+                problems.append(f"{len(found[kind])} of {kind}: the game shows the first 16 by name")
+            data[kind] = [item for _, item in sorted(found[kind], key=lambda item: item[0])]
     if mode == "SNIPER":
         data["modes"] = [MADE_FOR[mode][0]]
         data["spawns"] = spawns + posts
@@ -708,6 +736,13 @@ class SHITSHOOTER_OT_add_marker(bpy.types.Operator):
         elif self.what in ("start", "finish", "kill"):
             obj = new_empty(context, self.what, "CUBE", 1.0, at)
             obj.scale = {"start": (6, 6, 2), "finish": (12, 1, 12), "kill": (200, 200, 5)}[self.what]
+        elif self.what == "mist":
+            obj = new_empty(context, "mist", "CUBE", 1.0, at + Vector((0, 0, 1.5)))
+            obj.scale = (10, 10, 1.5)
+            obj["density"] = 1.0
+            obj.id_properties_ui("density").update(min=0.0, max=20.0, description="How thick the mist is: 1 is light, something 30 m into it a third fainter")
+        elif self.what == "steam":
+            new_empty(context, "steam", "SPHERE", 1.0, at)
         elif self.what == "checkpoint":
             n = next_number(context, "checkpoint")
             obj = new_empty(context, f"checkpoint {n}", "CUBE", 1.0, at)
@@ -782,7 +817,7 @@ class SHITSHOOTER_PT_panel(bpy.types.Panel):
         markers = [("spawn", "Spawn"), ("start", "Start"), ("checkpoint", "Checkpoint"), ("finish", "Finish"), ("kill", "Kill zone")]
         if made_for(context) == "SNIPER":
             markers = [("spawn", "Spawn"), ("sniper spawn", "Sniper spawn"), ("finish", "Finish")]
-        for what, label in markers:
+        for what, label in markers + [("mist", "Mist"), ("steam", "Steam vent")]:
             box.operator("shitshooter.add_marker", text=label).what = what
 
 

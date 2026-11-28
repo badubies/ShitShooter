@@ -55,7 +55,11 @@ Blender's metres are the game's metres, and Z is up. Players are about 1.8 m tal
 A map with none of this is lit as by day.
 
 - A **Sun** light is the game's sun, or its moon: where it shines from, its colour, and its strength. A strength of **4** is daylight; 0.5 to 1 with a blue colour is a moonlit night.
-- **Point** lights are lamps. A thousand watts light the ground 3 m away about as the sun does by day. Tick **Custom Distance** to say how far one reaches (25 m otherwise). One whose name starts with **`fire`** wavers. They cast no shadows, and the game lights at most 64.
+- **Point** lights are lamps. A thousand watts light the ground 3 m away about as the sun does by day. Tick **Custom Distance** to say how far one reaches (25 m otherwise). One whose name starts with **`fire`** wavers. They cast no shadows.
+- **Spot** lights are lamps that shine one way, in their cone (160° across at most): a street lamp, a searchlight. They cast shadows, and they are the lamps that show in mist and steam, so they cost more: use a few. The game lights at most 64 lamps in all.
+- A **Cube** empty named **`mist`** is a box of mist: thick at its bottom, thinning to nothing at its top, drifting on the wind, with the sun and the lamps shining through it. Its **density** custom property says how thick: 1 is light (something 30 m into it is a third fainter). Its sides are sharp, so keep them inside walls; several boxes side by side join up. (The Mist button adds one.)
+- An empty named **`steam`** is a grate a plume of thicker steam comes up out of, some 2 m across at the ground and 9 m high at a scale of 1. Put it on a mesh that looks like a grate. (The Steam vent button adds one.)
+- Mist and steam are only to look at and to be seen through: they stop no bullet. A map has at most 16 of each. They show where the sun (or the moon) or a Spot light shines on them, not by Point lights; in the dark they only dim what is behind them. Players can turn them off (Settings → Graphics → Fog).
 - The sidebar's **Ambient light** is the light that is everywhere, in the shadows too (480 by day; 100 to 200 for a night), and **Fog from** and **Fog to** are how far away the fog starts and where nothing shows through it. Left at 0, the game sets the fog by the map's size.
 
 ### Markers (empties, by name)

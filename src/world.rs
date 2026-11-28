@@ -43,6 +43,10 @@ pub struct GameMap(pub Map);
 #[derive(Component)]
 struct MapGeometry;
 
+/// A lamp or a fire of a map made in Blender (`Map::lamps`).
+#[derive(Component)]
+pub struct MapLamp;
+
 /// A fire's light on a map made in Blender, which wavers about this
 /// brightness, each fire out of step with the others.
 #[derive(Component)]
@@ -400,10 +404,30 @@ fn build_map(
 
     for (index, lamp) in map.0.lamps.iter().enumerate() {
         let [r, g, b] = lamp.color;
+        let color = Color::srgb(r, g, b);
+        if let Some(cone) = lamp.cone {
+            // A spot lamp: `fog.rs` has it cast shadows and light the fog.
+            let up = if cone.towards.y.abs() > 0.99 { Vec3::X } else { Vec3::Y };
+            commands.spawn((
+                MapGeometry,
+                MapLamp,
+                SpotLight {
+                    color,
+                    intensity: lamp.power,
+                    range: lamp.range,
+                    outer_angle: cone.outer,
+                    inner_angle: cone.inner,
+                    ..default()
+                },
+                Transform::from_translation(lamp.pos).looking_to(cone.towards, up),
+            ));
+            continue;
+        }
         let mut light = commands.spawn((
             MapGeometry,
+            MapLamp,
             PointLight {
-                color: Color::srgb(r, g, b),
+                color,
                 intensity: lamp.power,
                 range: lamp.range,
                 ..default()

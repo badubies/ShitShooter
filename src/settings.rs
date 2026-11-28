@@ -843,6 +843,7 @@ enum Pick {
     Shadows(Shadows),
     AmbientOcclusion(bool),
     Bloom(bool),
+    Fog(bool),
     TextureFiltering(u16),
     Vsync(bool),
     MaxFps(u32),
@@ -861,6 +862,7 @@ impl Pick {
             Pick::Shadows(shadows) => graphics.shadows == shadows,
             Pick::AmbientOcclusion(on) => graphics.ambient_occlusion == on,
             Pick::Bloom(on) => graphics.bloom == on,
+            Pick::Fog(on) => graphics.fog == on,
             Pick::TextureFiltering(n) => graphics.texture_filtering == n,
             Pick::Vsync(on) => graphics.vsync == on,
             Pick::MaxFps(fps) => graphics.max_fps == fps,
@@ -882,6 +884,7 @@ impl Pick {
             Pick::Shadows(shadows) => graphics.shadows = shadows,
             Pick::AmbientOcclusion(on) => graphics.set_ambient_occlusion(on),
             Pick::Bloom(on) => graphics.bloom = on,
+            Pick::Fog(on) => graphics.fog = on,
             Pick::TextureFiltering(n) => graphics.texture_filtering = n,
             Pick::Vsync(on) => graphics.vsync = on,
             Pick::MaxFps(fps) => graphics.max_fps = fps,
@@ -1272,6 +1275,12 @@ fn graphics_page(page: &mut ChildSpawnerCommands, settings: &Settings) {
                 "Bloom",
                 HintText::Fixed("Glow round bright lights."),
                 on_off(Pick::Bloom),
+            );
+            option_row(
+                quality,
+                "Fog",
+                HintText::Fixed("Mist and steam on the maps that have them. Needs shadows."),
+                on_off(Pick::Fog),
             );
             option_row(
                 quality,

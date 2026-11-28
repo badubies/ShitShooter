@@ -22,7 +22,8 @@
 //! A file can also say how it is lit (`light`: how bright the sun is, its
 //! colour and where it shines from, the ambient light, the fog), which makes
 //! a night of it; where its lamps and fires are (`lamps`); and which of its
-//! solids glow (`glow`). What it leaves out is plain daylight.
+//! solids glow (`glow`). What it leaves out is plain daylight. It can have
+//! mist lying in boxes (`mist`) and vents that steam comes out of (`steam`).
 
 use std::{
     path::{Path, PathBuf},
@@ -34,7 +35,7 @@ use serde::Deserialize;
 
 use crate::{
     course::{Course, KillBox, Respawn, Zone},
-    map::{Lamp, Look, Map, PLAYER_HALF, Spawn},
+    map::{Cone, Lamp, Look, Map, Mist, PLAYER_HALF, Spawn, Vent},
     modes::{self, Needs},
     ramp::Ramp,
 };
@@ -56,6 +57,12 @@ struct File {
     /// Its lamps and fires.
     #[serde(default)]
     lamps: Vec<LampMarker>,
+    /// Boxes of mist.
+    #[serde(default)]
+    mist: Vec<MistBox>,
+    /// Vents that steam comes out of.
+    #[serde(default)]
+    steam: Vec<Steam>,
     solids: Vec<Solid>,
     #[serde(default)]
     spawns: Vec<SpawnMarker>,
@@ -132,6 +139,19 @@ struct LampMarker {
     range: f32,
     #[serde(default)]
     flicker: bool,
+    /// A spot lamp.
+    #[serde(default)]
+    spot: Option<Spot>,
+}
+
+/// A spot lamp shines along `to`, in a cone `angle` degrees across from
+/// edge to edge, fading over the outer `blend` of it (0 to 1).
+#[derive(Deserialize)]
+struct Spot {
+    to: [f32; 3],
+    angle: f32,
+    #[serde(default)]
+    blend: f32,
 }
 
 fn lamp_range() -> f32 {
@@ -140,6 +160,31 @@ fn lamp_range() -> f32 {
 
 /// No more lamps than this are lit: each one costs every frame.
 const MOST_LAMPS: usize = 64;
+
+/// Mist in a gate's box: thick at the bottom, nothing at the top. A
+/// `density` of 1 is a light mist.
+#[derive(Deserialize)]
+struct MistBox {
+    #[serde(flatten)]
+    gate: Gate,
+    #[serde(default = "one")]
+    density: f32,
+}
+
+/// A vent steam comes out of: where its grate is, and how big its plume.
+#[derive(Deserialize)]
+struct Steam {
+    at: [f32; 3],
+    #[serde(default = "one")]
+    size: f32,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+/// No more boxes of mist and no more vents than this are drawn.
+const MOST_FOG: usize = 16;
 
 /// A point to stand at: the feet, the way to face (x, z), and how fast to
 /// be going that way.
@@ -357,6 +402,39 @@ fn build(id: u8, file: &File) -> Map {
             power: lamp.power.clamp(0.0, 1.0e8),
             range: lamp.range.clamp(0.5, 200.0),
             flicker: lamp.flicker,
+            cone: lamp.spot.as_ref().filter(|spot| spot.angle.is_finite() && spot.blend.is_finite()).and_then(|spot| {
+                // No wider than a shadow map can be drawn for.
+                let outer = (spot.angle.to_radians() / 2.0).clamp(0.05, 1.4);
+                Some(Cone {
+                    towards: Vec3::from(spot.to).try_normalize()?,
+                    outer,
+                    inner: outer * (1.0 - spot.blend.clamp(0.0, 1.0)),
+                })
+            }),
+        })
+        .collect();
+
+    map.mists = file
+        .mist
+        .iter()
+        .map(|mist| (mist.gate.zone(), mist.density))
+        .filter(|(zone, density)| zone.center.is_finite() && zone.half.is_finite() && zone.half.min_element() > 0.0 && density.is_finite())
+        .take(MOST_FOG)
+        .map(|(zone, density)| Mist {
+            center: zone.center,
+            half: zone.half,
+            yaw: zone.yaw,
+            density: density.clamp(0.0, 20.0),
+        })
+        .collect();
+    map.vents = file
+        .steam
+        .iter()
+        .filter(|vent| vent.at.iter().all(|x| x.is_finite()) && vent.size.is_finite())
+        .take(MOST_FOG)
+        .map(|vent| Vent {
+            pos: vent.at.into(),
+            size: vent.size.clamp(0.2, 5.0),
         })
         .collect();
 
@@ -747,7 +825,11 @@ mod tests {
                 r#""format": 1, "sky": [0.02, 0.03, 0.06],
                    "light": {"sun": 1500, "sun_color": [0.6, 0.7, 1.0], "sun_from": [10, 40, -200], "ambient": 150, "fog": [30, 260]},
                    "lamps": [{"at": [0, 1.2, -40], "color": [1.0, 0.6, 0.3], "power": 400000, "range": 18, "flicker": true},
-                             {"at": [5, 7, -60], "color": [1.0, 0.9, 0.7], "power": 900000}],"#,
+                             {"at": [5, 7, -60], "color": [1.0, 0.9, 0.7], "power": 900000,
+                              "spot": {"to": [0, -2, 0], "angle": 120, "blend": 0.5}}],
+                   "mist": [{"center": [0, 1.5, -50], "half": [10, 1.5, 50], "facing": [0, -1], "density": 1.5},
+                            {"center": [0, 1.5, -50], "half": [10, 0, 50], "facing": [0, -1]}],
+                   "steam": [{"at": [2, 0, -30]}, {"at": [-4, 0, -70], "size": 1.6}],"#,
             )
             .replace(r#""texture": "slab""#, r#""texture": "slab", "glow": 3.0"#);
         let map = build(9, &parse(night.as_bytes()).unwrap());
@@ -757,8 +839,18 @@ mod tests {
         assert!(map.look.sun_from.normalize().distance(Vec3::new(10.0, 40.0, -200.0).normalize()) < 1e-4);
         assert_eq!(map.lamps.len(), 2);
         assert!(map.lamps[0].flicker && !map.lamps[1].flicker);
+        // The second is a spot lamp, shining down in a cone 120 degrees across.
+        let cone = map.lamps[1].cone.expect("a spot lamp");
+        assert!(map.lamps[0].cone.is_none() && cone.towards == Vec3::NEG_Y);
+        assert!((cone.outer.to_degrees() - 60.0).abs() < 1e-3 && (cone.inner.to_degrees() - 30.0).abs() < 1e-3);
         assert_eq!((map.lamps[0].range, map.lamps[1].range), (18.0, 25.0));
         assert_eq!(map.glows, vec![([0.5, 0.5, 0.5], 3.0)]);
+        // Mist lies in its box (one with no height is none), and steam comes
+        // out of its vents, as big as the file says.
+        assert!(day.mists.is_empty() && day.vents.is_empty());
+        assert_eq!(map.mists.len(), 1);
+        assert_eq!((map.mists[0].center, map.mists[0].half, map.mists[0].density), (Vec3::new(0.0, 1.5, -50.0), Vec3::new(10.0, 1.5, 50.0), 1.5));
+        assert_eq!(map.vents.iter().map(|vent| (vent.pos, vent.size)).collect::<Vec<_>>(), [(Vec3::new(2.0, 0.0, -30.0), 1.0), (Vec3::new(-4.0, 0.0, -70.0), 1.6)]);
         // A sun under the ground, or fog that ends before it starts, is left as by day.
         let wrong = night.replace(r#""sun_from": [10, 40, -200]"#, r#""sun_from": [10, -40, -200]"#).replace(r#""fog": [30, 260]"#, r#""fog": [300, 260]"#);
         let map = build(9, &parse(wrong.as_bytes()).unwrap());

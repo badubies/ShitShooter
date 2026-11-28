@@ -138,6 +138,9 @@ pub struct Graphics {
     pub ambient_occlusion: bool,
     /// A glow round bright lights: tracers, blasts, the jump pads.
     pub bloom: bool,
+    /// Mist and steam on the maps that have them (`fog.rs`). They need the
+    /// shadows: with those off there is none either.
+    pub fog: bool,
     /// One of `TEXTURE_FILTERING`.
     pub texture_filtering: u16,
     /// How bright the 3D view is, 1 as designed. The HUD and menus keep theirs.
@@ -160,6 +163,7 @@ impl Default for Graphics {
             shadows: Shadows::High,
             ambient_occlusion: false,
             bloom: false,
+            fog: true,
             texture_filtering: 4,
             brightness: 1.0,
             render_scale: 1.0,
@@ -205,6 +209,7 @@ impl Graphics {
             }
             "ambient_occlusion" => self.ambient_occlusion = flag.unwrap_or(self.ambient_occlusion),
             "bloom" => self.bloom = flag.unwrap_or(self.bloom),
+            "fog" => self.fog = flag.unwrap_or(self.fog),
             "texture_filtering" => {
                 if let Some(n) = value.parse().ok().filter(|n| TEXTURE_FILTERING.contains(n)) {
                     self.texture_filtering = n;
@@ -233,11 +238,12 @@ impl Graphics {
 
     pub fn write(&self, text: &mut String) {
         text.push_str(&format!(
-            "anti_aliasing = {}\nshadows = {}\nambient_occlusion = {}\nbloom = {}\ntexture_filtering = {}\nbrightness = {}\nrender_scale = {}\nvsync = {}\nmax_fps = {}\nshow_stats = {}\n",
+            "anti_aliasing = {}\nshadows = {}\nambient_occlusion = {}\nbloom = {}\nfog = {}\ntexture_filtering = {}\nbrightness = {}\nrender_scale = {}\nvsync = {}\nmax_fps = {}\nshow_stats = {}\n",
             self.anti_alias.names().1,
             self.shadows.names().1,
             self.ambient_occlusion,
             self.bloom,
+            self.fog,
             self.texture_filtering,
             self.brightness,
             self.render_scale,
@@ -612,6 +618,7 @@ mod tests {
             shadows: Shadows::Ultra,
             ambient_occlusion: true,
             bloom: true,
+            fog: false,
             texture_filtering: 16,
             brightness: 1.35,
             render_scale: 0.75,

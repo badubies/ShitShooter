@@ -1090,7 +1090,8 @@ fn selftest_course(
 /// The sniper mode's script. Alone, we are the sniper: the view from the
 /// platform as we come in, down over its wall and through the scope; then
 /// the map as the runners see it, from where they come in to under the
-/// platform; and the whole of it from above.
+/// platform, with how fast it draws from each place; one of its spot
+/// lamps, if it has any; and the whole of it from above.
 fn selftest_sniper(
     time: &Time,
     session: &Session,
@@ -1113,6 +1114,8 @@ fn selftest_sniper(
         return;
     };
     test.clock += time.delta_secs();
+    captured.frames.0 += 1;
+    captured.frames.1 += time.delta_secs();
     // The way the runners go, and the middle of the line they start on.
     let along = (finish.center - start.pos).with_y(0.0).normalize_or_zero();
     let across = Vec3::new(-along.z, 0.0, along.x);
@@ -1162,13 +1165,39 @@ fn selftest_sniper(
             player.teleport(feet.with_y(start.pos.y + 0.3));
             player.yaw = towards(along);
             player.pitch = 0.06;
+            captured.frames = (0, 0.0);
         }
         if test.reached(7 + 2 * index as u32, at + 0.6) {
+            // How fast it draws from here, the frame of the move left out.
+            let (frames, seconds) = captured.frames;
+            println!("[selftest] street {}: {:.0} frames a second", index + 1, frames.saturating_sub(1) as f32 / seconds.max(1e-3));
             test.capture(&format!("sniper_street_{}.png", index + 1));
         }
     }
-    let step = 6 + 2 * STOPS.len() as u32;
-    let at = 3.0 + STOPS.len() as f32 * 0.9;
+    let mut step = 6 + 2 * STOPS.len() as u32;
+    let mut at = 3.0 + STOPS.len() as f32 * 0.9;
+    // A spot lamp, if the map has one, from a little way off: its light on
+    // the ground, and in the mist if there is any.
+    if let Some(lamp) = map.0.lamps.iter().find(|lamp| lamp.cone.is_some()) {
+        if test.reached(step, at) {
+            let mut feet = (lamp.pos - along * 11.0 - across * 2.0).with_y(start.pos.y + 0.3);
+            for _ in 0..40 {
+                if map.0.is_free(feet, PLAYER_HALF) {
+                    break;
+                }
+                feet -= along * 0.5;
+            }
+            player.teleport(feet);
+            let to = lamp.pos.with_y(lamp.pos.y * 0.45) - player.eye();
+            player.yaw = towards(to);
+            player.pitch = to.y.atan2(to.with_y(0.0).length());
+        }
+        if test.reached(step + 1, at + 0.6) {
+            test.capture("sniper_lamp.png");
+        }
+        step += 2;
+        at += 0.9;
+    }
     // The whole map, from high behind the runners, with nothing over it.
     if test.reached(step, at) {
         let from = middle - along * 28.0 + Vec3::Y * 46.0 + across * 10.0;
@@ -1221,6 +1250,8 @@ struct Captured {
     body: Option<Entity>,
     body_shots: usize,
     body_at: Option<Vec3>,
+    /// Frames drawn, and the seconds they took, since the last move.
+    frames: (u32, f32),
     /// Frames into the look at every gun, and the gun to put back after it.
     gallery: u32,
     gallery_gun: Option<GunSlot>,

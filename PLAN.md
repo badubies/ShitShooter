@@ -10,7 +10,7 @@ destroyed cars, debris and whatever else for cover.
   colour and direction, the ambient light, the fog), where its lamps and
   fires are (`lamps`, drawn as point lights without shadows; fires waver)
   and which solids glow (`glow`). `Look::sun_color`, `Map::lamps`,
-  `Map::glows`. The exporter (1.5.0) reads a Sun light, point lights
+  `Map::glows`. The exporter (1.5.0, now 1.6.0) reads a Sun light, point lights
   (named `fire...` to waver), materials' emission, and the ambient light
   and fog from its sidebar. A file that says none of it is lit as before.
 - [x] A map's ramps are drawn as one mesh a colour, in 48 m pieces
@@ -28,6 +28,30 @@ destroyed cars, debris and whatever else for cover.
 - [x] `--selftest <dir> --host --mode sniper --map "Sniper Street"` takes
   the sniper's views (`sniper_post`, `sniper_down`, `sniper_scope`), the
   street from eight places down it and the whole of it from above.
+
+- [x] Mist and steam (asked for the same day: a light layer of fog, and
+  grates that thicker fog comes out of). `src/fog.rs`: Bevy's volumetric
+  fog, in boxes (`FogVolume`) with 3D textures made in code that say how
+  thick it is where, and drift. A map's `mist` is boxes of it, thick at
+  the ground and gone at their top; its `steam` is vents, each a plume of
+  four boxes one over the other. In Blender: a Cube empty named `mist`
+  (with a `density`), an empty named `steam`. Only to look at: it stops no
+  bullet, and is thin enough to see a runner through.
+  - The user does not want it to look like the smoke grenade (spheres:
+    "too cartoonish", and they "hide players too much").
+  - Fog only shows where a light with shadows shines on it. The moon does.
+    Making all 13 lamps cast shadows took the frame rate from 430 to 75
+    (six shadow maps a point light), so a map's lamps can now be spot
+    lamps (`Lamp::cone`, Blender's Spot lights): those cast shadows and
+    light the fog, one shadow map each. The street lamps and the traffic
+    light are; the fires are not. With that it is 220 to 300.
+  - Settings has "Fog" (on by default); it also goes with the shadows off,
+    and beyond the reach of the shadows (70 m on Low) it is not lit.
+  - The self-test prints the frame rate at each stop down the street, and
+    takes `sniper_lamp.png`, a spot lamp from a little way off.
+  - To tune: `MIST`, `MIST_GLOW`, `STEAM_GLOW`, `PLUME`, `WIND` in
+    `fog.rs`; where the mist lies and the grates are, `weather()` in the
+    map's script.
 
 To tune by playing: the moon (`moon.data.energy`), `shitshooter_ambient`
 and the fog at the bottom of the script, each lamp's and fire's watts where

@@ -284,6 +284,13 @@ class Prop:
         return obj
 
 
+def mist(x0, x1, y0, y1, top=3.4, density=1.0):
+    """Mist lying over the ground from here to there, up to `top`."""
+    box = empty("mist", "CUBE", ((x0 + x1) / 2, (y0 + y1) / 2, top / 2), ((x1 - x0) / 2, (y1 - y0) / 2, top / 2))
+    box["density"] = density
+    return box
+
+
 def empty(name, kind, at, scale=(1, 1, 1), turn=0.0):
     obj = bpy.data.objects.new(name, None)
     obj.empty_display_type = kind
@@ -294,10 +301,15 @@ def empty(name, kind, at, scale=(1, 1, 1), turn=0.0):
     return obj
 
 
-def light(name, at, color, watts, reach):
+def light(name, at, color, watts, reach, cone=None):
     """A lamp, or a fire if its name starts with "fire" (those waver). A
-    thousand watts light the ground 3 m away about as the sun does by day."""
-    data = bpy.data.lights.new(name, "POINT")
+    thousand watts light the ground 3 m away about as the sun does by day.
+    With `cone` (degrees across) it is a spot lamp shining straight down:
+    those cast shadows, and show in the mist."""
+    data = bpy.data.lights.new(name, "SPOT" if cone else "POINT")
+    if cone:
+        data.spot_size = rad(cone)
+        data.spot_blend = 0.6
     data.color = lin(color)
     data.energy = watts
     data.use_custom_distance = True
@@ -838,6 +850,22 @@ def dumpster(x, y, yaw):
     return p.build((x, y, KERB if abs(x) > ROAD_HALF else 0), yaw=rad(yaw))
 
 
+def grate(x, y, yaw=0.0, size=1.0):
+    """A grate in the road with steam coming up out of it."""
+    p = Prop("grate", STREET)
+    p.box((-0.9, -0.6, 0.0), (0.9, 0.6, 0.02), DARK)
+    for sx in (-0.9, 0.84):
+        p.box((sx, -0.66, 0.0), (sx + 0.06, 0.66, 0.035), TRIM)
+    for sy in (-0.66, 0.6):
+        p.box((-0.9, sy, 0.0), (0.9, sy + 0.06, 0.035), TRIM)
+    for i in range(1, 9):
+        p.box((-0.9 + i * 0.2 - 0.03, -0.6, 0.0), (-0.9 + i * 0.2 + 0.03, 0.6, 0.03), POLE)
+    z = KERB if abs(x) > ROAD_HALF else 0.0
+    obj = p.build((x, y, z), yaw=rad(yaw))
+    empty("steam", "SPHERE", (x, y, z), (size, size, size))
+    return obj
+
+
 def tyres(x, y, count):
     p = Prop("tyres", DEBRIS)
     spots = [(0, 0, 0), (0.05, 0.04, 0.23), (0.72, 0.1, 0), (-0.02, 0.0, 0.46), (0.4, 0.75, 0), (0.75, 0.12, 0.23)]
@@ -862,7 +890,7 @@ def lamp_post(x, y, towards, lit=0.0, fallen=None):
     else:
         obj = p.build((x, y, KERB + 0.12), yaw=rad(fallen), roll=rad(86))
     if lit:
-        light("lamp", (x + towards * 1.9, y, 6.75), (1.0, 0.74, 0.44), lit, 24)
+        light("lamp", (x + towards * 1.9, y, 6.95), (1.0, 0.74, 0.44), lit, 26, cone=150)
     return obj
 
 
@@ -908,7 +936,7 @@ def traffic_light(x, y, yaw, fallen=False):
     # One lamp on it still shows amber.
     p.box((2.2 - 0.1, -0.19, 4.98), (2.2 + 0.1, -0.16, 5.2), AMBER)
     at = Matrix.Rotation(rad(yaw), 4, "Z") @ Vector((2.2, -0.9, 4.9))
-    light("signal", (x + at.x, y + at.y, KERB + at.z), (1.0, 0.62, 0.15), 260, 13)
+    light("signal", (x + at.x, y + at.y, KERB + at.z), (1.0, 0.62, 0.15), 260, 14, cone=150)
     return p.build((x, y, KERB), yaw=rad(yaw))
 
 
@@ -1250,9 +1278,27 @@ def alleys():
         p.build()
 
 
+def weather():
+    """A light mist over the whole street and down its side streets, and
+    steam from the grates."""
+    mist(-16, 16, -6, 198)
+    for s in (-1, 1):
+        mist(*sorted((s * 16, s * 26)), CROSS0, CROSS1)
+    mist(-26, -16, 40, 58)
+    mist(16, 26, CROSS1, 124)
+    grate(-6.8, 34.6, 4)
+    grate(4.2, 44.6, -8)
+    grate(0.4, 67.6, 12)
+    grate(2.2, 99.6, -5)
+    grate(3.2, 125.2, 6)
+    grate(-6.2, 142.4, -3)
+    grate(-10.2, 156.4, 90, size=0.8)
+
+
 street()
 buildings()
 overpass()
+weather()
 start()
 far_stretch()
 fallen_house()

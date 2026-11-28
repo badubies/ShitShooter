@@ -42,6 +42,8 @@ mod combat;
 #[cfg(feature = "client")]
 mod devtools;
 #[cfg(feature = "client")]
+mod fog;
+#[cfg(feature = "client")]
 mod graphics;
 #[cfg(feature = "client")]
 mod grenade;
@@ -400,7 +402,7 @@ fn run_game(args: LaunchArgs) {
         .init_state::<AppState>()
         .add_plugins((
             (net::NetPlugin, browser::BrowserPlugin),
-            (world::WorldPlugin, scenery::SceneryPlugin, textures::TexturesPlugin),
+            (world::WorldPlugin, scenery::SceneryPlugin, textures::TexturesPlugin, fog::FogPlugin),
             player::PlayerPlugin,
             remote::RemotePlugin,
             combat::CombatPlugin,

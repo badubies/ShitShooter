@@ -236,6 +236,35 @@ pub struct Lamp {
     pub range: f32,
     /// A fire: it wavers.
     pub flicker: bool,
+    /// A spot lamp shines one way only, in a cone. Spot lamps cast shadows
+    /// and light the mist and steam; the others do neither.
+    pub cone: Option<Cone>,
+}
+
+/// Where a spot lamp shines: along `towards`, as far out from that as
+/// `outer` (radians), fading from `inner` on.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Cone {
+    pub towards: Vec3,
+    pub outer: f32,
+    pub inner: f32,
+}
+
+/// A box of mist on a map made in Blender, turned about the vertical: thick
+/// at its bottom and thinning to nothing at its top.
+pub struct Mist {
+    pub center: Vec3,
+    pub half: Vec3,
+    pub yaw: f32,
+    /// 1 is a light mist: something 30 m into it is a third fainter.
+    pub density: f32,
+}
+
+/// A grate on a map made in Blender that steam comes up out of.
+pub struct Vent {
+    pub pos: Vec3,
+    /// How big its plume is: 1 is some 2 m across at the grate and 9 m high.
+    pub size: f32,
 }
 
 /// How a map is lit and what is around it.
@@ -285,6 +314,10 @@ pub struct Map {
     pub glows: Vec<([f32; 3], f32)>,
     /// Maps made in Blender: their lamps and fires.
     pub lamps: Vec<Lamp>,
+    /// Maps made in Blender: their mist, and the vents steam comes out of.
+    /// Only to look at: neither stops a bullet, or a bot from seeing.
+    pub mists: Vec<Mist>,
+    pub vents: Vec<Vent>,
     /// Fallen out of the map below this (well under anything solid): put
     /// back in the middle. Courses catch falls well before it.
     pub abyss: f32,
@@ -496,6 +529,8 @@ impl Map {
             textures: Vec::new(),
             glows: Vec::new(),
             lamps: Vec::new(),
+            mists: Vec::new(),
+            vents: Vec::new(),
             terrain: None,
             bounds: [Vec2::splat(-A + 4.0), Vec2::splat(A - 4.0)],
             pads: Vec::new(),
