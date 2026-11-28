@@ -44,6 +44,9 @@ one 4,271-line `server.rs`. Now everything about a mode is in `src/modes/`:
   everybody else unarmed and on foot, from cover to cover to the finish
   under it. Shot, you are out until the next turn. Everybody is the
   sniper twice; the most runners shot wins, getting across breaks a tie.
+  Runners see a red beam from the rifle to where it points
+  (`aim_laser` in `modes/sniper/client.rs`), and their health does not
+  come back (`ModeInfo::heals`).
   To tune by playing: `TURN_TIME`, `INTERMISSION`, `RUNNER_HEALTH`, `LAPS`
   in `modes/sniper/mod.rs`, and `RUNNER` and `SNIPER` in `movement.rs`.
 

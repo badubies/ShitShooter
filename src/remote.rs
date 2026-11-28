@@ -107,6 +107,13 @@ struct Sample {
     pitch: f32,
 }
 
+impl RemotePlayer {
+    /// The way they look, as we draw them: (yaw, pitch).
+    pub fn aim(&self) -> (f32, f32) {
+        (self.yaw, self.pitch)
+    }
+}
+
 /// The part of a remote player that tilts up and down with their aim: head and gun.
 #[derive(Component)]
 struct HeadPivot;
