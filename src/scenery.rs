@@ -164,12 +164,15 @@ fn set_look(
     ambient.brightness = look.ambient;
     let (mut light, mut transform) = sun.into_inner();
     light.illuminance = look.sun;
+    let [r, g, b] = look.sun_color;
+    light.color = Color::srgb(r, g, b);
     *transform = Transform::from_translation(look.sun_from).looking_at(Vec3::ZERO, Vec3::Y);
     match look.fog {
         Some((start, end)) => {
             commands.entity(*camera).insert(DistanceFog {
                 color: sky,
-                directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.4),
+                // The haze towards the sun is warm by day, and the moon's colour by night.
+                directional_light_color: Color::srgba(r, 0.95 * g, 0.85 * b, 0.4),
                 directional_light_exponent: 24.0,
                 falloff: FogFalloff::Linear { start, end },
             });

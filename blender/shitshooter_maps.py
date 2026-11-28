@@ -20,6 +20,10 @@ How a map is read (see blender/README.md for more):
   in it (panels, slab, concrete, paint, plaster, brick, cinder, stone,
   rock, wood, boards, metal, corrugated, rust, asphalt, ground), that
   texture. An object whose name starts with "clip" is solid but unseen.
+  A material with emission glows in the dark, in its emission colour.
+- Light: a Sun light is the game's sun, or its moon (its direction, its
+  colour, and its strength: 4 is daylight). Point lights are lamps, and
+  ones named "fire..." waver. The sidebar has the ambient light and the fog.
 - Empties mark the rest, by name (".001" endings are fine):
     spawn          where players start, standing, facing its Y axis
                    (one per player you expect, up to 16)
@@ -45,7 +49,7 @@ How a map is read (see blender/README.md for more):
 bl_info = {
     "name": "ShitShooter map tools",
     "author": "ShitShooter",
-    "version": (1, 4, 0),
+    "version": (1, 5, 0),
     "blender": (4, 2, 0),
     "location": "File > Export > ShitShooter map; 3D View > Sidebar > ShitShooter",
     "description": "Build maps for ShitShooter and export them for the game",
@@ -98,18 +102,26 @@ def base_name(obj):
 
 
 def material_look(mat):
-    """A material's colour (sRGB) and the texture its name names, if any."""
+    """A material's colour (sRGB), the texture its name names, if any, and
+    how strongly it glows (0: not at all). One that glows does so in its
+    emission colour, which is then its colour."""
     if mat is None:
-        return [0.6, 0.6, 0.62], None
+        return [0.6, 0.6, 0.62], None, 0.0
     color = list(mat.diffuse_color)[:3]
+    glow = 0.0
     if mat.node_tree:
         for node in mat.node_tree.nodes:
             if node.type == "BSDF_PRINCIPLED":
                 color = list(node.inputs["Base Color"].default_value)[:3]
+                strength = node.inputs.get("Emission Strength")
+                emission = node.inputs.get("Emission Color") or node.inputs.get("Emission")
+                if strength and emission and strength.default_value > 0 and max(emission.default_value[:3]) > 0:
+                    color = list(emission.default_value)[:3]
+                    glow = round(float(strength.default_value), 3)
                 break
     name = mat.name.lower()
     texture = next((t for t in TEXTURES if t in name), None)
-    return to_srgb(color), texture
+    return to_srgb(color), texture, glow
 
 
 def loose_parts(bm):
@@ -250,10 +262,12 @@ def is_cap(part, rings):
 
 
 def solid_of(corners, faces, look, visible):
-    color, texture = look
+    color, texture, glow = look
     solid = {"corners": [game_point(c) for c in corners], "faces": faces, "color": color}
     if texture:
         solid["texture"] = texture
+    if glow:
+        solid["glow"] = glow
     if not visible:
         solid["visible"] = False
     return solid
@@ -353,6 +367,64 @@ def solids(context, problems):
         bm.free()
         evaluated.to_mesh_clear()
     return out
+
+
+# The game's daylight (lux) is a Sun light of this strength.
+DAYLIGHT, DAY_STRENGTH = 10000.0, 4.0
+# A point light's watts times this is its brightness in the game (lumens).
+LUMENS_PER_WATT = 1000.0
+# What the game does when a map says nothing.
+AMBIENT = 480.0
+
+
+def lighting(context, problems):
+    """How the scene is lit, where that is not plain daylight (None if it
+    is), and its lamps: the Sun light is the sun or the moon, the point
+    lights are lamps, and those named "fire..." waver."""
+    scene = context.scene
+    light, lamps, suns = {}, [], []
+    for obj in scene.objects:
+        if obj.type != "LIGHT" or not obj.visible_get():
+            continue
+        if obj.data.type == "SUN":
+            suns.append(obj)
+        elif obj.data.type == "POINT":
+            lamp = {
+                "at": game_point(obj.matrix_world.translation),
+                "color": to_srgb(list(obj.data.color)),
+                "power": round(obj.data.energy * LUMENS_PER_WATT, 1),
+                "range": round(obj.data.cutoff_distance, 2) if getattr(obj.data, "use_custom_distance", False) else 25.0,
+            }
+            if base_name(obj).startswith("fire"):
+                lamp["flicker"] = True
+            lamps.append((obj.name, lamp))
+        else:
+            problems.append(f"{obj.name}: only Sun and Point lights light the game")
+    if suns:
+        sun = sorted(suns, key=lambda o: o.name)[0]
+        if len(suns) > 1:
+            problems.append(f"{len(suns)} Sun lights: {sun.name} is the game's")
+        # A sun shines along its -Z: it is seen along its +Z.
+        towards = (sun.matrix_world.to_3x3() @ Vector((0, 0, 1))).normalized()
+        if towards.z <= 0.02:
+            problems.append(f"{sun.name}: shines from below the horizon; the game's sun is left where it is by day")
+        else:
+            light["sun_from"] = game_point(towards * 300.0)
+        light["sun"] = round(sun.data.energy / DAY_STRENGTH * DAYLIGHT, 1)
+        light["sun_color"] = to_srgb(list(sun.data.color))
+    ambient = getattr(scene, "shitshooter_ambient", AMBIENT)
+    if abs(ambient - AMBIENT) > 1e-3:
+        light["ambient"] = round(ambient, 1)
+    start, end = getattr(scene, "shitshooter_fog_start", 0.0), getattr(scene, "shitshooter_fog_end", 0.0)
+    if end > 0:
+        if end > start:
+            light["fog"] = [round(start, 1), round(end, 1)]
+        else:
+            problems.append("the fog ends before it starts: left as the game makes it")
+    lamps.sort(key=lambda item: item[0])
+    if len(lamps) > 64:
+        problems.append(f"{len(lamps)} point lights: the game lights the first 64 by name")
+    return light or None, [lamp for _, lamp in lamps]
 
 
 def facing(obj, problems):
@@ -506,6 +578,11 @@ def read_map(context):
     data = {"format": FORMAT, "solids": shapes, "spawns": spawns}
     if sky:
         data["sky"] = sky
+    light, lamps = lighting(context, problems)
+    if light:
+        data["light"] = light
+    if lamps:
+        data["lamps"] = lamps
     if mode == "SNIPER":
         data["modes"] = [MADE_FOR[mode][0]]
         data["spawns"] = spawns + posts
@@ -692,6 +769,11 @@ class SHITSHOOTER_PT_panel(bpy.types.Panel):
         col.operator("export_scene.shitshooter_map", text="Export as...")
         layout.operator("shitshooter.check", icon="CHECKMARK")
         layout.prop(context.scene, "shitshooter_mode", text="Made for")
+        col = layout.column(align=True)
+        col.label(text="Light (the sun is a Sun light)")
+        col.prop(context.scene, "shitshooter_ambient")
+        col.prop(context.scene, "shitshooter_fog_start")
+        col.prop(context.scene, "shitshooter_fog_end")
         box = layout.box()
         box.label(text="Add at the 3D cursor")
         row = box.row(align=True)
@@ -730,12 +812,27 @@ def register():
         ],
         default="AUTO",
     )
+    bpy.types.Scene.shitshooter_ambient = FloatProperty(
+        name="Ambient light",
+        description="The light that is everywhere, in the shadows too: 480 by day, 100 to 200 for a night",
+        default=AMBIENT, min=0.0, soft_max=1000.0,
+    )
+    bpy.types.Scene.shitshooter_fog_start = FloatProperty(
+        name="Fog from", description="How far away the fog starts", default=0.0, min=0.0, unit="LENGTH",
+    )
+    bpy.types.Scene.shitshooter_fog_end = FloatProperty(
+        name="Fog to", description="How far away nothing shows through the fog any more. 0: the game sets the fog by the map's size",
+        default=0.0, min=0.0, unit="LENGTH",
+    )
     bpy.types.TOPBAR_MT_file_export.append(menu_export)
 
 
 def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(menu_export)
     del bpy.types.Scene.shitshooter_mode
+    del bpy.types.Scene.shitshooter_ambient
+    del bpy.types.Scene.shitshooter_fog_start
+    del bpy.types.Scene.shitshooter_fog_end
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
 

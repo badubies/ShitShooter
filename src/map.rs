@@ -224,6 +224,20 @@ impl FlagPoint {
     }
 }
 
+/// A lamp or a fire on a map made in Blender: light from a point.
+pub struct Lamp {
+    pub pos: Vec3,
+    /// sRGB.
+    pub color: [f32; 3],
+    /// How bright (lumens): a million lights the ground 3 m away about as
+    /// the sun does by day.
+    pub power: f32,
+    /// It lights nothing further away than this.
+    pub range: f32,
+    /// A fire: it wavers.
+    pub flicker: bool,
+}
+
 /// How a map is lit and what is around it.
 pub struct Look {
     /// The colour of the sky (sRGB).
@@ -233,6 +247,8 @@ pub struct Look {
     /// Where the sun shines from, and how brightly (lux).
     pub sun_from: Vec3,
     pub sun: f32,
+    /// The colour of its light (sRGB): white by day, blue for a moon.
+    pub sun_color: [f32; 3],
     pub ambient: f32,
     /// The menu camera circles this point at this distance and height.
     pub orbit: (Vec3, f32, f32),
@@ -246,6 +262,7 @@ impl Default for Look {
             fog: None,
             sun_from: Vec3::new(30.0, 60.0, 18.0),
             sun: 9000.0,
+            sun_color: [1.0; 3],
             ambient: 350.0,
             orbit: (Vec3::new(0.0, 2.0, 0.0), 46.0, 26.0),
         }
@@ -263,6 +280,11 @@ pub struct Map {
     /// Maps made in Blender: the texture (`textures::Pattern::named`) for
     /// each colour that names one.
     pub textures: Vec<([f32; 3], String)>,
+    /// Maps made in Blender: how strongly each colour that glows does (a
+    /// lit window, a fire, a lamp), as a multiple of the colour.
+    pub glows: Vec<([f32; 3], f32)>,
+    /// Maps made in Blender: their lamps and fires.
+    pub lamps: Vec<Lamp>,
     /// Fallen out of the map below this (well under anything solid): put
     /// back in the middle. Courses catch falls well before it.
     pub abyss: f32,
@@ -472,6 +494,8 @@ impl Map {
             ramps: Vec::new(),
             abyss: -20.0,
             textures: Vec::new(),
+            glows: Vec::new(),
+            lamps: Vec::new(),
             terrain: None,
             bounds: [Vec2::splat(-A + 4.0), Vec2::splat(A - 4.0)],
             pads: Vec::new(),

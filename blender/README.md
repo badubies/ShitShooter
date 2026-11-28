@@ -48,6 +48,15 @@ Blender's metres are the game's metres, and Z is up. Players are about 1.8 m tal
 - A mesh's **material** gives it its colour (the Principled BSDF's Base Color).
 - If the material's name contains one of these words, the solid gets that texture: `panels`, `slab`, `concrete`, `paint`, `plaster`, `brick`, `cinder`, `stone`, `rock`, `wood`, `boards`, `metal`, `corrugated`, `rust`, `asphalt`, `ground`. For example, "Ramp panels" or "Deck slab". Without one, it's concrete.
 - The **World**'s viewport colour (World properties → Viewport Display) is the sky and fog colour.
+- A material with **emission** (the Principled BSDF's Emission Strength above 0) glows in the dark, in its emission colour: a lit window, a fire, a lamp. The strength is how many times its colour it glows; 1 to 2 is a window, 5 and up is a flame.
+
+### Light
+
+A map with none of this is lit as by day.
+
+- A **Sun** light is the game's sun, or its moon: where it shines from, its colour, and its strength. A strength of **4** is daylight; 0.5 to 1 with a blue colour is a moonlit night.
+- **Point** lights are lamps. A thousand watts light the ground 3 m away about as the sun does by day. Tick **Custom Distance** to say how far one reaches (25 m otherwise). One whose name starts with **`fire`** wavers. They cast no shadows, and the game lights at most 64.
+- The sidebar's **Ambient light** is the light that is everywhere, in the shadows too (480 by day; 100 to 200 for a night), and **Fog from** and **Fog to** are how far away the fog starts and where nothing shows through it. Left at 0, the game sets the fog by the map's size.
 
 ### Markers (empties, by name)
 
@@ -84,6 +93,8 @@ It has no `start`. The sniper walks and cannot jump, so a wall round the platfor
 ```
 blender --background --factory-startup --python blender/example_sniper_map.py -- <repo root>
 ```
+
+The map the mode ships with, **Sniper Street**, is built the same way, by [`sniper_street_map.py`](sniper_street_map.py): a street at night between two rows of buildings, the runners behind a roadblock at one end and the sniper on an overpass at the other, with wrecked cars, a bus on its side, containers, blast walls and the rubble of two buildings between them. It saves [`sniper_street.blend`](sniper_street.blend) and exports `assets/maps/Sniper Street.json`. Everything in it is one object a thing (a car, a row of blast walls, a heap of rubble), so to change the map, open the `.blend`, move things about and **Export again**; to change what a car or a building is made of, change the script and run it again (which puts everything back where the script has it).
 
 ## Surf tips
 

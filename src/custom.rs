@@ -18,6 +18,11 @@
 //! alone. A spawn can be set aside for a role (`role`: "sniper"), and a
 //! finish with no start is somewhere to get to rather than the end of a
 //! course: the sniper mode is played on a map with both.
+//!
+//! A file can also say how it is lit (`light`: how bright the sun is, its
+//! colour and where it shines from, the ambient light, the fog), which makes
+//! a night of it; where its lamps and fires are (`lamps`); and which of its
+//! solids glow (`glow`). What it leaves out is plain daylight.
 
 use std::{
     path::{Path, PathBuf},
@@ -29,7 +34,7 @@ use serde::Deserialize;
 
 use crate::{
     course::{Course, KillBox, Respawn, Zone},
-    map::{Look, Map, PLAYER_HALF, Spawn},
+    map::{Lamp, Look, Map, PLAYER_HALF, Spawn},
     modes::{self, Needs},
     ramp::Ramp,
 };
@@ -45,6 +50,12 @@ struct File {
     /// The sky's colour (sRGB), and the fog's.
     #[serde(default)]
     sky: Option<[f32; 3]>,
+    /// How it is lit, where that is not plain daylight.
+    #[serde(default)]
+    light: Option<Light>,
+    /// Its lamps and fires.
+    #[serde(default)]
+    lamps: Vec<LampMarker>,
     solids: Vec<Solid>,
     #[serde(default)]
     spawns: Vec<SpawnMarker>,
@@ -82,11 +93,53 @@ struct Solid {
     /// An invisible solid still collides.
     #[serde(default = "yes")]
     visible: bool,
+    /// It glows, this many times its colour: a lit window, a fire.
+    #[serde(default)]
+    glow: f32,
 }
 
 fn yes() -> bool {
     true
 }
+
+/// How a map is lit. What it leaves out is as by day.
+#[derive(Deserialize, Default)]
+struct Light {
+    /// How bright the sun (or the moon) is, in lux: 10000 is daylight.
+    #[serde(default)]
+    sun: Option<f32>,
+    /// Its light's colour (sRGB).
+    #[serde(default)]
+    sun_color: Option<[f32; 3]>,
+    /// Where it shines from, seen from the middle of the map.
+    #[serde(default)]
+    sun_from: Option<[f32; 3]>,
+    #[serde(default)]
+    ambient: Option<f32>,
+    /// Fog from this far to this far.
+    #[serde(default)]
+    fog: Option<[f32; 2]>,
+}
+
+/// A lamp or a fire: where, its colour (sRGB), how bright (lumens), how far
+/// it reaches, and whether it wavers as a fire does.
+#[derive(Deserialize)]
+struct LampMarker {
+    at: [f32; 3],
+    color: [f32; 3],
+    power: f32,
+    #[serde(default = "lamp_range")]
+    range: f32,
+    #[serde(default)]
+    flicker: bool,
+}
+
+fn lamp_range() -> f32 {
+    25.0
+}
+
+/// No more lamps than this are lit: each one costs every frame.
+const MOST_LAMPS: usize = 64;
 
 /// A point to stand at: the feet, the way to face (x, z), and how fast to
 /// be going that way.
@@ -249,6 +302,11 @@ fn parse(bytes: &[u8]) -> Result<File, String> {
     if !file.spawns.iter().any(|spawn| spawn.role.is_none()) {
         return Err("it has no spawn".into());
     }
+    for (index, lamp) in file.lamps.iter().enumerate() {
+        if !lamp.at.iter().chain(&lamp.color).chain([&lamp.power, &lamp.range]).all(|x| x.is_finite()) {
+            return Err(format!("lamp {index} is not a light"));
+        }
+    }
     if file.start.is_some() && file.finish.is_none() {
         return Err("it has a start but no finish".into());
     }
@@ -273,6 +331,9 @@ fn build(id: u8, file: &File) -> Map {
         {
             map.textures.push((solid.color, texture.clone()));
         }
+        if solid.glow > 0.0 && solid.glow.is_finite() && !map.glows.iter().any(|(color, _)| *color == solid.color) {
+            map.glows.push((solid.color, solid.glow.min(100.0)));
+        }
         map.ramps.push(ramp);
     }
     for marker in &file.spawns {
@@ -286,6 +347,18 @@ fn build(id: u8, file: &File) -> Map {
     if let (None, Some(finish)) = (file.start, file.finish) {
         map.zones.push((FINISH_ZONE.to_string(), finish.zone()));
     }
+    map.lamps = file
+        .lamps
+        .iter()
+        .take(MOST_LAMPS)
+        .map(|lamp| Lamp {
+            pos: lamp.at.into(),
+            color: lamp.color.map(|c| c.clamp(0.0, 1.0)),
+            power: lamp.power.clamp(0.0, 1.0e8),
+            range: lamp.range.clamp(0.5, 200.0),
+            flicker: lamp.flicker,
+        })
+        .collect();
 
     let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
     for ramp in &map.ramps {
@@ -308,12 +381,25 @@ fn build(id: u8, file: &File) -> Map {
     let middle = (lo + hi) / 2.0;
     let size = (hi - lo).with_y(0.0).length().max(40.0);
     let sky = file.sky.unwrap_or([0.55, 0.68, 0.88]);
+    let light = file.light.as_ref();
+    let finite = |x: &f32| x.is_finite();
+    let fog = light
+        .and_then(|light| light.fog)
+        .filter(|[start, end]| start.is_finite() && end.is_finite() && *start >= 0.0 && end > start)
+        .map_or((size.max(200.0), size.max(200.0) * 4.0), |[start, end]| (start, end));
+    // Never from below, nor from nowhere: there it would light nothing.
+    let sun_from = light
+        .and_then(|light| light.sun_from)
+        .map(Vec3::from)
+        .filter(|from| from.is_finite() && from.y > 0.0 && from.length() > 1e-3)
+        .map_or(Vec3::new(160.0, 260.0, 90.0), |from| from.normalize() * 300.0);
     map.look = Look {
         sky,
-        fog: Some((size.max(200.0), size.max(200.0) * 4.0)),
-        sun_from: Vec3::new(160.0, 260.0, 90.0),
-        sun: 10000.0,
-        ambient: 480.0,
+        fog: Some(fog),
+        sun_from,
+        sun: light.and_then(|light| light.sun).filter(finite).map_or(10000.0, |sun| sun.clamp(0.0, 100_000.0)),
+        sun_color: light.and_then(|light| light.sun_color).filter(|color| color.iter().all(finite)).unwrap_or([1.0; 3]),
+        ambient: light.and_then(|light| light.ambient).filter(finite).map_or(480.0, |ambient| ambient.clamp(0.0, 5000.0)),
         orbit: (middle, size * 0.6, (hi.y - middle.y) + size * 0.3),
     };
     map.finish()
@@ -646,6 +732,111 @@ mod tests {
         }
         // The finish is on the ground, under the platform.
         assert!(finish.contains(Vec3::new(post.pos.x, PLAYER_HALF.y, post.pos.z)));
+    }
+
+    /// A file can make a night of it: a dim blue moon, close fog, lamps and
+    /// fires, and solids that glow. One that says nothing is lit as by day.
+    #[test]
+    fn a_map_file_says_how_it_is_lit() {
+        let day = build(9, &parse(sniper_file().as_bytes()).unwrap());
+        assert_eq!((day.look.sun, day.look.sun_color, day.look.ambient), (10000.0, [1.0; 3], 480.0));
+        assert!(day.lamps.is_empty() && day.glows.is_empty());
+        let night = sniper_file()
+            .replace(
+                r#""format": 1,"#,
+                r#""format": 1, "sky": [0.02, 0.03, 0.06],
+                   "light": {"sun": 1500, "sun_color": [0.6, 0.7, 1.0], "sun_from": [10, 40, -200], "ambient": 150, "fog": [30, 260]},
+                   "lamps": [{"at": [0, 1.2, -40], "color": [1.0, 0.6, 0.3], "power": 400000, "range": 18, "flicker": true},
+                             {"at": [5, 7, -60], "color": [1.0, 0.9, 0.7], "power": 900000}],"#,
+            )
+            .replace(r#""texture": "slab""#, r#""texture": "slab", "glow": 3.0"#);
+        let map = build(9, &parse(night.as_bytes()).unwrap());
+        assert_eq!((map.look.sun, map.look.sun_color, map.look.ambient), (1500.0, [0.6, 0.7, 1.0], 150.0));
+        assert_eq!(map.look.fog, Some((30.0, 260.0)));
+        // The moon is where the file says, far off.
+        assert!(map.look.sun_from.normalize().distance(Vec3::new(10.0, 40.0, -200.0).normalize()) < 1e-4);
+        assert_eq!(map.lamps.len(), 2);
+        assert!(map.lamps[0].flicker && !map.lamps[1].flicker);
+        assert_eq!((map.lamps[0].range, map.lamps[1].range), (18.0, 25.0));
+        assert_eq!(map.glows, vec![([0.5, 0.5, 0.5], 3.0)]);
+        // A sun under the ground, or fog that ends before it starts, is left as by day.
+        let wrong = night.replace(r#""sun_from": [10, 40, -200]"#, r#""sun_from": [10, -40, -200]"#).replace(r#""fog": [30, 260]"#, r#""fog": [300, 260]"#);
+        let map = build(9, &parse(wrong.as_bytes()).unwrap());
+        assert_eq!((map.look.sun_from, map.look.fog), (day.look.sun_from, day.look.fog));
+        let broken = night.replace(r#""power": 400000"#, r#""power": "bright""#);
+        assert!(parse(broken.as_bytes()).is_err());
+    }
+
+    /// Every map shipped with the game can be played. A sniper map among
+    /// them is laid out for the mode: the runners come in standing on the
+    /// ground and out of the sniper's sight, wherever on the platform the
+    /// sniper stands; the sniper is well above them and far away; and there
+    /// is a way on foot from where each runner comes in to the finish.
+    #[test]
+    fn the_shipped_maps_can_be_played() {
+        use crate::modes::MODE_SNIPER;
+        let mut maps = 0;
+        for path in std::fs::read_dir("assets/maps").expect("the shipped maps").flatten().map(|entry| entry.path()) {
+            if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
+                continue;
+            }
+            let name = path.display();
+            let bytes = std::fs::read(&path).unwrap();
+            let file = parse(&bytes).unwrap_or_else(|why| panic!("{name}: {why}"));
+            let map = build(9, &file);
+            maps += 1;
+            if !file.plays.contains(&MODE_SNIPER) {
+                continue;
+            }
+            let post = map.posts(SNIPER_ROLE).next().expect("a spawn for the sniper");
+            let finish = map.zone(FINISH_ZONE).expect("a finish");
+            let stands = |pos: Vec3| map.is_free(pos, PLAYER_HALF) && !map.is_free(pos - Vec3::Y * 0.1, PLAYER_HALF);
+            for spawn in map.spawns.iter().chain([post]) {
+                assert!(stands(spawn.pos), "{name}: a spawn in something, or in the air, at {}", spawn.pos);
+                assert!(!finish.contains(spawn.pos), "{name}: a spawn in the finish at {}", spawn.pos);
+            }
+            let runners = map.spawns[0].pos;
+            assert!(post.pos.y > runners.y + 5.0 && post.pos.distance(runners) > 60.0, "{name}: the sniper is on top of the runners");
+            // Wherever the sniper can walk to from the post, across the
+            // platform and up to its edge, no runner shows where they come in.
+            let towards = (runners - post.pos).with_y(0.0).normalize();
+            let across = Vec3::new(-towards.z, 0.0, towards.x);
+            const STEP: f32 = 0.25;
+            let mut reached = std::collections::HashSet::from([(0_i32, 0_i32)]);
+            let mut to_visit = vec![(0_i32, 0_i32)];
+            while let Some((side, forward)) = to_visit.pop() {
+                let at = post.pos + across * side as f32 * STEP + towards * forward as f32 * STEP;
+                let eye = at + Vec3::Y * (crate::map::STAND_EYE - PLAYER_HALF.y);
+                for spawn in &map.spawns {
+                    for height in [-0.8, 0.0, 0.85] {
+                        let to = spawn.pos + Vec3::Y * height - eye;
+                        assert!(
+                            map.raycast(eye, to.normalize(), to.length() - 0.3).is_some(),
+                            "{name}: from {at} the sniper sees the spawn at {}",
+                            spawn.pos
+                        );
+                    }
+                }
+                for next in [(side - 1, forward), (side + 1, forward), (side, forward - 1), (side, forward + 1)] {
+                    let at = post.pos + across * next.0 as f32 * STEP + towards * next.1 as f32 * STEP;
+                    if next.0.abs() < 400 && next.1.abs() < 400 && stands(at) && reached.insert(next) {
+                        to_visit.push(next);
+                    }
+                }
+            }
+            assert!(reached.len() > 100, "{name}: the sniper has nowhere to walk");
+            let nav = crate::nav::NavGrid::new(&map);
+            for spawn in &map.spawns {
+                let way = nav.path(&map, spawn.pos, finish.center);
+                let last = way.as_ref().and_then(|way| way.last()).copied();
+                assert!(
+                    last.is_some_and(|last| (last - finish.center).with_y(0.0).length() < 4.0),
+                    "{name}: no way on foot from the spawn at {} to the finish",
+                    spawn.pos
+                );
+            }
+        }
+        assert!(maps > 0, "no maps in assets/maps");
     }
 
     #[test]

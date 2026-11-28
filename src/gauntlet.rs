@@ -467,6 +467,7 @@ fn build() -> (Map, Vec<Mark>) {
         fog: Some((220.0, 900.0)),
         sun_from: Vec3::new(160.0, 260.0, 90.0),
         sun: 10000.0,
+        sun_color: [1.0; 3],
         ambient: 480.0,
         orbit: (middle.with_y(90.0), 210.0, 150.0),
     };

@@ -20,8 +20,9 @@ use crate::{
     paint::{MyPaint, PlayerModel},
     paint_editor::PaintEditor,
     player::{Controls, DroppedMagazine, GunSlot, LocalPlayer, PlayerSystems},
-    protocol::{ClientMsg, MODE_CONQUEST, is_course_mode},
+    protocol::{ClientMsg, MODE_CONQUEST, MODE_SNIPER, is_course_mode},
     map::PLAYER_HALF,
+    custom::{FINISH_ZONE, SNIPER_ROLE},
     loadout::{Choice, LoadoutScreen},
     remote::{Corpse, RemotePlayer, Spectate},
     weapons::{GUN_COUNT, IRON_SIGHTS, RIFLE, SHOTGUN, TWO_X, WeaponId, weapon},
@@ -523,6 +524,10 @@ fn selftest_play(
 ) {
     if is_course_mode(session.mode) {
         selftest_course(&time, &session, &mut test, &mut player, &map, &mut connection, &mut captured);
+        return;
+    }
+    if session.mode == MODE_SNIPER {
+        selftest_sniper(&time, &session, &mut test, &mut player, &map, &mut mouse, &mut connection, &mut captured);
         return;
     }
     // The script starts once the countdown is over.
@@ -1077,6 +1082,117 @@ fn selftest_course(
         test.capture("course_overview.png");
     }
     if test.reached(step + 4, at + 1.9) {
+        test.hide_hud = false;
+        connection.send(&ClientMsg::EndMatch);
+    }
+}
+
+/// The sniper mode's script. Alone, we are the sniper: the view from the
+/// platform as we come in, down over its wall and through the scope; then
+/// the map as the runners see it, from where they come in to under the
+/// platform; and the whole of it from above.
+fn selftest_sniper(
+    time: &Time,
+    session: &Session,
+    test: &mut SelfTest,
+    player: &mut LocalPlayer,
+    map: &GameMap,
+    mouse: &mut ButtonInput<MouseButton>,
+    connection: &mut Connection,
+    captured: &mut Captured,
+) {
+    if session.frozen() {
+        if session.countdown < 2.5 && !captured.countdown {
+            captured.countdown = true;
+            println!("[selftest] countdown {:.1}, alive {}, unarmed {}", session.countdown, player.alive, player.unarmed);
+            test.capture("sniper_countdown.png");
+        }
+        return;
+    }
+    let (Some(post), Some(finish), Some(start)) = (map.0.posts(SNIPER_ROLE).next(), map.0.zone(FINISH_ZONE), map.0.spawns.first()) else {
+        return;
+    };
+    test.clock += time.delta_secs();
+    // The way the runners go, and the middle of the line they start on.
+    let along = (finish.center - start.pos).with_y(0.0).normalize_or_zero();
+    let across = Vec3::new(-along.z, 0.0, along.x);
+    let middle = start.pos + across * (finish.center - start.pos).dot(across);
+    let run = (finish.center - middle).with_y(0.0).length();
+    let towards = |dir: Vec3| (-dir.x).atan2(-dir.z);
+    if test.reached(0, 0.6) {
+        println!("[selftest] on the platform at {:.1?}, {:.0} m from the runners", player.pos, post.pos.distance(start.pos));
+        player.pitch = -0.12;
+        test.capture("sniper_post.png");
+    }
+    // Up to the wall, looking down at the nearest cover.
+    if test.reached(1, 0.9) {
+        player.teleport(post.pos - along * 3.1);
+        player.yaw = towards(-along);
+        player.pitch = -0.36;
+    }
+    if test.reached(2, 1.3) {
+        test.capture("sniper_down.png");
+    }
+    // Through the scope, at the far end.
+    if test.reached(3, 1.7) {
+        player.pitch = -0.085;
+        mouse.press(MouseButton::Right);
+    }
+    if test.reached(4, 2.5) {
+        test.capture("sniper_scope.png");
+    }
+    if test.reached(5, 2.8) {
+        mouse.release(MouseButton::Right);
+    }
+    // The runners' side: from behind where they come in, then every so far
+    // down the map, looking at the platform.
+    const STOPS: [f32; 8] = [-0.02, 0.05, 0.2, 0.34, 0.5, 0.64, 0.8, 0.93];
+    for (index, part) in STOPS.into_iter().enumerate() {
+        let at = 3.0 + index as f32 * 0.9;
+        if test.reached(6 + 2 * index as u32, at) {
+            let side = [0.0, 2.5, -3.0, 4.0, -1.0, -5.5, 6.5, 1.5][index];
+            let mut feet = middle + along * run * part + across * side;
+            // Out of whatever stands there.
+            for _ in 0..40 {
+                if map.0.is_free(feet.with_y(start.pos.y + 0.3), PLAYER_HALF) {
+                    break;
+                }
+                feet += across * 0.5;
+            }
+            player.teleport(feet.with_y(start.pos.y + 0.3));
+            player.yaw = towards(along);
+            player.pitch = 0.06;
+        }
+        if test.reached(7 + 2 * index as u32, at + 0.6) {
+            test.capture(&format!("sniper_street_{}.png", index + 1));
+        }
+    }
+    let step = 6 + 2 * STOPS.len() as u32;
+    let at = 3.0 + STOPS.len() as f32 * 0.9;
+    // The whole map, from high behind the runners, with nothing over it.
+    if test.reached(step, at) {
+        let from = middle - along * 28.0 + Vec3::Y * 46.0 + across * 10.0;
+        player.teleport(from);
+        let to = middle + along * run * 0.42 - player.eye();
+        player.yaw = towards(to);
+        player.pitch = to.y.atan2(to.with_y(0.0).length());
+        test.hide_hud = true;
+    }
+    if test.reached(step + 1, at + 0.5) {
+        test.capture("sniper_overview.png");
+    }
+    // And from over the platform, back the way they come.
+    if test.reached(step + 2, at + 0.6) {
+        let from = post.pos + along * 10.0 + Vec3::Y * 22.0 - across * 6.0;
+        player.teleport(from);
+        let to = middle + along * run * 0.6 - player.eye();
+        player.yaw = towards(to);
+        player.pitch = to.y.atan2(to.with_y(0.0).length());
+    }
+    if test.reached(step + 3, at + 1.1) {
+        test.capture("sniper_overview_back.png");
+    }
+    if test.reached(step + 4, at + 1.3) {
         test.hide_hud = false;
         connection.send(&ClientMsg::EndMatch);
     }

@@ -12,7 +12,7 @@ use crate::{
     map::Map,
     net::Session,
     protocol::{GRENADE_KINDS, HILL_CONTESTED, HILL_EMPTY, HILL_HELD, HILL_RADIUS, MODE_HILL},
-    textures::{Textured, block_look, block_mesh, ramp_mesh},
+    textures::{Textured, block_look, block_mesh, ramps_mesh},
     ui::{BLUE, RED},
 };
 
@@ -30,7 +30,7 @@ impl Plugin for WorldPlugin {
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
-                (build_map.run_if(resource_changed::<GameMap>), (show_hill, show_armor)).chain(),
+                (build_map.run_if(resource_changed::<GameMap>), (show_hill, show_armor, waver)).chain(),
             );
     }
 }
@@ -42,6 +42,14 @@ pub struct GameMap(pub Map);
 /// A block or jump pad of the current map.
 #[derive(Component)]
 struct MapGeometry;
+
+/// A fire's light on a map made in Blender, which wavers about this
+/// brightness, each fire out of step with the others.
+#[derive(Component)]
+struct Fire {
+    power: f32,
+    phase: f32,
+}
 
 /// The one light that casts shadows.
 #[derive(Component)]
@@ -308,6 +316,17 @@ fn show_armor(
     }
 }
 
+/// Fires waver: a slow swell with a quick tremble on it.
+fn waver(time: Res<Time>, mut fires: Query<(&Fire, &mut PointLight)>) {
+    let t = time.elapsed_secs();
+    for (fire, mut light) in &mut fires {
+        let p = fire.phase;
+        let swell = (t * 2.3 + p).sin() * 0.5 + (t * 5.1 + p * 1.7).sin() * 0.3;
+        let tremble = (t * 13.0 + p * 2.9).sin() * (t * 7.7 + p).sin() * 0.2;
+        light.intensity = fire.power * (1.0 + 0.22 * (swell + tremble));
+    }
+}
+
 /// Replaces the scenery whenever the map changes (and builds it the first time).
 fn build_map(
     mut commands: Commands,
@@ -333,6 +352,10 @@ fn build_map(
                     perceptual_roughness: 0.9,
                     ..default()
                 };
+                // A lit window, a fire: it shows in the dark.
+                if let Some((_, glow)) = map.0.glows.iter().find(|(c, _)| *c == color) {
+                    material.emissive = Color::srgb(r, g, b).to_linear() * *glow;
+                }
                 // A map made in Blender names its textures; the rest go by colour.
                 let named = map.0.textures.iter().find(|(c, _)| *c == color).and_then(|(_, name)| crate::textures::named(name));
                 let (pattern, tile) = named.unwrap_or_else(|| block_look(color));
@@ -354,13 +377,45 @@ fn build_map(
             Transform::from_translation((block.min + block.max) / 2.0),
         ));
     }
+    // The ramps of a colour are one mesh, in pieces of the map so that what
+    // is out of sight is not drawn.
+    const PIECE: f32 = 48.0;
+    let mut pieces: Vec<(([f32; 3], i32, i32), Vec<&crate::ramp::Ramp>)> = Vec::new();
     for ramp in map.0.ramps.iter().filter(|ramp| ramp.visible) {
-        commands.spawn((
+        let middle = (ramp.min + ramp.max) / 2.0;
+        let key = (ramp.color, (middle.x / PIECE).floor() as i32, (middle.z / PIECE).floor() as i32);
+        match pieces.iter_mut().find(|(known, _)| *known == key) {
+            Some((_, ramps)) => ramps.push(ramp),
+            None => pieces.push((key, vec![ramp])),
+        }
+    }
+    for ((color, ..), ramps) in pieces {
+        let material = material_for(color);
+        let mut piece = commands.spawn((MapGeometry, Mesh3d(meshes.add(ramps_mesh(ramps))), MeshMaterial3d(material), Transform::default()));
+        // What glows casts no shadow of its own light.
+        if map.0.glows.iter().any(|(c, _)| *c == color) {
+            piece.insert(NotShadowCaster);
+        }
+    }
+
+    for (index, lamp) in map.0.lamps.iter().enumerate() {
+        let [r, g, b] = lamp.color;
+        let mut light = commands.spawn((
             MapGeometry,
-            Mesh3d(meshes.add(ramp_mesh(ramp))),
-            MeshMaterial3d(material_for(ramp.color)),
-            Transform::default(),
+            PointLight {
+                color: Color::srgb(r, g, b),
+                intensity: lamp.power,
+                range: lamp.range,
+                ..default()
+            },
+            Transform::from_translation(lamp.pos),
         ));
+        if lamp.flicker {
+            light.insert(Fire {
+                power: lamp.power,
+                phase: index as f32 * 2.4,
+            });
+        }
     }
 
     for pad in &map.0.pads {

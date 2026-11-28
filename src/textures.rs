@@ -464,12 +464,13 @@ pub fn block_mesh(min: Vec3, max: Vec3) -> Mesh {
     mesh
 }
 
-/// A ramp, in world coordinates, every face flat and textured in metres
-/// across it: along the ramp, and up the slope.
-pub fn ramp_mesh(ramp: &Ramp) -> Mesh {
+/// Ramps as one mesh, in world coordinates, every face flat and textured in
+/// metres across it: along the ramp, and up the slope. (One mesh for all the
+/// ramps of a material: a map made in Blender can have thousands.)
+pub fn ramps_mesh<'a>(ramps: impl IntoIterator<Item = &'a Ramp>) -> Mesh {
     let (mut positions, mut normals, mut uvs) = (Vec::new(), Vec::new(), Vec::new());
     let mut indices = Vec::new();
-    for (index, face) in ramp.faces.iter().enumerate() {
+    for (ramp, index, face) in ramps.into_iter().flat_map(|ramp| ramp.faces.iter().enumerate().map(move |(index, face)| (ramp, index, face))) {
         let normal = ramp.normal(index);
         let across = if normal.y.abs() < 0.99 { Vec3::Y.cross(normal).normalize() } else { Vec3::X };
         let up = normal.cross(across);
@@ -494,7 +495,7 @@ pub fn ramp_mesh(ramp: &Ramp) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
         .with_inserted_indices(Indices::U32(indices));
     if let Err(error) = mesh.generate_tangents() {
-        warn!("no tangents for a ramp: {error}");
+        warn!("no tangents for ramps: {error}");
     }
     mesh
 }

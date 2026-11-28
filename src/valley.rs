@@ -309,6 +309,7 @@ pub fn valley() -> Map {
         fog: Some((90.0, 460.0)),
         sun_from: Vec3::new(140.0, 190.0, 70.0),
         sun: 10000.0,
+        sun_color: [1.0; 3],
         ambient: 420.0,
         orbit: (Vec3::new(0.0, 8.0, -10.0), 95.0, 45.0),
     };

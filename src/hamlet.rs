@@ -200,6 +200,7 @@ pub fn hamlet() -> Map {
         fog: Some((60.0, 260.0)),
         sun_from: Vec3::new(-60.0, 110.0, 45.0),
         sun: 10000.0,
+        sun_color: [1.0; 3],
         ambient: 450.0,
         orbit: (Vec3::new(0.0, 2.0, 0.0), 52.0, 30.0),
     };

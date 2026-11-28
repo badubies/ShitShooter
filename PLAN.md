@@ -1,5 +1,39 @@
 # Plan
 
+## Round 9: a night street for the sniper mode
+
+Asked for on 2026-11-27: a better map for the sniper mode, a street at
+night with buildings either side, long after the end of the world, with
+destroyed cars, debris and whatever else for cover.
+
+- [x] A map file can say how it is lit (`light`: the sun's brightness,
+  colour and direction, the ambient light, the fog), where its lamps and
+  fires are (`lamps`, drawn as point lights without shadows; fires waver)
+  and which solids glow (`glow`). `Look::sun_color`, `Map::lamps`,
+  `Map::glows`. The exporter (1.5.0) reads a Sun light, point lights
+  (named `fire...` to waver), materials' emission, and the ambient light
+  and fog from its sidebar. A file that says none of it is lit as before.
+- [x] A map's ramps are drawn as one mesh a colour, in 48 m pieces
+  (`textures::ramps_mesh`): a map made in Blender can have thousands.
+- [x] `blender/sniper_street_map.py` builds Sniper Street
+  (`blender/sniper_street.blend`, `assets/maps/Sniper Street.json`, about
+  2100 solids): 180 m from a roadblock to an overpass 12 m up, the finish
+  under it. Sniper Yard is gone from `assets/maps`; the grey-box yard is
+  still `blender/example sniper.json`.
+- [x] `custom::tests::the_shipped_maps_can_be_played` holds every shipped
+  sniper map to what the mode needs: runners come in on the ground and out
+  of sight of everywhere the sniper can walk to, and there is a way on
+  foot from each of them to the finish. It found two spawns sunk in the
+  pavement and a line of sight through a gap in the roadblock.
+- [x] `--selftest <dir> --host --mode sniper --map "Sniper Street"` takes
+  the sniper's views (`sniper_post`, `sniper_down`, `sniper_scope`), the
+  street from eight places down it and the whole of it from above.
+
+To tune by playing: the moon (`moon.data.energy`), `shitshooter_ambient`
+and the fog at the bottom of the script, each lamp's and fire's watts where
+it is made, and what stands where in `far_stretch` to `near_stretch`. How
+high cover has to be at each distance is `high_enough`.
+
 ## Round 8: a home for game modes, and the sniper mode
 
 Asked for on 2026-11-27: the game is no longer only a movement shooter, so
@@ -39,7 +73,8 @@ one 4,271-line `server.rs`. Now everything about a mode is in `src/modes/`:
 - [x] A map file can name the modes it is for (`modes`), set a spawn aside
   for a role (`role`), and have a finish that is somewhere to get to.
   The exporter has a "Made for" choice. `blender/example_sniper_map.py`
-  builds a grey-box yard: `assets/maps/Sniper Yard.json`.
+  builds a grey-box yard, `blender/example sniper.json` (it shipped as
+  Sniper Yard until Sniper Street took its place, see round 9).
 - [x] Sniper (`modes/sniper/`): one player on a platform with the rifle,
   everybody else unarmed and on foot, from cover to cover to the finish
   under it. Shot, you are out until the next turn. Everybody is the
