@@ -25,6 +25,7 @@ pub const TURN_TIME: f32 = 150.0;
 /// Seconds between two turns, while the last one's result shows.
 pub const INTERMISSION: f32 = 6.0;
 /// A runner's health. The rifle takes 90 off with a hit to the body, so a
-/// runner lives through one of those (and is whole again after a while out
-/// of fire, as in any mode); a hit to the head is the end of the run.
+/// runner lives through one of those, and no more: health does not come
+/// back in this mode (`ModeInfo::heals`). A hit to the head is the end of
+/// the run.
 pub const RUNNER_HEALTH: i32 = 100;

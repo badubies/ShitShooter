@@ -136,6 +136,8 @@ pub struct ModeInfo {
     pub respawns: bool,
     /// The dead may ask to come back before `RESPAWN_DELAY` is up.
     pub early_respawn: bool,
+    /// The hurt get their health back, `REGEN_DELAY` after they were last hit.
+    pub heals: bool,
     /// The match ends when the clock runs out. Without it, the leader ends it.
     pub timed: bool,
     /// The score that wins a match, given the lobby's frag limit: kills for
@@ -333,6 +335,7 @@ pub static MODES: [ModeInfo; 7] = [
         bots: true,
         respawns: true,
         early_respawn: true,
+        heals: true,
         timed: true,
         score_limit: |frags| frags,
         rules: ffa::RULES,
@@ -348,6 +351,7 @@ pub static MODES: [ModeInfo; 7] = [
         bots: true,
         respawns: true,
         early_respawn: true,
+        heals: true,
         timed: true,
         score_limit: |frags| frags * 2,
         rules: teams::RULES,
@@ -363,6 +367,7 @@ pub static MODES: [ModeInfo; 7] = [
         bots: true,
         respawns: true,
         early_respawn: true,
+        heals: true,
         timed: true,
         score_limit: |_| hill::HILL_SCORE_LIMIT,
         rules: hill::RULES,
@@ -379,6 +384,7 @@ pub static MODES: [ModeInfo; 7] = [
         respawns: true,
         // Every death costs the team the whole wait.
         early_respawn: false,
+        heals: true,
         timed: true,
         score_limit: |_| conquest::CONQUEST_TICKETS,
         rules: conquest::rules::RULES,
@@ -394,6 +400,7 @@ pub static MODES: [ModeInfo; 7] = [
         bots: false,
         respawns: true,
         early_respawn: true,
+        heals: true,
         timed: true,
         score_limit: |_| 0,
         rules: course::rules::RACE,
@@ -409,6 +416,7 @@ pub static MODES: [ModeInfo; 7] = [
         bots: false,
         respawns: true,
         early_respawn: true,
+        heals: true,
         // It goes on until the leader ends it.
         timed: false,
         score_limit: |_| 0,
@@ -426,6 +434,8 @@ pub static MODES: [ModeInfo; 7] = [
         // Shot, you are out until the next turn.
         respawns: false,
         early_respawn: false,
+        // A runner who was hit stays hit.
+        heals: false,
         timed: true,
         score_limit: |_| 0,
         rules: sniper::rules::RULES,

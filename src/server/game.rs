@@ -34,6 +34,7 @@ impl Server {
         self.elapsed += dt;
 
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
+        let heals = modes::info(self.settings.mode).heals;
         for id in &ids {
             let player = self.players.get_mut(id).unwrap();
             player.fire_credit = (player.fire_credit + dt).min(MAX_FIRE_CREDIT);
@@ -46,7 +47,7 @@ impl Server {
             });
             // Health comes back after a while out of trouble.
             player.since_damage += dt;
-            if player.alive && player.health < player.kit.health && player.since_damage >= REGEN_DELAY {
+            if heals && player.alive && player.health < player.kit.health && player.since_damage >= REGEN_DELAY {
                 player.regen += REGEN_RATE * dt;
                 let whole = player.regen.floor();
                 player.regen -= whole;

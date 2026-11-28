@@ -402,6 +402,22 @@ mod tests {
         assert!(server.players[&sniper].cooking.is_none());
     }
 
+    /// One hit to the body is lived through, and never got over: the next
+    /// one is the end of the run, however long after.
+    #[test]
+    fn a_runner_lives_through_one_body_shot_and_stays_hurt() {
+        let (mut server, _) = sniper_match(3);
+        let sniper = sniper_of(&server);
+        let runner = runners(&server)[0];
+        let body = crate::weapons::weapon(SNIPER).damage;
+        server.damage(runner, sniper, body, SNIPER);
+        assert!(server.players[&runner].alive);
+        pass(&mut server, crate::protocol::REGEN_DELAY + 10.0);
+        assert_eq!(server.players[&runner].health, RUNNER_HEALTH - body);
+        server.damage(runner, sniper, body, SNIPER);
+        assert!(!server.players[&runner].alive);
+    }
+
     #[test]
     fn a_runner_shot_is_out_until_the_next_turn() {
         let (mut server, _) = sniper_match(3);
