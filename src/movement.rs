@@ -86,11 +86,11 @@ pub const STANDARD: MoveTuning = MoveTuning {
     slide_end_speed: 5.0,
 };
 
-/// Running for the sniper's platform: on foot and no more. A slow run, a
-/// crouch to hide behind things, a small jump; no dash, no second jump, no
-/// slide, and nothing to gain from hopping.
+/// Running for the sniper's platform: on foot and no more. A run two thirds
+/// as fast as the game's, a crouch to hide behind things, a small jump; no
+/// dash, no second jump, no slide, and nothing to gain from hopping.
 pub const RUNNER: MoveTuning = MoveTuning {
-    run_speed: 5.5,
+    run_speed: 6.5,
     air_accel: Some(10.0),
     air_control_accel: 12.0,
     jump_speed: 6.5,
@@ -98,8 +98,8 @@ pub const RUNNER: MoveTuning = MoveTuning {
     bhop_early: 0.0,
     bhop_late: 0.0,
     dash_speed: 0.0,
-    max_speed: 9.0,
-    crouch_speed: 3.0,
+    max_speed: 10.0,
+    crouch_speed: 3.5,
     slide_min_speed: f32::INFINITY,
     ..STANDARD
 };

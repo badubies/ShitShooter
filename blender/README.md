@@ -77,7 +77,7 @@ A map with a `start` and a `finish` is a **course**, played in **Race** and **Ti
 | `spawn sniper` | Where the sniper stands, up on the platform, facing its Y axis down the map. |
 | `finish` | A box under the platform. A runner inside it has made it. Make it big enough to run into. |
 
-It has no `start`. The sniper walks and cannot jump, so a wall round the platform higher than a step (0.5 m) keeps them on it; about 0.9 m can still be shot over. Runners can crouch, so cover about 1.1 m high hides a crouched runner and 2.3 m a standing one. The further a piece of cover is from the platform, the more ground it hides behind it.
+It has no `start`. The sniper walks and cannot jump, so a wall round the platform higher than a step (0.5 m) keeps them on it; about 0.9 m can still be shot over. A runner is 1.8 m tall standing and 1.2 m crouched. Far from the platform, cover about 1.4 m high hides a crouched runner and 2.3 m a standing one. The sniper looks down on the map, so the closer a piece of cover is to the platform, the less ground it hides behind it: within 30 m or so it wants to be 3 to 4 m high, and closer together.
 
 `blender/example_sniper_map.py` builds a plain yard to start from:
 

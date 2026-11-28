@@ -1,7 +1,8 @@
 """Builds a grey-box map for the sniper mode with the ShitShooter map tools,
-to start from: a long walled yard, runners at one end, cover scattered
-across it (tall walls, low walls to crouch behind, crates), and at the other
-end a platform for the sniper with the finish under it.
+to start from: a long, narrow walled yard, runners at one end, rows of cover
+across it (walls, lower walls to crouch behind, crates) that get closer
+together and taller towards the other end, where the sniper's platform is
+with the finish under it.
 
 Saves blender/example_sniper.blend and exports "blender/example sniper.json"
 (copy it into your maps folder to play it).
@@ -69,7 +70,7 @@ def empty(name, kind, at, scale=(1, 1, 1), turn=0.0):
 
 # The yard: WIDE across (X), LONG from the runners' end (Y = 0) to the
 # platform's. Everything is measured from there.
-WIDE, LONG = 30.0, 180.0
+WIDE, LONG = 15.0, 180.0
 box("ground", (-WIDE, 0, -1), (WIDE, LONG, 0), GROUND)
 box("wall left", (-WIDE - 1, 0, 0), (-WIDE, LONG, 5), WALL)
 box("wall right", (WIDE, 0, 0), (WIDE + 1, LONG, 5), WALL)
@@ -80,8 +81,8 @@ box("wall far", (-WIDE - 1, LONG, 0), (WIDE + 1, LONG + 1, 5), WALL)
 # through its gaps (which are between two spawns, not in front of one):
 # nobody is shot where they come in.
 for i in range(8):
-    empty("spawn", "ARROWS", (-17.5 + 5 * i, 5, 0))
-for x0, x1 in ((-26, -16), (-14, 14), (16, 26)):
+    empty("spawn", "ARROWS", (-12.25 + 3.5 * i, 5, 0))
+for x0, x1 in ((-13.5, -7.75), (-6.25, -0.75), (0.75, 6.25), (7.75, 13.5)):
     box("start wall", (x0, 11, 0), (x1, 11.6, 2.4), COVER)
 
 # The platform: a deck on four legs with a wall round it low enough to shoot
@@ -102,29 +103,52 @@ empty("spawn sniper", "ARROWS", (0, PY0 + 4, TOP), turn=math.pi)
 empty("finish", "CUBE", (0, PY0 + 5, 2.5), (8, 5, 2.5))
 
 # Cover, in rows across the yard, each row's pieces shifted from the last
-# one's so there is no straight run behind them. Further from the platform
-# the sniper sees over less; close to it, cover hides very little.
+# one's so there is no straight run behind them. The sniper looks down on
+# the yard, so the closer cover is to the platform the less ground it hides
+# behind it: the rows get closer together towards the platform, and the
+# cover taller.
+EYE = TOP + 1.6  # the sniper's eyes, standing
+STANDING, CROUCHED = 1.8, 1.2  # how tall a runner is
+
+
+def high_enough(y, runner, behind):
+    """How high cover at y has to be to hide a runner that tall from the
+    sniper, up to `behind` metres back from it."""
+    away = PY0 - y
+    return (behind * EYE + runner * away) / (away + behind)
+
+
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+
 random.seed(7)
-rows = [24 + 11 * i for i in range(12)]
-for r, y in enumerate(rows):
-    if y > PY0 - 14:
-        break
-    shift = (r % 3 - 1) * 5.0 + random.uniform(-1.5, 1.5)
-    x = -WIDE + 5 + shift
-    while x < WIDE - 5:
-        kind = random.choice(("wall", "wall", "low", "crate", "gap"))
+y, r = 20.0, 0
+# The last 9 m before the platform are under its parapet: out of sight.
+while y < PY0 - 9:
+    near = y / PY0  # 0 at the runners' end, 1 at the platform
+    wall = min(max(2.3, high_enough(y, STANDING, 2.5)), 4.5)
+    low = max(1.4, high_enough(y, CROUCHED, 1.5))
+    crate = max(1.9, high_enough(y, STANDING, 1.5))
+    kinds = ("wall", "wall", "low", "crate", "gap") if near < 0.55 else ("wall", "wall", "wall", "low", "crate")
+    x = -WIDE + 1.0 + (r % 3) * 2.0 + random.uniform(0.0, 1.0)
+    while x < WIDE - 2.0:
+        kind = random.choice(kinds)
         if kind == "wall":
-            width = random.uniform(3.0, 5.0)
-            box("cover wall", (x, y, 0), (x + width, y + 0.5, 2.3), COVER)
+            width = min(random.uniform(3.0, 5.0), WIDE - x)
+            box("cover wall", (x, y, 0), (x + width, y + 0.5, wall), COVER)
         elif kind == "low":
-            width = random.uniform(3.0, 6.0)
-            box("low wall", (x, y, 0), (x + width, y + 0.5, 1.15), LOW)
+            width = min(random.uniform(3.0, 5.5), WIDE - x)
+            box("low wall", (x, y, 0), (x + width, y + 0.5, low), LOW)
         elif kind == "crate":
             width = 2.0
-            box("crate", (x, y - 0.8, 0), (x + 2.0, y + 1.2, 1.9), CRATE)
+            box("crate", (x, y - 0.8, 0), (x + 2.0, y + 1.2, crate), CRATE)
         else:
-            width = random.uniform(2.0, 4.0)
-        x += width + random.uniform(4.0, 8.0)
+            width = random.uniform(1.5, 3.0)
+        # Room to run through, less of it near the platform.
+        x += width + random.uniform(lerp(3.0, 2.2, near), lerp(5.5, 3.5, near))
+    y += lerp(9.0, 5.5, near)
+    r += 1
 
 if scene.world is None:
     scene.world = bpy.data.worlds.new("World")
